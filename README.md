@@ -2,6 +2,9 @@
 
 `audio.cpp` is a high-performance C++ audio inference framework built on top of `ggml`, designed to make modern local audio models practical, portable, and fast.
 
+> [!NOTE]
+> **CUDA performance headline:** multiple TTS paths already run **1.8x-5.0x faster than their Python reference paths** while cutting end-to-end latency by **45%-80%**.
+
 It is built for real end-to-end execution rather than one-off model demos: the same runtime powers TTS, voice cloning, voice conversion, ASR, diarization, VAD, source separation, alignment, codec-style models, and higher-level workflows through a common framework surface.
 
 Highlights:
@@ -488,7 +491,7 @@ audio.cpp already shows some genuinely exciting wins against the matching Python
 - In long-lived-session runs, where the same loaded session serves multiple requests in sequence, the gains stay strong: `pocket tts` is **3.22x faster** with **68.91% less wall time**, `qwen3 tts` is **2.74x faster** with **63.47% less wall time**, `moss tts` is **2.66x faster** with **62.35% less wall time**, `miotts` is **2.28x faster** with **56.22% less wall time**, and `vevo2` is **1.75x faster** with **42.72% less wall time**.
 - In long-form runs on the shared 6,026-character, 1,028-word passage, the strongest Python-relative wins still show up clearly: `pocket tts` is **3.15x faster** with **68.23% less wall time**, `qwen3 tts` is **3.06x faster** with **67.33% less wall time**, `vevo2` is **1.77x faster** with **43.51% less wall time**, and `chatterbox` is **1.58x faster** with **36.83% less wall time**.
 - These long-lived-session numbers are especially important for real applications, because they reflect the common case where model load, cached state, and reusable runtime setup are amortized across many requests.
-- The remaining negative bars are useful too: they spotlight exactly where more optimization work is still worth doing.
+- Bars below the 1.0x line are useful too: they spotlight exactly where more optimization work is still worth doing.
 
 <p align="center">
   <img src="assets/figure/perf_one_shot.svg" alt="One-shot" width="720" />
@@ -497,6 +500,8 @@ audio.cpp already shows some genuinely exciting wins against the matching Python
 <p align="center">
   <img src="assets/figure/perf_long_lived_session.svg" alt="Long-lived session" width="720" />
 </p>
+
+The figures report `Python wall time / audio.cpp wall time`. The 1.0x line means equal wall time; bars above 1.0x mean audio.cpp is faster than Python, and bars below 1.0x mean it is slower.
 
 For TTS-family models, the measured one-shot RTF is:
 

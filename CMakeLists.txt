@@ -195,6 +195,14 @@ add_library(engine_runtime STATIC
     src/models/omnivoice/postprocess.cpp
     src/models/omnivoice/session.cpp
     src/models/omnivoice/loader.cpp
+    src/models/kokoro_tts/assets.cpp
+    src/models/kokoro_tts/loader.cpp
+    src/models/kokoro_tts/frontend.cpp
+    src/models/kokoro_tts/g2p_en.cpp
+    src/models/kokoro_tts/predictor.cpp
+    src/models/kokoro_tts/decoder.cpp
+    src/models/kokoro_tts/plbert.cpp
+    src/models/kokoro_tts/session.cpp
     src/models/pocket_tts/assets.cpp
     src/models/pocket_tts/acoustic_model.cpp
     src/models/pocket_tts/audio_decoder.cpp

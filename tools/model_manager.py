@@ -182,10 +182,19 @@ CATALOG: tuple[ModelPackage, ...] = (
     ),
     ModelPackage(
         id="kokoro_82m_bf16",
-        display_name="Kokoro 82M bf16",
-        target_directory="Kokoro-82M-bf16",
-        source=SnapshotSource(repo_id="mlx-community/Kokoro-82M-bf16"),
-        required_files=("config.json", "kokoro-v1_0.safetensors", "voices/af_heart.safetensors"),
+        display_name="Kokoro 82M GGML",
+        target_directory="kokoro-82m-v1_0-ggml",
+        source=SnapshotSource(repo_id="mlx-community/kokoro_mlx"),
+        required_files=(
+            "config.json",
+            "kokoro-v1_0.safetensors",
+            "voices.json",
+            "misaki_en/gb_gold.tsv",
+            "misaki_en/gb_silver.tsv",
+            "misaki_en/us_gold.tsv",
+            "misaki_en/us_silver.tsv",
+            "voices/af_heart.f32",
+        ),
     ),
     ModelPackage(
         id="moss_tts",

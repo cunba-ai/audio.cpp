@@ -1,5 +1,8 @@
 # audio.cpp
 
+> [!IMPORTANT]
+> **Kokoro 82M preview:** the framework path is wired and runs in real time through the normal CLI, but it is not faster than the Python implementation yet. Treat this branch as a correctness and integration preview while optimization continues.
+
 `audio.cpp` is a high-performance C++ audio inference framework built on top of `ggml`, designed to make modern local audio models practical, portable, and fast.
 
 Tired of juggling a dozen Conda environments, hundreds of Python packages, and dependency conflicts just to try a few audio models? audio.cpp gives those paths a shared native runtime instead.

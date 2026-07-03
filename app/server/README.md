@@ -1,6 +1,6 @@
 # audio.cpp Server
 
-`audiocpp_server` is a CUDA-only HTTP adapter over the framework runtime registry. It keeps one loaded model and one offline task session per active model id, so repeated HTTP requests reuse the same framework session and model-owned graph/cache state.
+`audiocpp_server` is an HTTP adapter over the framework runtime registry. It keeps one loaded model and one offline task session per active model id, so repeated HTTP requests reuse the same framework session and model-owned graph/cache state.
 
 ## Build
 
@@ -9,6 +9,8 @@ cmake -S . -B build -DENGINE_ENABLE_CUDA=ON
 cmake --build build --parallel --target audiocpp_server
 ```
 
+Enable the backend you plan to run: `ENGINE_ENABLE_CUDA=ON` for CUDA, `ENGINE_ENABLE_VULKAN=ON` for Vulkan, or `ENGINE_ENABLE_METAL=ON` for Metal. CPU support is always available.
+
 ## Config
 
 ```bash
@@ -16,6 +18,7 @@ cat > server.json <<'JSON'
 {
   "host": "127.0.0.1",
   "port": 8080,
+  "backend": "cuda",
   "device": 0,
   "threads": 1,
   "lazy_load": true,
@@ -47,6 +50,8 @@ JSON
 
 The server resolves model paths from this JSON exactly as written, so use paths that match your machine. Request-time audio paths are also user-provided paths.
 
+Set top-level `"backend"` to `"cuda"`, `"cpu"`, `"vulkan"`, or `"metal"`. CUDA is the optimized path for audio.cpp; CPU, Vulkan, and Metal are intended for portability and testing when the binary is built with that backend, but performance and model coverage may be lower. The server prints this expectation-setting message when a non-CUDA backend is selected.
+
 Set top-level `"lazy_load": true` to register all configured model ids at startup but defer each model's framework load and session creation until its first request. A model can override the default with `"lazy": true` or `"lazy": false`.
 
 > [!WARNING]
@@ -56,6 +61,12 @@ Set top-level `"lazy_load": true` to register all configured model ids at startu
 
 ```bash
 build/bin/audiocpp_server --config server.json
+```
+
+You can override the configured backend at startup:
+
+```bash
+build/bin/audiocpp_server --config server.json --backend vulkan
 ```
 
 ## Endpoints

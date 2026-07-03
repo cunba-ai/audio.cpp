@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
@@ -27,6 +28,22 @@ std::string json_quote(std::string_view value) {
 
 std::filesystem::path resolve_path(const std::filesystem::path & base, const std::filesystem::path & path) {
     return path.is_absolute() ? path : base / path;
+}
+
+const char * backend_name(engine::core::BackendType type) {
+    switch (type) {
+        case engine::core::BackendType::Cpu:
+            return "cpu";
+        case engine::core::BackendType::Cuda:
+            return "cuda";
+        case engine::core::BackendType::Vulkan:
+            return "vulkan";
+        case engine::core::BackendType::Metal:
+            return "metal";
+        case engine::core::BackendType::BestAvailable:
+            return "best";
+    }
+    return "unknown";
 }
 
 std::unordered_map<std::string, std::string> options_from_object(const Value * value) {
@@ -336,12 +353,23 @@ engine::runtime::TaskRequest build_openai_transcription_request(const Value & bo
 ServerState::ServerState(ServerConfig config, std::filesystem::path request_base)
     : config_(std::move(config)),
       request_base_(std::move(request_base)) {
+    if (config_.backend != engine::core::BackendType::Cuda) {
+        std::cerr
+            << "audio.cpp is optimized for CUDA. The "
+            << backend_name(config_.backend)
+            << " server backend is intended for portability and testing, but performance and model coverage may be lower than CUDA.\n";
+    }
     load_models();
 }
 
 HttpResponse ServerState::handle(const HttpRequest & request) {
     if (request.method == "GET" && request.path == "/health") {
-        return json_response("{\"status\":\"ok\",\"backend\":\"cuda\",\"models\":" + std::to_string(models_.size()) + "}");
+        return json_response(
+            "{\"status\":\"ok\",\"backend\":\"" +
+            std::string(backend_name(config_.backend)) +
+            "\",\"models\":" +
+            std::to_string(models_.size()) +
+            "}");
     }
     if (request.method == "GET" && request.path == "/v1/models") {
         return json_response(models_json());
@@ -393,7 +421,7 @@ void ServerState::ensure_model_loaded_locked(LoadedModel & model) {
     load_request.options = model.config.load_options;
 
     engine::runtime::SessionOptions session_options;
-    session_options.backend.type = engine::core::BackendType::Cuda;
+    session_options.backend.type = config_.backend;
     session_options.backend.device = config_.device;
     session_options.backend.threads = config_.threads;
     session_options.options = model.config.session_options;

@@ -36,8 +36,8 @@ docker compose -f cuda-server.yml up
 ## Generate speech
 
 ```bash
-./generate.sh
+./tts.sh
 ```
 
-This sends a TTS request to `http://localhost:8080/v1/audio/speech` and saves the result to `output/speech.wav`.
+This sends a request to `http://localhost:8080/v1/audio/speech` and saves the result to `output/speech.wav`.
 

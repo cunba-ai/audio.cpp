@@ -21,26 +21,28 @@ The directory should look like:
 
 **2. Build the image**
 
+Run from repository root:
+
 CPU:
 
 ```bash
-docker build -f ../../../.devops/cpu.Dockerfile -t local/audiocpp:full-cpu ../../..
+docker build -f .devops/cpu.Dockerfile -t local/audiocpp:full-cpu .
 ```
 
 GPU (CUDA):
 
 ```bash
-docker build -f ../../../.devops/cuda.Dockerfile -t local/audiocpp:full-cuda ../../..
+docker build -f .devops/cuda.Dockerfile -t local/audiocpp:full-cuda .
 ```
 
 ## Usage
 
-```bash
-./cpu-tts.sh
-```
+Run one of:
 
 ```bash
+./cpu-tts.sh
 ./cuda-tts.sh
 ```
 
 Speech is saved to `output/speech.wav`.
+

@@ -52,6 +52,18 @@ Offline:
 audiocpp_cli --task asr --family higgs_audio_stt --model models/higgs-audio-v3-stt --backend cuda --audio speech_16k.wav --text "Transcribe the speech." --text-out transcript.txt
 ```
 
+Standalone Q8_0 GGUF conversion uses the two-shard index. Map the shared Whisper
+preprocessor configuration into the GGUF so the original directory layout is not required:
+
+```powershell
+audiocpp_gguf.exe --input models\higgs-audio-v3-stt\model.safetensors.index.json --root models\higgs-audio-v3-stt --sidecar models\whisper-large-v3\preprocessor_config.json=preprocessor_config.json --output models\higgs-audio-v3-stt-Q8_0\model.gguf --type q8_0
+```
+
+The shared `whisper-large-v3/preprocessor_config.json` is required only as an input while
+creating the GGUF. Once embedded, the resulting GGUF can be moved to an unrelated
+directory, renamed, and passed directly to `--model`; the external Whisper file and
+directory are no longer required at runtime.
+
 Streaming:
 
 ```bash
@@ -125,6 +137,14 @@ Offline:
 audiocpp_cli --task asr --family nemotron_asr --model models/nemotron-3.5-asr-streaming-0.6b --backend cuda --audio speech_16k.wav --language en-US --text-out transcript.txt
 ```
 
+Nemotron 3.5 ASR also accepts audio.cpp-native GGUF checkpoints. The converter
+embeds its configuration, processor metadata, and tokenizer by default, so the
+converted directory may contain only `model.gguf`:
+
+```powershell
+audiocpp_gguf.exe --input models\nemotron-3.5-asr-streaming-0.6b\model.safetensors --output models\nemotron-3.5-asr-streaming-0.6b-Q8_0\model.gguf --type q8_0
+```
+
 Streaming:
 
 ```bash
@@ -161,6 +181,16 @@ VibeVoice ASR is an offline ASR model with greedy, sampling, and beam-search dec
 ```bash
 audiocpp_cli --task asr --family vibevoice_asr --model models/VibeVoice-ASR --backend cuda --audio speech_16k.wav --text-out transcript.txt
 ```
+
+VibeVoice-ASR also accepts a standalone audio.cpp-native GGUF. Pass the shard
+index to merge all eight safetensors files while converting:
+
+```powershell
+audiocpp_gguf.exe --input models\VibeVoice-ASR\model.safetensors.index.json --output models\VibeVoice-ASR-Q8_0\model.gguf --type q8_0
+```
+
+Configuration and tokenizer assets are embedded by default, so the output
+directory may contain only `model.gguf`.
 
 Structured output:
 

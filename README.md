@@ -28,6 +28,9 @@ Highlights:
 ## News
 
 > [!IMPORTANT]
+> **2026-07-13:** Five TTS families join the released framework surface: IndexTTS2, Irodori-TTS, MOSS-TTS-Nano, MOSS-TTS-Local, and Supertonic 3. These add expressive Chinese/English TTS, Japanese no-reference/reference/voice-design speech, MOSS local-transformer and nano paths, and very fast preset-voice Supertonic generation.
+
+> [!IMPORTANT]
 > **2026-07-08:** Four new ASR families are now released in the framework: Higgs Audio STT, Hviske ASR, Nemotron ASR, and VibeVoice ASR. Initial model-specific streaming support also lands for VoxCPM2 TTS, Nemotron ASR, and Higgs Audio STT, with server SSE configuration and request examples for streaming speech generation and transcription.
 
 > [!IMPORTANT]
@@ -78,11 +81,12 @@ Current model status in the framework:
 | **vibevoice_asr** | ASR | auto | VibeVoice ASR | **released** |
 | **voxcpm2** | TTS, voice cloning, voice design | ar, da, de, el, en, es, fi, fr, he, hi, id, it, ja, km, ko, lo, ms, my, nl, no, pl, pt, ru, sv, sw, th, tl, tr, vi, zh | VoxCPM2-2B, 48 kHz | **released** |
 | higgs_tts | TTS, voice cloning, expressive speech | 100+ languages | Higgs Audio v3 TTS 4B | testing |
-| index_tts2 | TTS, voice cloning, expressive speech | zh, en | IndexTTS-2 | testing |
-| irodori_tts | TTS, voice cloning, voice design | ja | Irodori-TTS-500M-v3, Irodori-TTS-600M-v3-VoiceDesign | testing |
+| **index_tts2** | TTS, voice cloning, expressive speech | zh, en | IndexTTS-2 | **released** |
+| **irodori_tts** | TTS, voice cloning, voice design | ja | Irodori-TTS-500M-v3, Irodori-TTS-600M-v3-VoiceDesign | **released** |
 | kokoro_tts | TTS | en-us, en-gb | Kokoro-82M | testing |
-| moss_tts | TTS, voice cloning | zh, yue, en, ar, cs, da, nl, fi, fr, de, el, he, hi, hu, it, ja, ko, mk, ms, fa, pl, pt, ro, ru, es, sw, sv, tl, th, tr, vi | MOSS-TTS-Local | testing |
-| supertonic | TTS | en | Supertonic 3 | testing |
+| **moss_tts_nano** | TTS, voice cloning | auto | MOSS-TTS-Nano-100M | **released** |
+| **moss_tts_local** | TTS, voice cloning | auto, optional language hint | MOSS-TTS-Local-Transformer-v1.5 | **released** |
+| **supertonic** | TTS | en, ko, ja, ar, bg, cs, da, de, el, es, et, fi, fr, hi, hr, hu, id, it, lt, lv, nl, pl, pt, ro, ru, sk, sl, sv, tr, uk, vi, na | Supertonic 3 | **released** |
 
 PocketTTS language selection is a model-load option. When the model path points at the PocketTTS root, the loader uses `english` unless you pass `--load-option language=<name>`. Kyutai's normal non-English PocketTTS releases are smaller distilled language models intended for the fast PocketTTS path. The `_24l` variants are larger 24-layer, undistilled preview models that can sound better but are slower. Kyutai currently publishes French only as `french_24l`, not as a normal distilled `french` language directory, so French is not listed as a normal PocketTTS language here.
 
@@ -444,7 +448,11 @@ Recommended top-level install packages:
 | `mel_band_roformer` | Mel-Band RoFormer MLX | **Yes** |
 | `miocodec_25hz_44k_v2` | MioCodec 25Hz 44.1kHz v2 | No |
 | `miotts_1_7b` | MioTTS 1.7B | No |
-| `moss_tts` | MOSS-TTS-Local | No |
+| `moss_audio_tokenizer_nano` | MOSS Audio Tokenizer Nano | No |
+| `moss_audio_tokenizer_v2` | MOSS Audio Tokenizer v2 | No |
+| `moss_tts_nano_100m` | MOSS-TTS-Nano 100M | No |
+| `moss_tts_nano_100m_model` | MOSS-TTS-Nano 100M model subcomponent | No |
+| `moss_tts_local_v1_5` | MOSS-TTS-Local Transformer v1.5 | No |
 | `nemotron_asr` | Nemotron ASR | **Yes** |
 | `omnivoice` | OmniVoice | **Yes** |
 | `parakeet_tdt_0_6b_v3` | Parakeet TDT 0.6B v3 | **Yes** |
@@ -623,13 +631,13 @@ audio.cpp already shows some genuinely exciting wins against the matching Python
   - `vevo2`: **5.03x faster** with **80.11% less wall time**
   - `pocket tts`: **3.68x faster** with **72.80% less wall time**
   - `miotts`: **2.73x faster** with **63.39% less wall time**
-  - `moss tts`: **2.33x faster** with **57.07% less wall time**
+  - `moss_tts_local`: **2.33x faster** with **57.07% less wall time**
   - `qwen3 tts`: **1.83x faster** with **45.34% less wall time**
   - `vibevoice`: **1.40x faster** with **28.75% less wall time**
 - In long-lived-session runs, where the same loaded session serves multiple requests in sequence, the gains stay strong:
   - `pocket tts`: **3.22x faster** with **68.91% less wall time**
   - `qwen3 tts`: **2.74x faster** with **63.47% less wall time**
-  - `moss tts`: **2.66x faster** with **62.35% less wall time**
+  - `moss_tts_local`: **2.66x faster** with **62.35% less wall time**
   - `miotts`: **2.28x faster** with **56.22% less wall time**
   - `vibevoice`: **1.77x faster** with **43.55% less wall time**
   - `vevo2`: **1.75x faster** with **42.72% less wall time**
@@ -659,7 +667,7 @@ For TTS-family models, the measured one-shot RTF is:
 | chatterbox | 9.72 | 2.45 | 0.252 | 3.97x |
 | kokoro tts | 10.15 | 0.64 | 0.063 | 15.90x |
 | miotts | 20.40 | 3.30 | 0.162 | 6.18x |
-| moss tts | 9.60 | 0.97 | 0.101 | 9.91x |
+| moss_tts_local | 9.60 | 0.97 | 0.101 | 9.91x |
 | omnivoice | 9.00 | 1.32 | 0.146 | 6.84x |
 | pocket tts | 8.08 | 0.26 | 0.032 | 31.09x |
 | qwen3 tts | 11.44 | 4.46 | 0.390 | 2.56x |
@@ -667,17 +675,21 @@ For TTS-family models, the measured one-shot RTF is:
 | vibevoice | 11.07 | 5.02 | 0.454 | 2.20x |
 | voxcpm2 | 5.60 | 3.09 | 0.551 | 1.81x |
 
-For long-form TTS tests, each run uses the same 6,026-character, 1,028-word input text (vibevoice uses 106,310 chars, 18,052 words, 4 speakers). The measured RTF is:
+For long-form TTS tests, each run uses the same 6,026-character, 1,028-word input text (vibevoice uses 106,310 chars, 18,052 words, 4 speakers). Rows are CUDA unless marked CPU. The measured RTF is:
 
 | model | audio len (s) | wall time (s) | RTF | x faster than real time |
 |---|---:|---:|---:|---:|
 | chatterbox | 391.24 | 58.57 | 0.150 | 6.68x |
 | kokoro tts | 371.17 | 7.19 | 0.019 | 51.60x |
+| index tts2 | 422.12 | 139.95 | 0.332 | 3.02x |
 | miotts | 399.16 | 66.59 | 0.167 | 5.99x |
-| moss tts | 301.36 | 25.00 | 0.083 | 12.06x |
+| moss_tts_nano | 391.20 | 43.16 | 0.110 | 9.06x |
+| moss_tts_local | 375.44 | 73.84 | 0.197 | 5.08x |
 | omnivoice | 357.00 | 17.77 | 0.050 | 20.09x |
 | pocket tts | 353.12 | 7.30 | 0.021 | 48.40x |
 | qwen3 tts | 327.60 | 72.65 | 0.222 | 4.51x |
+| supertonic | 379.32 | 2.02 | 0.005 | 187.62x |
+| supertonic (CPU) | 379.40 | 61.40 | 0.162 | 6.18x |
 | vevo2 | 457.68 | 52.47 | 0.115 | 8.72x |
 | voxcpm2 | 315.84 | 72.70 | 0.230 | 4.34x |
 | vibevoice | 5615.73 | 1376.84 | 0.245 | 4.08x |
@@ -689,6 +701,59 @@ Some models expose memory-saver session options such as `ace_step.mem_saver=true
 ## Precision/Quantization Support
 
 Many model sessions expose quantization through `--session-option <family>.weight_type=<mode>`, and some families also expose more specific knobs such as `...conv_weight_type`, `...talker_weight_type`, or `...speech_decoder_weight_type`. The exact supported modes are model-specific rather than global.
+
+The framework also has a reusable GGUF tensor source and a streaming converter. The
+container reader is shared by all model families; a family still has to list a `.gguf`
+checkpoint as one of its accepted assets because model configuration and tensor naming
+remain architecture-specific. Qwen3 ASR, Qwen3 Forced Aligner, Qwen3 TTS, Nemotron
+3.5 ASR, VibeVoice-ASR, and Higgs Audio STT currently accept `model.gguf` (including
+`speech_tokenizer/model.gguf` for TTS). The converter recursively embeds sidecar files
+up to 64 MiB by default using binary-safe metadata, including nested tokenizer models,
+and Qwen3 ASR, Nemotron ASR, VibeVoice-ASR, and Higgs Audio STT can load the resulting
+`model.gguf` as a standalone file. Pass `--no-sidecars` when a tensor-only container is desired. A
+`model.safetensors.index.json` is also a first-class tensor source and is merged from
+its routed shards while converting. Exact original tensor ranks are stored separately
+because GGML normally collapses trailing singleton dimensions. Rank-0 safetensors
+scalars are stored physically as one-element GGML tensors while their scalar rank is
+preserved in the exact-shape metadata.
+
+```bash
+build/bin/audiocpp_gguf \
+  --input models/Qwen3-ASR-1.7B-hf/model.safetensors \
+  --output models/Qwen3-ASR-1.7B-hf/model.gguf \
+  --type q8_0
+```
+
+Multi-component checkpoints can be packed into one GGUF with repeated namespaced
+inputs. Existing component loaders can open a namespace through
+`open_tensor_source(path, "component")`, which strips that prefix from the view:
+
+```bash
+build/bin/audiocpp_gguf \
+  --input gpt=models/index-tts2-mlx/gpt.safetensors \
+  --input s2mel=models/index-tts2-mlx/s2mel.safetensors \
+  --input bigvgan=models/index-tts2-mlx/bigvgan/model.safetensors \
+  --root models/index-tts2-mlx \
+  --sidecar models/shared/preprocessor_config.json=preprocessor_config.json \
+  --output models/index-tts2-mlx-GGUF/model.gguf \
+  --type q8_0
+```
+
+`--root` selects the directory whose non-weight sidecars are embedded. Repeat
+`--sidecar source=destination` for required assets outside that root, or to remap an
+asset such as Higgs Audio STT's shared Whisper `preprocessor_config.json` into the
+standalone model root. For Higgs, that external Whisper file is needed only during GGUF
+creation; it is not required when loading the completed standalone GGUF.
+
+Packing is a container feature; it does not by itself wire every model loader to the new
+layout. The packed IndexTTS-2 MLX checkpoint has been conversion-tested, including its
+CAMPPlus rank-0 counters, but the existing IndexTTS-2 runtime still has to open and consume
+the corresponding namespaces before audio.cpp can synthesize directly from that file.
+
+Supported conversion types are `f16`, `q8_0`, `q2_k`, `q3_k`, `q4_k`, `q5_k`, and
+`q6_k`. Quantized GGUF files use mixed precision: projection matrices are quantized,
+while embedding/codebook lookup tables and unsupported shapes retain a backend-safe
+type. If both files exist, Qwen loaders prefer `model.gguf` over `model.safetensors`.
 
 Example:
 
@@ -709,5 +774,7 @@ In practice, lower precision and quantized modes should be treated as model- and
 ## Notes
 
 - The repo supports multiple backends, but backend and model coverage are model-dependent.
-- GGUF model loading is planned, but not supported yet.
+- GGUF is a container, not a universal architecture adapter. Existing llama.cpp or
+  whisper.cpp GGUF files are not automatically compatible unless their tensor names and
+  model metadata are mapped to the audio.cpp family implementation.
 - `Build_xcframework.sh` is outdated; Metal and Apple XCFramework packaging still need to be retested after the framework refactor.

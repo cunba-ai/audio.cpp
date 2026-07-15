@@ -2,7 +2,7 @@
 
 #include "args.h"
 
-#include "engine/framework/audio/wav_reader.h"
+#include "engine/framework/audio/audio_reader.h"
 
 #include <filesystem>
 #include <string>
@@ -36,7 +36,7 @@ void set_option_from_json_field(
 }  // namespace
 
 engine::runtime::AudioBuffer read_audio_buffer(const std::filesystem::path & path) {
-    const auto wav = engine::audio::read_wav_f32(path);
+    const auto wav = engine::audio::read_audio_f32(path);
     return engine::runtime::AudioBuffer{
         wav.sample_rate,
         wav.channels,

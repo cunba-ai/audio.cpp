@@ -203,6 +203,7 @@ add_library(engine_runtime STATIC
     src/framework/tokenizers/sentencepiece.cpp
     src/framework/audio/fft.cpp
     src/framework/audio/activity.cpp
+    src/framework/audio/audio_reader.cpp
     src/framework/audio/chunking.cpp
     src/framework/audio/conversion.cpp
     src/framework/audio/deepfilternet2.cpp
@@ -519,6 +520,7 @@ target_include_directories(engine_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/g
 target_include_directories(engine_runtime PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/external/sentencepiece/src
     ${CMAKE_CURRENT_SOURCE_DIR}/external/llama_tokenizer
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/minimp3
 )
 
 target_link_libraries(engine_runtime PUBLIC ggml)

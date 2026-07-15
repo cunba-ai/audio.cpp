@@ -201,7 +201,7 @@ The SSE stream emits `speech.audio.delta` events with base64 PCM chunks, then `s
 
 ### `POST /v1/audio/transcriptions`
 
-JSON transcription request using a server-local audio path.
+JSON transcription request using a server-local WAV or MP3 audio path.
 
 ```bash
 curl http://127.0.0.1:8080/v1/audio/transcriptions \

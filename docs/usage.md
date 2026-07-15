@@ -25,8 +25,8 @@ audiocpp_cli --task <task> --family <family> --model <model-dir> --backend <back
 | Option | Used by | Meaning |
 |---|---|---|
 | `--text` | generation, TTS, ASR context, alignment transcript | Input text. |
-| `--audio` | generation/editing, ASR, VAD, diarization, separation, conversion, alignment | Input WAV. |
-| `--voice-ref` | voice clone / voice design / some VC paths | Reference voice WAV. |
+| `--audio` | generation/editing, ASR, VAD, diarization, separation, conversion, alignment | Input WAV or MP3. |
+| `--voice-ref` | voice clone / voice design / some VC paths | Reference voice WAV or MP3. |
 | `--language` | language-aware models | Language code. |
 | `--out` | audio-producing models | Output WAV path. |
 | `--out-dir` | multi-output or batch models | Output directory. |

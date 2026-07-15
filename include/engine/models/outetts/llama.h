@@ -43,6 +43,10 @@ public:
         int32_t eos_id,
         int32_t audio_end_id) const;
 
+    // Releases the reusable cached-step graph while keeping model weights
+    // resident. Returns the released KV-cache capacity in tokens.
+    int64_t release_cached_step_graph();
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

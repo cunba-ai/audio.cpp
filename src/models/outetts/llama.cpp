@@ -1,6 +1,8 @@
 #include "engine/models/outetts/llama.h"
 
 #include "engine/framework/core/backend_weight_store.h"
+#include "engine/framework/debug/profiler.h"
+#include "engine/framework/debug/trace.h"
 #include "engine/framework/modules/attention/qwen_causal_decoder.h"
 #include "engine/framework/modules/lookup_modules.h"
 #include "engine/framework/modules/weight_binding.h"
@@ -11,6 +13,7 @@
 #include <ggml.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <numeric>
@@ -280,6 +283,8 @@ public:
         if (buffer_ != nullptr) ggml_backend_buffer_free(buffer_);
     }
 
+    int64_t capacity() const noexcept { return capacity_; }
+
     void import_state(const runtime::TransformerKVState & state) { cache_.import_state(state); }
 
     std::vector<float> run(int32_t token) {
@@ -349,6 +354,8 @@ struct OuteTTSLlamaRuntime::Impl {
     }
 
     PrefillOutput prefill(const std::vector<int32_t> & ids) const {
+        using Clock = std::chrono::steady_clock;
+        const auto total_start = Clock::now();
         const auto & c = assets->config;
         const int64_t steps = static_cast<int64_t>(ids.size());
         // This correctness-first graph uses full-sequence prefill. A cached-step
@@ -404,6 +411,7 @@ struct OuteTTSLlamaRuntime::Impl {
             }
             throw std::runtime_error("failed to allocate OuteTTS Llama graph");
         }
+        const auto build_end = Clock::now();
         const auto position_values = modules::qwen_position_ids(steps);
         const auto mask_values = modules::qwen_causal_prefill_mask_values(1, steps);
         ggml_backend_tensor_set(ids_tensor, ids.data(), 0, ids.size() * sizeof(int32_t));
@@ -412,6 +420,7 @@ struct OuteTTSLlamaRuntime::Impl {
         core::set_backend_threads(backend, threads);
         const auto status = core::compute_backend_graph(backend, graph);
         ggml_backend_synchronize(backend);
+        const auto compute_end = Clock::now();
         if (status != GGML_STATUS_SUCCESS) {
             core::release_backend_graph_resources(backend, graph);
             ggml_gallocr_free(allocator);
@@ -431,9 +440,53 @@ struct OuteTTSLlamaRuntime::Impl {
             ggml_backend_tensor_get(keys[layer], state.key.data(), 0, layer_elements * sizeof(float));
             ggml_backend_tensor_get(values[layer], state.value.data(), 0, layer_elements * sizeof(float));
         }
+        const auto read_end = Clock::now();
         core::release_backend_graph_resources(backend, graph);
         ggml_gallocr_free(allocator);
+        const auto release_end = Clock::now();
+        debug::trace_log_scalar("outetts.llama.prefill.graph_rebuilt", true);
+        debug::trace_log_scalar("outetts.llama.prefill.graph_reused", false);
+        debug::trace_log_scalar("outetts.llama.prefill.tokens", steps);
+        debug::timing_log_scalar(
+            "outetts.llama.prefill.graph_build_ms",
+            debug::elapsed_ms(total_start, build_end));
+        debug::timing_log_scalar(
+            "outetts.llama.prefill.compute_ms",
+            debug::elapsed_ms(build_end, compute_end));
+        debug::timing_log_scalar(
+            "outetts.llama.prefill.read_ms",
+            debug::elapsed_ms(compute_end, read_end));
+        debug::timing_log_scalar(
+            "outetts.llama.prefill.release_ms",
+            debug::elapsed_ms(read_end, release_end));
         return result;
+    }
+
+    CachedStepGraph & ensure_step_graph(int64_t capacity) {
+        const auto build_start = std::chrono::steady_clock::now();
+        const bool rebuilt =
+            step_graph == nullptr || step_graph->capacity() < capacity;
+        if (rebuilt) {
+            step_graph = std::make_unique<CachedStepGraph>(
+                assets->config, weights, *constants, backend, threads, capacity);
+        }
+        debug::trace_log_scalar("outetts.llama.step.graph_rebuilt", rebuilt);
+        debug::trace_log_scalar("outetts.llama.step.graph_reused", !rebuilt);
+        debug::trace_log_scalar(
+            "outetts.llama.step.capacity", step_graph->capacity());
+        debug::timing_log_scalar(
+            "outetts.llama.step.graph_build_ms",
+            rebuilt ? debug::elapsed_ms(build_start) : 0.0);
+        return *step_graph;
+    }
+
+    int64_t release_cached_step_graph() {
+        if (step_graph == nullptr) {
+            return 0;
+        }
+        const int64_t capacity = step_graph->capacity();
+        step_graph.reset();
+        return capacity;
     }
 
     std::shared_ptr<const OuteTTSAssets> assets;
@@ -441,6 +494,7 @@ struct OuteTTSLlamaRuntime::Impl {
     int threads = 1;
     ModelWeights weights;
     std::unique_ptr<common::ConstantTensorCache> constants;
+    std::unique_ptr<CachedStepGraph> step_graph;
 };
 
 OuteTTSLlamaRuntime::OuteTTSLlamaRuntime(
@@ -468,6 +522,7 @@ std::vector<int32_t> OuteTTSLlamaRuntime::generate(
     if (options.max_new_tokens <= 0 || options.repetition_window < 0 || options.repetition_penalty <= 0.0F) {
         throw std::runtime_error("invalid OuteTTS generation options");
     }
+    const auto total_start = std::chrono::steady_clock::now();
     std::vector<int32_t> all = prompt;
     std::vector<int32_t> generated;
     generated.reserve(static_cast<size_t>(options.max_new_tokens));
@@ -477,31 +532,49 @@ std::vector<int32_t> OuteTTSLlamaRuntime::generate(
     const int64_t capacity = std::min<int64_t>(
         impl_->assets->generation.max_length,
         static_cast<int64_t>(prompt.size()) + options.max_new_tokens);
-    CachedStepGraph step(
-        impl_->assets->config,
-        impl_->weights,
-        *impl_->constants,
-        impl_->backend,
-        impl_->threads,
-        capacity);
+    constexpr int64_t kStepGraphCapacityQuantum = 256;
+    const int64_t reusable_capacity = std::min<int64_t>(
+        impl_->assets->generation.max_length,
+        ((capacity + kStepGraphCapacityQuantum - 1) /
+         kStepGraphCapacityQuantum) *
+            kStepGraphCapacityQuantum);
+    auto & step = impl_->ensure_step_graph(reusable_capacity);
     step.import_state(prefill.state);
     std::vector<float> logits = std::move(prefill.logits);
+    double sample_ms = 0.0;
+    double cached_step_compute_ms = 0.0;
     for (int64_t i = 0; i < options.max_new_tokens; ++i) {
         if (static_cast<int64_t>(all.size()) >= impl_->assets->generation.max_length) {
             break;
         }
+        const auto sample_start = std::chrono::steady_clock::now();
         apply_repetition_penalty(
             logits, all, options.repetition_window, options.repetition_penalty);
         const int32_t token = sample_token(
             std::move(logits), sampling_options, rng);
+        sample_ms += debug::elapsed_ms(sample_start);
         generated.push_back(token);
         if (token == eos_id || token == audio_end_id) {
             break;
         }
         all.push_back(token);
+        const auto step_start = std::chrono::steady_clock::now();
         logits = step.run(token);
+        cached_step_compute_ms += debug::elapsed_ms(step_start);
     }
+    debug::trace_log_scalar(
+        "outetts.llama.generated_tokens",
+        static_cast<int64_t>(generated.size()));
+    debug::timing_log_scalar("outetts.llama.sample_ms", sample_ms);
+    debug::timing_log_scalar("outetts.llama.cached_step_compute_ms",
+                             cached_step_compute_ms);
+    debug::timing_log_scalar("outetts.llama.generate_total_ms",
+                             debug::elapsed_ms(total_start));
     return generated;
+}
+
+int64_t OuteTTSLlamaRuntime::release_cached_step_graph() {
+    return impl_->release_cached_step_graph();
 }
 
 }  // namespace engine::models::outetts

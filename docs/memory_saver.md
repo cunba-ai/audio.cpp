@@ -31,6 +31,7 @@ Native/default weights were used for all rows.
 - VoxCPM2 used the OpenAI-compatible offline speech endpoint with a 2048-character voice-design request, `seed=1234`, `max_tokens=512`, `num_inference_steps=10`, and `guidance_scale=2.0`. The default and `mem_saver` WAV outputs were byte-identical.
 - IndexTTS2 used a five-request server sequence with the same seeds and references for default and `mem_saver`: normal text, longer text, longer emotion-text request with a different reference, shorter text, then longer text.
 - Irodori TTS 500M used a five-request server sequence with the same seeds and options for default and `mem_saver`: reference text, longer reference text, longer no-reference emoji/style text, shorter reference text, then longer reference text.
+- OuteTTS 1.0 1B Q8 used a five-request long-lived-session sequence on an RTX 3090: repeated fixed-seed TTS, four-chunk long-form TTS, then repeated fixed-seed cloning with the same reference. The default and `mem_saver` WAV outputs were byte-identical. VRAM is total-device usage with no other CUDA workload; resident VRAM was sampled during a five-second post-sequence hold.
 
 | Model | Mode | Peak VRAM | Resident VRAM | Server wall | Audio | RTF |
 |---|---|---:|---:|---:|---:|---:|
@@ -58,3 +59,5 @@ Native/default weights were used for all rows.
 | Irodori TTS 500M | mem_saver | 11222 MiB | 3570 MiB | 3276.203 ms | 95.4s | 0.0343418 |
 | Irodori TTS 500M 6000-char | default | 18693 MiB | 13367 MiB | 27185.7 ms | 777.92s | 0.0349466 |
 | Irodori TTS 500M 6000-char | mem_saver | 11588 MiB | 3609 MiB | 27828 ms | 777.92s | 0.0357724 |
+| OuteTTS 1.0 1B Q8 | default | 17653 MiB | 294 MiB | 33342.24 ms | 11.424s | 2.918 |
+| OuteTTS 1.0 1B Q8 | mem_saver | 5780 MiB | 294 MiB | 30990.93 ms | 11.424s | 2.712 |

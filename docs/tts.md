@@ -598,10 +598,21 @@ audiocpp_cli --task tts --family outetts \
 | `--request-option min_p=<float>` | float | `0.05` | Minimum probability relative to the most likely token. |
 | `--repetition-penalty` | float | `1.1` | Repetition penalty over the latest 64 tokens. |
 | `--request-option seed=<n>` | integer | native clone: `4099`; quantized clone: `42` | Deterministic sampling seed. The defaults were separately verified for the native and Q8 cloning paths. |
+| `--text-chunk-size` | characters | `2048` | Framework long-form text chunk size. Each chunk is generated and decoded in the same loaded session, then appended to the output WAV. |
+| `--text-chunk-mode` | `default`, `tag_aware`, `japanese`, `endline` | `default` | Framework long-form text chunking mode. |
 | `--reference-text` | text | none | Exact transcript of `--voice-ref`; required for voice cloning. |
 | `--request-option reference_language=<code>` | language code | `en` | Language used by the optional reference aligner. |
 | `--session-option outetts.weight_type=native|f32|f16|bf16|q8_0` | enum | `native` | Language-model weight storage type. For CUDA voice cloning, quantized weights remain compact in the GGUF but are expanded to F32 in VRAM to avoid generation divergence over long reference-codec prompts. Normal TTS and CPU cloning keep the selected type. |
 | `--session-option outetts.aligner_model_path=<path>` | model path | embedded aligner | Optional external Qwen3 Forced Aligner override, required only for safetensors packages and older GGUFs without the embedded aligner. |
+| `--session-option outetts.reference_cache_slots=<n>` | integer | `1` | LRU slots for prepared reference profiles (alignment, DAC codes, and word features). Set `0` to disable reuse. |
+| `--session-option outetts.mem_saver=true|false` | bool | `false` | Release the reusable Llama cached-step graph after each generated chunk and release the aligner runtime after preparing a reference. Model and DAC weights stay resident; later requests rebuild released state. |
+
+With logging enabled, OuteTTS reports framework chunk count, reference-profile
+cache hits/evictions, Llama runtime and step-graph rebuild/reuse, released cache
+capacity, and timings for reference alignment, DAC encode/decode, prompt
+construction, generation, and the complete session request. See
+[OuteTTS validation](outetts_validation.md) for the reproducible long-lived
+session and memory test.
 
 ## Supertonic
 

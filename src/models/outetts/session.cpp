@@ -3,20 +3,73 @@
 #include "engine/framework/audio/fft.h"
 #include "engine/framework/runtime/options.h"
 #include "engine/framework/debug/trace.h"
+#include "engine/framework/text/chunking.h"
 #include "engine/models/qwen3_asr/assets.h"
 #include "engine/models/qwen3_forced_aligner/session.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cmath>
 #include <complex>
+#include <cstring>
 #include <filesystem>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
 
 namespace engine::models::outetts {
 namespace {
+
+using Clock = std::chrono::steady_clock;
+
+constexpr int64_t kDefaultTextChunkSize = 2048;
+constexpr size_t kDefaultReferenceCacheSlots = 1;
+
+uint64_t mix_cache_key(uint64_t key, uint64_t value) {
+  key ^= value;
+  key *= 1099511628211ull;
+  return key;
+}
+
+uint64_t reference_audio_hash(const runtime::AudioBuffer &audio) {
+  uint64_t key = 1469598103934665603ull;
+  key = mix_cache_key(key, static_cast<uint64_t>(audio.sample_rate));
+  key = mix_cache_key(key, static_cast<uint64_t>(audio.channels));
+  key = mix_cache_key(key, static_cast<uint64_t>(audio.samples.size()));
+  for (const float sample : audio.samples) {
+    uint32_t bits = 0;
+    std::memcpy(&bits, &sample, sizeof(bits));
+    key = mix_cache_key(key, static_cast<uint64_t>(bits));
+  }
+  return key;
+}
+
+size_t reference_cache_slots(const runtime::SessionOptions &options) {
+  const int64_t slots = runtime::parse_i64_option(
+                            options.options,
+                            {"outetts.reference_cache_slots",
+                             "reference_cache_slots"})
+                            .value_or(
+                                static_cast<int64_t>(
+                                    kDefaultReferenceCacheSlots));
+  if (slots < 0 ||
+      static_cast<uint64_t>(slots) >
+          static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+    throw std::runtime_error(
+        "outetts.reference_cache_slots must be a non-negative size");
+  }
+  return static_cast<size_t>(slots);
+}
+
+bool mem_saver_from_options(const runtime::SessionOptions &options) {
+  if (const auto value = runtime::find_option(
+          options.options, {"outetts.mem_saver", "mem_saver"})) {
+    return runtime::parse_bool_option(*value, "outetts.mem_saver");
+  }
+  return false;
+}
 
 assets::TensorStorageType requested_weight_type(
     const runtime::SessionOptions &options) {
@@ -312,38 +365,36 @@ make_voice_profile(OuteTTSDacDecoder::EncodedReference encoded,
   return profile;
 }
 
-std::optional<ReferenceAlignment> align_reference(
-    const runtime::SessionOptions &options,
-    const OuteTTSAssets &model_assets,
-    const runtime::AudioBuffer &audio,
-    const std::string &text,
-    const std::string &language) {
+runtime::SessionOptions aligner_session_options(
+    const runtime::SessionOptions &options) {
+  runtime::SessionOptions out;
+  out.backend = options.backend;
+  for (const auto &[key, value] : options.options) {
+    if (key.rfind("qwen3_forced_aligner.", 0) == 0)
+      out.options.emplace(key, value);
+  }
+  return out;
+}
+
+std::shared_ptr<const engine::models::qwen3_asr::Qwen3ASRAssets>
+resolve_aligner_assets(const runtime::SessionOptions &options,
+                       const OuteTTSAssets &model_assets) {
   const auto model_path = runtime::find_option(
       options.options,
       {"outetts.aligner_model_path", "outetts.forced_aligner_model_path"});
-  runtime::SessionOptions aligner_options;
-  aligner_options.backend = options.backend;
-  for (const auto &[key, value] : options.options) {
-    if (key.rfind("qwen3_forced_aligner.", 0) == 0)
-      aligner_options.options.emplace(key, value);
-  }
-  std::shared_ptr<const engine::models::qwen3_asr::Qwen3ASRAssets>
-      aligner_assets;
   if (model_path.has_value()) {
-    aligner_assets = engine::models::qwen3_asr::load_qwen3_asr_assets(
+    return engine::models::qwen3_asr::load_qwen3_asr_assets(
         std::filesystem::path(*model_path), "qwen3_forced_aligner");
-  } else {
-    aligner_assets = model_assets.embedded_aligner;
   }
-  if (aligner_assets == nullptr) {
-    throw std::runtime_error(
-        "OuteTTS voice cloning requires a GGUF with an embedded Qwen3 "
-        "Forced Aligner or --session-option "
-        "outetts.aligner_model_path=<path>");
-  }
-  engine::models::qwen3_forced_aligner::Qwen3ForcedAlignerSession session(
-      {runtime::VoiceTaskKind::Alignment, runtime::RunMode::Offline},
-      std::move(aligner_options), aligner_assets);
+  return model_assets.embedded_aligner;
+}
+
+ReferenceAlignment align_reference(
+    engine::models::qwen3_forced_aligner::Qwen3ForcedAlignerSession &session,
+    const engine::models::qwen3_asr::Qwen3ASRAssets &aligner_assets,
+    const runtime::AudioBuffer &audio,
+    const std::string &text,
+    const std::string &language) {
   runtime::TaskRequest request;
   request.audio_input = audio;
   request.text_input = runtime::Transcript{text, language};
@@ -353,7 +404,7 @@ std::optional<ReferenceAlignment> align_reference(
   if (result.word_timestamps.empty())
     throw std::runtime_error("OuteTTS reference aligner returned no words");
   return ReferenceAlignment{std::move(result.word_timestamps),
-                            aligner_assets->config.sample_rate};
+                            aligner_assets.config.sample_rate};
 }
 
 const runtime::AudioBuffer *
@@ -379,7 +430,9 @@ OuteTTSSession::OuteTTSSession(runtime::TaskSpec task,
            runtime::parse_size_mb_option(options.options,
                                          {"outetts.dac_graph_context_mb"},
                                          1536ull * 1024ull * 1024ull),
-           assets::TensorStorageType::F32) {
+           assets::TensorStorageType::F32),
+      mem_saver_(mem_saver_from_options(options)),
+      reference_profile_cache_(reference_cache_slots(options)) {
   if (assets_ == nullptr)
     throw std::runtime_error("OuteTTS session requires assets");
   if ((task_.task != runtime::VoiceTaskKind::Tts &&
@@ -390,13 +443,22 @@ OuteTTSSession::OuteTTSSession(runtime::TaskSpec task,
   }
 }
 
+OuteTTSSession::~OuteTTSSession() = default;
+
 OuteTTSLlamaRuntime &OuteTTSSession::llama(bool voice_cloning) {
-  auto &runtime_slot = voice_cloning ? clone_llama_ : llama_;
-  if (runtime_slot == nullptr) {
-    const auto storage_type =
-        voice_cloning ? clone_weight_type(options(), *assets_)
-                      : requested_weight_type(options());
-    runtime_slot = std::make_unique<OuteTTSLlamaRuntime>(
+  const auto ensure_start = Clock::now();
+  const auto storage_type =
+      voice_cloning ? clone_weight_type(options(), *assets_)
+                    : requested_weight_type(options());
+  const bool rebuilt =
+      llama_ == nullptr || !llama_storage_type_.has_value() ||
+      *llama_storage_type_ != storage_type;
+  if (rebuilt) {
+    // Keep only one language-model runtime resident. CUDA cloning may require
+    // an F32 runtime for quantized source weights, so switching routes replaces
+    // the previous runtime instead of retaining duplicate weights and graphs.
+    llama_.reset();
+    llama_ = std::make_unique<OuteTTSLlamaRuntime>(
         assets_, options().backend.type, options().backend.device,
         std::max(1, options().backend.threads),
         runtime::parse_size_mb_option(options().options,
@@ -406,8 +468,116 @@ OuteTTSLlamaRuntime &OuteTTSSession::llama(bool voice_cloning) {
                                       {"outetts.constant_context_mb"},
                                       256ull * 1024ull * 1024ull),
         storage_type);
+    llama_storage_type_ = storage_type;
   }
-  return *runtime_slot;
+  debug::trace_log_scalar("outetts.llama.runtime_rebuilt", rebuilt);
+  debug::trace_log_scalar("outetts.llama.runtime_reused", !rebuilt);
+  debug::trace_log_scalar("outetts.llama.clone_route", voice_cloning);
+  debug::timing_log_scalar(
+      "outetts.llama.ensure_runtime_ms",
+      rebuilt ? debug::elapsed_ms(ensure_start) : 0.0);
+  return *llama_;
+}
+
+bool OuteTTSSession::ReferenceProfileCacheKeyEqual::operator()(
+    const ReferenceProfileCacheKey &lhs,
+    const ReferenceProfileCacheKey &rhs) const {
+  return lhs.audio_hash == rhs.audio_hash &&
+         lhs.sample_rate == rhs.sample_rate &&
+         lhs.channels == rhs.channels &&
+         lhs.sample_count == rhs.sample_count && lhs.text == rhs.text &&
+         lhs.language == rhs.language;
+}
+
+OuteTTSVoiceProfile OuteTTSSession::prepare_voice_profile(
+    const runtime::AudioBuffer &audio, const std::string &reference_text,
+    const std::string &language, bool &cache_hit) {
+  const auto total_start = Clock::now();
+  ReferenceProfileCacheKey key{
+      reference_audio_hash(audio), audio.sample_rate, audio.channels,
+      audio.samples.size(), reference_text, language};
+  if (const auto *cached = reference_profile_cache_.find(key)) {
+    cache_hit = true;
+    debug::trace_log_scalar("outetts.reference_cache.hit", true);
+    debug::trace_log_scalar(
+        "outetts.reference_cache.slots",
+        static_cast<int64_t>(reference_profile_cache_.capacity()));
+    debug::trace_log_scalar(
+        "outetts.reference_cache.entries",
+        static_cast<int64_t>(reference_profile_cache_.size()));
+    debug::trace_log_scalar("outetts.reference_cache.evicted", false);
+    debug::timing_log_scalar("outetts.reference.total_ms",
+                             debug::elapsed_ms(total_start));
+    return *cached;
+  }
+
+  cache_hit = false;
+  const bool will_evict =
+      reference_profile_cache_.capacity() > 0 &&
+      reference_profile_cache_.size() >= reference_profile_cache_.capacity();
+  const auto ensure_aligner_start = Clock::now();
+  const bool aligner_built = aligner_session_ == nullptr;
+  if (aligner_built) {
+    if (aligner_assets_ == nullptr) {
+      aligner_assets_ = resolve_aligner_assets(options(), *assets_);
+    }
+    if (aligner_assets_ == nullptr) {
+      throw std::runtime_error(
+          "OuteTTS voice cloning requires a GGUF with an embedded Qwen3 "
+          "Forced Aligner or --session-option "
+          "outetts.aligner_model_path=<path>");
+    }
+    aligner_session_ = std::make_unique<
+        engine::models::qwen3_forced_aligner::Qwen3ForcedAlignerSession>(
+        runtime::TaskSpec{runtime::VoiceTaskKind::Alignment,
+                          runtime::RunMode::Offline},
+        aligner_session_options(options()), aligner_assets_);
+  }
+  debug::trace_log_scalar("outetts.aligner.runtime_rebuilt", aligner_built);
+  debug::trace_log_scalar("outetts.aligner.runtime_reused", !aligner_built);
+  debug::timing_log_scalar(
+      "outetts.aligner.ensure_runtime_ms",
+      aligner_built ? debug::elapsed_ms(ensure_aligner_start) : 0.0);
+
+  const auto align_start = Clock::now();
+  const auto alignment = align_reference(*aligner_session_, *aligner_assets_,
+                                         audio, reference_text, language);
+  debug::timing_log_scalar("outetts.reference.align_ms",
+                           debug::elapsed_ms(align_start));
+
+  const auto encode_start = Clock::now();
+  auto encoded = dac_.encode_reference(audio);
+  debug::timing_log_scalar("outetts.reference.dac_encode_ms",
+                           debug::elapsed_ms(encode_start));
+
+  const auto profile_start = Clock::now();
+  auto profile = make_voice_profile(std::move(encoded), reference_text,
+                                    &alignment);
+  debug::timing_log_scalar("outetts.reference.profile_ms",
+                           debug::elapsed_ms(profile_start));
+  reference_profile_cache_.put(std::move(key), profile);
+
+  debug::trace_log_scalar("outetts.reference_cache.hit", false);
+  debug::trace_log_scalar(
+      "outetts.reference_cache.slots",
+      static_cast<int64_t>(reference_profile_cache_.capacity()));
+  debug::trace_log_scalar(
+      "outetts.reference_cache.entries",
+      static_cast<int64_t>(reference_profile_cache_.size()));
+  debug::trace_log_scalar("outetts.reference_cache.evicted", will_evict);
+  if (mem_saver_) {
+    const auto release_start = Clock::now();
+    aligner_session_.reset();
+    debug::trace_log_scalar("outetts.aligner.runtime_released", true);
+    debug::timing_log_scalar("outetts.aligner.release_ms",
+                             debug::elapsed_ms(release_start));
+  } else {
+    debug::trace_log_scalar("outetts.aligner.runtime_released", false);
+    debug::timing_log_scalar("outetts.aligner.release_ms", 0.0);
+  }
+  debug::timing_log_scalar("outetts.reference.total_ms",
+                           debug::elapsed_ms(total_start));
+  return profile;
 }
 
 std::string OuteTTSSession::family() const { return "outetts"; }
@@ -431,23 +601,24 @@ void OuteTTSSession::prepare(
                                                 !request.text->language.empty()
                                             ? request.text->language
                                             : "en");
-    const auto alignment =
-        align_reference(options(), *assets_, audio, reference_text, language);
-    voice_profile_ = make_voice_profile(
-        dac_.encode_reference(audio), reference_text,
-        alignment.has_value() ? &*alignment : nullptr);
+    bool cache_hit = false;
+    voice_profile_ =
+        prepare_voice_profile(audio, reference_text, language, cache_hit);
+    debug::trace_log_scalar("outetts.prepare.reference_cache_hit", cache_hit);
   }
   mark_prepared();
 }
 
 runtime::TaskResult OuteTTSSession::run(const runtime::TaskRequest &request) {
+  const auto wall_start = Clock::now();
   require_prepared("OuteTTS run");
   if (!request.text_input.has_value() || request.text_input->text.empty()) {
     throw std::runtime_error("OuteTTS requires text input");
   }
   const auto *voice_audio = reference_audio(request);
   std::optional<OuteTTSVoiceProfile> request_profile;
-  if (voice_audio != nullptr && !voice_profile_.has_value()) {
+  bool reference_cache_hit = false;
+  if (voice_audio != nullptr) {
     const auto reference_text =
         runtime::find_option(request.options, {"reference_text"}).value_or("");
     if (reference_text.empty())
@@ -459,12 +630,8 @@ runtime::TaskResult OuteTTSSession::run(const runtime::TaskRequest &request) {
                                                 !request.text_input->language.empty()
                                             ? request.text_input->language
                                             : "en");
-    const auto alignment =
-        align_reference(options(), *assets_, *voice_audio, reference_text,
-                        language);
-    request_profile = make_voice_profile(
-        dac_.encode_reference(*voice_audio), reference_text,
-        alignment.has_value() ? &*alignment : nullptr);
+    request_profile = prepare_voice_profile(
+        *voice_audio, reference_text, language, reference_cache_hit);
   }
   const OuteTTSVoiceProfile *profile =
       request_profile.has_value()
@@ -475,34 +642,107 @@ runtime::TaskResult OuteTTSSession::run(const runtime::TaskRequest &request) {
     throw std::runtime_error(
         "OuteTTS voice cloning requires --voice-ref and --reference-text");
   }
-  const auto prompt =
-      profile != nullptr
-          ? tokenizer_.build_clone_prompt(request.text_input->text, *profile)
-          : tokenizer_.build_prompt(request.text_input->text);
+
+  const int64_t text_chunk_size =
+      engine::text::parse_text_chunk_size_override(request.options)
+          .value_or(kDefaultTextChunkSize);
+  const auto text_chunk_mode =
+      engine::text::parse_text_chunk_mode_override(request.options)
+          .value_or(engine::text::TextChunkMode::Default);
+  const auto chunk_requests = runtime::chunk_text_request(
+      request, text_chunk_size, text_chunk_mode);
+  if (chunk_requests.empty()) {
+    throw std::runtime_error("OuteTTS text chunking produced no requests");
+  }
+  debug::trace_log_scalar("outetts.text_chunk_size", text_chunk_size);
+  debug::trace_log_scalar("outetts.text_chunk_mode",
+                          engine::text::text_chunk_mode_name(text_chunk_mode));
+  debug::trace_log_scalar(
+      "outetts.text_chunk_count",
+      static_cast<int64_t>(chunk_requests.size()));
+  debug::trace_log_scalar("outetts.reference.cache_hit",
+                          reference_cache_hit);
+
   const bool quantized_cloning =
       profile != nullptr && has_quantized_clone_weights(options(), *assets_);
-  auto generate_options = generation_options(
-      request, assets_->generation, profile != nullptr, quantized_cloning);
-  const auto generated = llama(profile != nullptr).generate(
-      prompt, generate_options,
-      tokenizer_.eos_id(), tokenizer_.audio_end_id());
-  std::vector<int32_t> c1;
-  std::vector<int32_t> c2;
-  for (const int32_t token : generated)
-    tokenizer_.append_audio_code(token, c1, c2);
-  const size_t pairs = std::min(c1.size(), c2.size());
-  c1.resize(pairs);
-  c2.resize(pairs);
-  if (pairs == 0) {
-    std::string detail;
-    for (size_t i = 0; i < std::min<size_t>(generated.size(), 12); ++i) {
-      detail += (i == 0 ? "" : ",") + std::to_string(generated[i]);
+
+  runtime::AudioBuffer merged_audio;
+  double prompt_ms = 0.0;
+  double generate_ms = 0.0;
+  double decode_ms = 0.0;
+  double release_ms = 0.0;
+  int64_t generated_tokens = 0;
+  int64_t released_cache_capacity = 0;
+  for (size_t chunk_index = 0; chunk_index < chunk_requests.size();
+       ++chunk_index) {
+    const auto &chunk_request = chunk_requests[chunk_index];
+    const auto prompt_start = Clock::now();
+    const auto prompt =
+        profile != nullptr
+            ? tokenizer_.build_clone_prompt(chunk_request.text_input->text,
+                                            *profile)
+            : tokenizer_.build_prompt(chunk_request.text_input->text);
+    prompt_ms += debug::elapsed_ms(prompt_start);
+
+    auto generate_options =
+        generation_options(chunk_request, assets_->generation,
+                           profile != nullptr, quantized_cloning);
+    const auto generate_start = Clock::now();
+    const auto generated = llama(profile != nullptr).generate(
+        prompt, generate_options, tokenizer_.eos_id(),
+        tokenizer_.audio_end_id());
+    generate_ms += debug::elapsed_ms(generate_start);
+    generated_tokens += static_cast<int64_t>(generated.size());
+
+    std::vector<int32_t> c1;
+    std::vector<int32_t> c2;
+    for (const int32_t token : generated)
+      tokenizer_.append_audio_code(token, c1, c2);
+    const size_t pairs = std::min(c1.size(), c2.size());
+    c1.resize(pairs);
+    c2.resize(pairs);
+    if (pairs == 0) {
+      std::string detail;
+      for (size_t i = 0; i < std::min<size_t>(generated.size(), 12); ++i) {
+        detail += (i == 0 ? "" : ",") + std::to_string(generated[i]);
+      }
+      throw std::runtime_error(
+          "OuteTTS generated no complete DAC code pairs (tokens=" + detail +
+          ")");
     }
-    throw std::runtime_error(
-        "OuteTTS generated no complete DAC code pairs (tokens=" + detail + ")");
+
+    const auto decode_start = Clock::now();
+    runtime::append_audio_buffer(merged_audio, dac_.decode(c1, c2));
+    decode_ms += debug::elapsed_ms(decode_start);
+    debug::trace_log_scalar(
+        "outetts.chunk." + std::to_string(chunk_index) + ".prompt_tokens",
+        static_cast<int64_t>(prompt.size()));
+    debug::trace_log_scalar(
+        "outetts.chunk." + std::to_string(chunk_index) + ".generated_tokens",
+        static_cast<int64_t>(generated.size()));
+    debug::trace_log_scalar(
+        "outetts.chunk." + std::to_string(chunk_index) + ".codec_frames",
+        static_cast<int64_t>(pairs));
+
+    if (mem_saver_) {
+      const auto release_start = Clock::now();
+      released_cache_capacity += llama_->release_cached_step_graph();
+      release_ms += debug::elapsed_ms(release_start);
+    }
   }
+
   runtime::TaskResult result;
-  result.audio_output = dac_.decode(c1, c2);
+  result.audio_output = std::move(merged_audio);
+  debug::trace_log_scalar("outetts.mem_saver", mem_saver_);
+  debug::trace_log_scalar("outetts.generated_tokens", generated_tokens);
+  debug::trace_log_scalar("outetts.llama.step.released_cache_capacity",
+                          released_cache_capacity);
+  debug::timing_log_scalar("outetts.prompt_ms", prompt_ms);
+  debug::timing_log_scalar("outetts.generate_ms", generate_ms);
+  debug::timing_log_scalar("outetts.dac_decode_ms", decode_ms);
+  debug::timing_log_scalar("outetts.llama.step.release_ms", release_ms);
+  debug::timing_log_scalar("session.wall_ms",
+                           debug::elapsed_ms(wall_start));
   return result;
 }
 

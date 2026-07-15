@@ -71,6 +71,10 @@ public:
          "Transcript matching the --voice-ref audio for voice cloning."},
         {"reference_language", "code",
          "Language code used to align the reference transcript; default en."},
+        {"text_chunk_size", "n",
+         "Framework long-form text chunk size; default 2048 characters."},
+        {"text_chunk_mode", "default|tag_aware|japanese|endline",
+         "Framework long-form text chunking mode."},
     };
     out.cli.session_options = {
         {"outetts.weight_type", "native|f32|f16|bf16|q8_0",
@@ -87,6 +91,12 @@ public:
         {"outetts.aligner_model_path", "path",
          "Optional Qwen3 Forced Aligner override. Cloning automatically uses "
          "the aligner embedded in a standalone OuteTTS GGUF when present."},
+        {"outetts.reference_cache_slots", "n",
+         "Prepared reference-profile cache slots; default 1, set 0 to "
+         "disable."},
+        {"outetts.mem_saver", "true|false",
+         "Release cached-step and aligner runtime state after use; default "
+         "false."},
     };
     out.discovered_configs = runtime::discover_named_assets_from_package_spec(
         request.model_path, spec_path(),

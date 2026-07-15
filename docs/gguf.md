@@ -210,17 +210,20 @@ Compatibility summary:
 
 Compatibility with older binaries:
 
+`After PR #53` refers to tag `release-0.3-gguf-v2`, commit
+`bf1ac678758aee4caafa7bb25fc0e6db9c25228f`.
+
 | Build | GGUF package | Runtime context | Result |
 |---|---|---|---|
 | Before PR #53 (`14e9258`) | Legacy GGUF without embedded spec | Repo checkout or external `model_specs` visible | Pass |
 | Before PR #53 (`14e9258`) | New standalone GGUF | Repo checkout or external `model_specs` visible | Pass |
-| After PR #53 (`2bd3d93`), normal build | Legacy GGUF without embedded spec | Repo checkout or external `model_specs` visible | Pass |
-| After PR #53 (`2bd3d93`), normal build | New standalone GGUF | Repo checkout or external `model_specs` visible | Pass |
+| After PR #53 (`release-0.3-gguf-v2`), normal build | Legacy GGUF without embedded spec | Repo checkout or external `model_specs` visible | Pass |
+| After PR #53 (`release-0.3-gguf-v2`), normal build | New standalone GGUF | Repo checkout or external `model_specs` visible | Pass |
 | Before PR #53 (`14e9258`) | Legacy GGUF without embedded spec | No `model_specs` visible | Fail |
 | Before PR #53 (`14e9258`) | New standalone GGUF | No `model_specs` visible | Fail |
-| After PR #53 (`2bd3d93`), normal build | Legacy GGUF without embedded spec | No `model_specs` visible | Fail; use `--model-spec-override`, a deployment build, or external specs |
-| After PR #53 (`2bd3d93`), normal build | New standalone GGUF | No `model_specs` visible | Pass |
-| After PR #53 (`2bd3d93`), deployment build | Legacy GGUF without embedded spec | No `model_specs` visible | Pass through compiled package specs |
+| After PR #53 (`release-0.3-gguf-v2`), normal build | Legacy GGUF without embedded spec | No `model_specs` visible | Fail; use `--model-spec-override`, a deployment build, or external specs |
+| After PR #53 (`release-0.3-gguf-v2`), normal build | New standalone GGUF | No `model_specs` visible | Pass |
+| After PR #53 (`release-0.3-gguf-v2`), deployment build | Legacy GGUF without embedded spec | No `model_specs` visible | Pass through compiled package specs |
 
 ## Type Notes
 

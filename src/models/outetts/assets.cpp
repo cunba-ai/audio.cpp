@@ -11,10 +11,6 @@ namespace engine::models::outetts {
 namespace json = engine::io::json;
 namespace {
 
-std::filesystem::path spec_path() {
-  return assets::default_model_package_spec_path("outetts");
-}
-
 OuteTTSConfig parse_config(const assets::ResourceBundle &resources) {
   const auto root = resources.parse_json("config");
   if (json::require_string(root, "model_type") != "llama") {
@@ -114,8 +110,8 @@ std::shared_ptr<const engine::models::qwen3_asr::Qwen3ASRAssets>
 load_embedded_aligner(const assets::ResourceBundle &resources) {
   if (!resources.has_file("aligner_config"))
     return nullptr;
-  for (const char *id : {"aligner_generation_config",
-                         "aligner_tokenizer_config"}) {
+  for (const char *id :
+       {"aligner_generation_config", "aligner_tokenizer_config"}) {
     if (!resources.has_file(id)) {
       throw std::runtime_error(
           std::string("OuteTTS embedded aligner is missing resource: ") + id);
@@ -156,26 +152,26 @@ load_embedded_aligner(const assets::ResourceBundle &resources) {
   add_optional("vocab", "aligner_vocab");
   add_optional("merges", "aligner_merges");
   add_optional("tokenizer_json", "aligner_tokenizer_json");
-  aligner.add_tensor_source("weights", resources.require_file("aligner_weights"),
-                            "aligner_weights");
-  return engine::models::qwen3_asr::load_qwen3_asr_assets(
-      std::move(aligner));
+  aligner.add_tensor_source(
+      "weights", resources.require_file("aligner_weights"), "aligner_weights");
+  return engine::models::qwen3_asr::load_qwen3_asr_assets(std::move(aligner));
 }
 
 } // namespace
 
 std::shared_ptr<const OuteTTSAssets>
 load_outetts_assets(const std::filesystem::path &model_path) {
-  auto out = std::make_shared<OuteTTSAssets>();
-  out->resources =
-      assets::load_resource_bundle_from_package_spec(model_path, spec_path());
-  out->config = parse_config(out->resources);
-  out->generation = parse_generation(out->resources);
-  out->model_weights = out->resources.open_tensor_source("model_weights");
-  out->dac_weights = out->resources.open_tensor_source("dac_weights");
-  out->embedded_aligner = load_embedded_aligner(out->resources);
-  validate_anchors(*out);
-  return out;
+  auto resources = assets::load_resource_bundle_from_package_spec(
+      model_path, assets::default_model_package_spec_path("outetts"));
+  OuteTTSAssets model_assets;
+  model_assets.config = parse_config(resources);
+  model_assets.generation = parse_generation(resources);
+  model_assets.model_weights = resources.open_tensor_source("model_weights");
+  model_assets.dac_weights = resources.open_tensor_source("dac_weights");
+  model_assets.embedded_aligner = load_embedded_aligner(resources);
+  model_assets.resources = std::move(resources);
+  validate_anchors(model_assets);
+  return std::make_shared<OuteTTSAssets>(std::move(model_assets));
 }
 
 } // namespace engine::models::outetts

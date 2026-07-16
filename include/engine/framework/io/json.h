@@ -69,7 +69,9 @@ private:
 };
 
 Value parse(std::string_view text);
+Value parse_jsonc(std::string_view text);
 Value parse_file(const std::filesystem::path & path);
+Value parse_jsonc_file(const std::filesystem::path & path);
 std::string stringify(const Value & value);
 std::string stringify_number(double value);
 std::string stringify_string(std::string_view value);

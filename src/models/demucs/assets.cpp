@@ -13,8 +13,8 @@ namespace {
 HTDemucsManifest parse_package_manifest(const assets::ResourceBundle & resources) {
     const auto manifest = resources.parse_json("manifest");
     HTDemucsManifest out;
-    out.model_type = manifest.require("model_type").as_string();
-    out.name = manifest.require("name").as_string();
+    out.model_type = json::require_string(manifest, "model_type");
+    out.name = json::require_string(manifest, "name");
 
     if (out.model_type == "demucs_single") {
         (void) manifest.require("model");
@@ -31,59 +31,57 @@ HTDemucsManifest parse_package_manifest(const assets::ResourceBundle & resources
 HTDemucsConfig parse_config(const assets::ResourceBundle & resources) {
     const auto root = resources.parse_json("submodel_config");
     HTDemucsConfig config;
-    config.class_name = root.require("class_name").as_string();
+    config.class_name = json::require_string(root, "class_name");
     if (config.class_name != "HTDemucs") {
         throw std::runtime_error("Only HTDemucs class_name is supported, got: " + config.class_name);
     }
-    config.signature = root.require("signature").as_string();
-    config.checkpoint_file = root.require("checkpoint_file").as_string();
-    for (const auto & item : root.require("sources").as_array()) {
-        config.sources.push_back(item.as_string());
-    }
-    config.audio_channels = root.require("audio_channels").as_i64();
-    config.sample_rate = root.require("samplerate").as_i64();
-    config.segment_seconds = root.require("segment").as_f32();
+    config.signature = json::require_string(root, "signature");
+    config.checkpoint_file = json::require_string(root, "checkpoint_file");
+    config.sources = json::require_string_array(root, "sources");
+    config.audio_channels = json::require_i64(root, "audio_channels");
+    config.sample_rate = json::require_i64(root, "samplerate");
+    config.segment_seconds = json::require_f32(root, "segment");
 
     const auto & kwargs = root.require("kwargs");
-    config.channels = kwargs.require("channels").as_i64();
-    config.growth = kwargs.require("growth").as_i64();
-    config.n_fft = kwargs.require("nfft").as_i64();
+    config.channels = json::require_i64(kwargs, "channels");
+    config.growth = json::require_i64(kwargs, "growth");
+    config.n_fft = json::require_i64(kwargs, "nfft");
     config.hop_length = config.n_fft / 4;
-    config.wiener_iters = kwargs.require("wiener_iters").as_i64();
-    config.wiener_residual = kwargs.require("wiener_residual").as_bool();
-    config.cac = kwargs.require("cac").as_bool();
-    config.depth = kwargs.require("depth").as_i64();
-    config.rewrite = kwargs.require("rewrite").as_bool();
-    config.multi_freqs_depth = kwargs.require("multi_freqs_depth").as_i64();
-    config.freq_emb_scale = kwargs.require("freq_emb").as_f32();
-    config.embedding_scale = kwargs.require("emb_scale").as_f32();
-    config.embedding_smooth = kwargs.require("emb_smooth").as_bool();
-    config.kernel_size = kwargs.require("kernel_size").as_i64();
-    config.stride = kwargs.require("stride").as_i64();
-    config.time_stride = kwargs.require("time_stride").as_i64();
-    config.context = kwargs.require("context").as_i64();
-    config.context_enc = kwargs.require("context_enc").as_i64();
-    config.norm_starts = kwargs.require("norm_starts").as_i64();
-    config.norm_groups = kwargs.require("norm_groups").as_i64();
-    config.dconv_mode = kwargs.require("dconv_mode").as_i64();
-    config.dconv_depth = kwargs.require("dconv_depth").as_i64();
-    config.dconv_comp = kwargs.require("dconv_comp").as_i64();
-    config.dconv_init = kwargs.require("dconv_init").as_f32();
-    config.bottom_channels = kwargs.require("bottom_channels").as_i64();
-    config.transformer_layers = kwargs.require("t_layers").as_i64();
-    config.transformer_hidden_scale = kwargs.require("t_hidden_scale").as_f32();
-    config.transformer_heads = kwargs.require("t_heads").as_i64();
-    config.transformer_dropout = kwargs.require("t_dropout").as_f32();
-    config.transformer_layer_scale = kwargs.require("t_layer_scale").as_bool();
-    config.transformer_gelu = kwargs.require("t_gelu").as_bool();
-    config.transformer_norm_in_group = kwargs.require("t_norm_in_group").as_bool();
-    config.transformer_group_norm = kwargs.require("t_group_norm").as_bool();
-    config.transformer_norm_in = kwargs.require("t_norm_in").as_bool();
-    config.transformer_norm_first = kwargs.require("t_norm_first").as_bool();
-    config.transformer_norm_out = kwargs.require("t_norm_out").as_bool();
-    config.transformer_cross_first = kwargs.require("t_cross_first").as_bool();
-    config.transformer_max_period = kwargs.require("t_max_period").as_f32();
-    config.transformer_weight_pos_embed = kwargs.require("t_weight_pos_embed").as_f32();
+    config.wiener_iters = json::require_i64(kwargs, "wiener_iters");
+    config.wiener_residual = json::require_bool(kwargs, "wiener_residual");
+    config.cac = json::require_bool(kwargs, "cac");
+    config.depth = json::require_i64(kwargs, "depth");
+    config.rewrite = json::require_bool(kwargs, "rewrite");
+    config.multi_freqs_depth = json::require_i64(kwargs, "multi_freqs_depth");
+    config.freq_emb_scale = json::require_f32(kwargs, "freq_emb");
+    config.embedding_scale = json::require_f32(kwargs, "emb_scale");
+    config.embedding_smooth = json::require_bool(kwargs, "emb_smooth");
+    config.kernel_size = json::require_i64(kwargs, "kernel_size");
+    config.stride = json::require_i64(kwargs, "stride");
+    config.time_stride = json::require_i64(kwargs, "time_stride");
+    config.context = json::require_i64(kwargs, "context");
+    config.context_enc = json::require_i64(kwargs, "context_enc");
+    config.norm_starts = json::require_i64(kwargs, "norm_starts");
+    config.norm_groups = json::require_i64(kwargs, "norm_groups");
+    config.dconv_mode = json::require_i64(kwargs, "dconv_mode");
+    config.dconv_depth = json::require_i64(kwargs, "dconv_depth");
+    config.dconv_comp = json::require_i64(kwargs, "dconv_comp");
+    config.dconv_init = json::require_f32(kwargs, "dconv_init");
+    config.bottom_channels = json::require_i64(kwargs, "bottom_channels");
+    config.transformer_layers = json::require_i64(kwargs, "t_layers");
+    config.transformer_hidden_scale = json::require_f32(kwargs, "t_hidden_scale");
+    config.transformer_heads = json::require_i64(kwargs, "t_heads");
+    config.transformer_dropout = json::require_f32(kwargs, "t_dropout");
+    config.transformer_layer_scale = json::require_bool(kwargs, "t_layer_scale");
+    config.transformer_gelu = json::require_bool(kwargs, "t_gelu");
+    config.transformer_norm_in_group = json::require_bool(kwargs, "t_norm_in_group");
+    config.transformer_group_norm = json::require_bool(kwargs, "t_group_norm");
+    config.transformer_norm_in = json::require_bool(kwargs, "t_norm_in");
+    config.transformer_norm_first = json::require_bool(kwargs, "t_norm_first");
+    config.transformer_norm_out = json::require_bool(kwargs, "t_norm_out");
+    config.transformer_cross_first = json::require_bool(kwargs, "t_cross_first");
+    config.transformer_max_period = json::require_f32(kwargs, "t_max_period");
+    config.transformer_weight_pos_embed = json::require_f32(kwargs, "t_weight_pos_embed");
 
     if (kwargs.require("channels_time").is_null() == false) {
         throw std::runtime_error("HTDemucs channels_time != null is not supported yet");
@@ -91,16 +89,16 @@ HTDemucsConfig parse_config(const assets::ResourceBundle & resources) {
     if (!kwargs.require("multi_freqs").as_array().empty()) {
         throw std::runtime_error("HTDemucs multi_freqs is not supported yet");
     }
-    if (kwargs.require("t_emb").as_string() != "sin") {
+    if (json::require_string(kwargs, "t_emb") != "sin") {
         throw std::runtime_error("HTDemucs only supports t_emb=sin");
     }
     if (config.transformer_norm_in_group || config.transformer_group_norm) {
         throw std::runtime_error("HTDemucs native runtime currently supports only layer-norm transformer checkpoints");
     }
-    if (kwargs.require("t_sin_random_shift").as_i64() != 0) {
+    if (json::require_i64(kwargs, "t_sin_random_shift") != 0) {
         throw std::runtime_error("HTDemucs only supports t_sin_random_shift=0");
     }
-    if (kwargs.require("t_sparse_self_attn").as_bool() || kwargs.require("t_sparse_cross_attn").as_bool()) {
+    if (json::require_bool(kwargs, "t_sparse_self_attn") || json::require_bool(kwargs, "t_sparse_cross_attn")) {
         throw std::runtime_error("HTDemucs sparse attention is not supported");
     }
     if (!config.cac) {

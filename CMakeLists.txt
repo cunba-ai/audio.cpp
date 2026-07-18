@@ -356,6 +356,15 @@ add_library(engine_runtime STATIC
     src/models/higgs_audio_stt/postprocess.cpp
     src/models/higgs_audio_stt/session.cpp
     src/models/higgs_audio_stt/loader.cpp
+    src/models/higgs_tts/ar.cpp
+    src/models/higgs_tts/assets.cpp
+    src/models/higgs_tts/codec.cpp
+    src/models/higgs_tts/codebooks.cpp
+    src/models/higgs_tts/generator.cpp
+    src/models/higgs_tts/loader.cpp
+    src/models/higgs_tts/sampler.cpp
+    src/models/higgs_tts/session.cpp
+    src/models/higgs_tts/tokenizer_text.cpp
     src/models/irodori_tts/assets.cpp
     src/models/irodori_tts/codec.cpp
     src/models/irodori_tts/condition_encoder.cpp

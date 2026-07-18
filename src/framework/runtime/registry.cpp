@@ -5,7 +5,6 @@
 #include "engine/framework/io/config.h"
 #include "engine/framework/io/filesystem.h"
 // Development registry entries from Share/AudioCPP that are not present in this release tree yet:
-// #include "engine/models/higgs_tts/loader.h"
 // #include "engine/models/kokoro_tts/loader.h"
 // #include "engine/models/parakeet_tdt/loader.h"
 #include "engine/models/ace_step/loader.h"
@@ -14,6 +13,7 @@
 #include "engine/models/demucs/loader.h"
 #include "engine/models/heartmula/loader.h"
 #include "engine/models/higgs_audio_stt/loader.h"
+#include "engine/models/higgs_tts/loader.h"
 #include "engine/models/hviske_asr/loader.h"
 #include "engine/models/index_tts2/loader.h"
 #include "engine/models/irodori_tts/loader.h"
@@ -226,7 +226,6 @@ ModelRegistry make_default_registry(const std::optional<std::filesystem::path> &
     const std::vector<std::shared_ptr<IVoiceModelLoader>> available_loaders = {
         // Development registry entries from Share/AudioCPP that are not present in this release tree yet:
         // engine::models::kokoro_tts::make_kokoro_tts_loader(),
-        // engine::models::higgs_tts::make_higgs_tts_loader(),
         // engine::models::parakeet_tdt::make_parakeet_tdt_loader(),
         engine::models::ace_step::make_ace_step_loader(),
         engine::models::demucs::make_htdemucs_loader(),
@@ -241,6 +240,7 @@ ModelRegistry make_default_registry(const std::optional<std::filesystem::path> &
         engine::models::vibevoice_asr::make_vibevoice_asr_loader(),
         engine::models::heartmula::make_heartmula_loader(),
         engine::models::higgs_audio_stt::make_higgs_audio_stt_loader(),
+        engine::models::higgs_tts::make_higgs_tts_loader(),
         engine::models::hviske_asr::make_hviske_asr_loader(),
         engine::models::irodori_tts::make_irodori_tts_loader(),
         engine::models::nemotron_asr::make_nemotron_asr_loader(),

@@ -24,6 +24,30 @@ enum class QwenDecoderStaticCacheUpdateMode {
     DirectSetRows,
 };
 
+enum class QwenDecoderQKVLayout {
+    Separate,
+    PackedQKV,
+};
+
+struct QwenDecoderActivationCastPolicy {
+    bool enabled = false;
+    ggml_type type = GGML_TYPE_BF16;
+    bool after_input_norm = false;
+    bool after_qkv_projection = false;
+    bool after_qk_norm = false;
+    bool after_rope = false;
+    bool after_static_cache_update = false;
+    bool after_attention = false;
+    bool after_context_transpose = false;
+    bool after_attention_output = false;
+    bool after_residual = false;
+    bool after_ffn_norm = false;
+    bool after_mlp_projection = false;
+    bool after_mlp_silu = false;
+    bool after_mlp_mul = false;
+    bool after_output = false;
+};
+
 struct QwenDecoderAttentionPolicy {
     QwenDecoderAttentionMode prefill_mode = QwenDecoderAttentionMode::ManualRepeat;
     QwenDecoderAttentionMode static_mode = QwenDecoderAttentionMode::FlashGrouped;
@@ -51,7 +75,9 @@ struct QwenDecoderLayerConfig {
     int rope_type = GGML_ROPE_TYPE_NEOX;
     ggml_prec attention_precision = GGML_PREC_F32;
     ggml_prec projection_precision = GGML_PREC_DEFAULT;
+    QwenDecoderQKVLayout qkv_layout = QwenDecoderQKVLayout::Separate;
     bool use_qk_norm = true;
+    QwenDecoderActivationCastPolicy activation_cast;
     QwenDecoderRuntimePolicy runtime;
 };
 
@@ -124,7 +150,9 @@ struct QwenDecoderStackConfig {
     int rope_type = GGML_ROPE_TYPE_NEOX;
     ggml_prec attention_precision = GGML_PREC_F32;
     ggml_prec projection_precision = GGML_PREC_DEFAULT;
+    QwenDecoderQKVLayout qkv_layout = QwenDecoderQKVLayout::Separate;
     bool use_qk_norm = true;
+    QwenDecoderActivationCastPolicy activation_cast;
     QwenDecoderRuntimePolicy runtime;
 };
 

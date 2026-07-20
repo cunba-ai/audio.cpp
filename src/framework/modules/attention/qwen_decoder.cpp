@@ -373,6 +373,9 @@ core::TensorValue build_mlp(
                             config.projection_precision,
                         })
                         .build(ctx, gated, require_linear(weights.down_proj, false, "QwenMLPWeights.down_proj"));
+        if (config.activation_cast.enabled && config.activation_cast.after_mlp_projection) {
+            down = activation_cast(ctx, down, config.activation_cast);
+        }
         return down;
     }
 
@@ -746,8 +749,6 @@ QwenDecoderLayerOutputs QwenDecoderLayerModule::build_with_static_cache_tail(
                config_.runtime.attention.static_mode == QwenDecoderAttentionMode::ManualRepeatThenGroupedQuery) {
         k_heads = repeat_kv_heads(ctx, k_heads, kv_repeats);
         v_heads = repeat_kv_heads(ctx, v_heads, kv_repeats);
-        k_heads = core::wrap_tensor(ggml_cont(ctx.ggml, k_heads.tensor), k_heads.shape, k_heads.type);
-        v_heads = core::wrap_tensor(ggml_cont(ctx.ggml, v_heads.tensor), v_heads.shape, v_heads.type);
         context = attention_from_heads(ctx, q_heads, k_heads, v_heads, dim, attention_mask);
     } else if (config_.runtime.attention.static_mode == QwenDecoderAttentionMode::FlashGroupedViewKV) {
         context = flash_attention_from_grouped_heads_view_kv(

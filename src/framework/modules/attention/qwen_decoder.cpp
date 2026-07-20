@@ -337,7 +337,11 @@ core::TensorValue build_mlp(
     core::TensorValue gate;
     core::TensorValue up;
     std::optional<core::TensorValue> packed_gate_up;
-    if (weights.gate_up_proj.has_value()) {
+    const auto mlp_mode = config.runtime.mlp.mode;
+    if (mlp_mode == QwenDecoderMLPMode::PackedGateUp) {
+        if (!weights.gate_up_proj.has_value()) {
+            throw std::runtime_error("QwenMLPWeights.gate_up_proj is required for packed gate/up mode");
+        }
         auto gate_up = LinearModule(
                            {
                                config.hidden_size,
@@ -376,7 +380,7 @@ core::TensorValue build_mlp(
          !config.activation_cast.after_mlp_silu &&
          !config.activation_cast.after_mlp_mul);
     core::TensorValue gated;
-    if (can_use_fused_swiglu && packed_gate_up.has_value()) {
+    if (can_use_fused_swiglu && mlp_mode == QwenDecoderMLPMode::PackedGateUp) {
         gated = core::wrap_tensor(
             ggml_swiglu(ctx.ggml, packed_gate_up->tensor),
             core::TensorShape::from_dims({
@@ -385,7 +389,7 @@ core::TensorValue build_mlp(
                 config.intermediate_size,
             }),
             packed_gate_up->type);
-    } else if (can_use_fused_swiglu) {
+    } else if (can_use_fused_swiglu && mlp_mode == QwenDecoderMLPMode::FusedSwiGLU) {
         gated = core::wrap_tensor(
             ggml_swiglu_split(ctx.ggml, gate.tensor, up.tensor),
             gate.shape,
@@ -518,6 +522,7 @@ QwenDecoderLayerOutputs QwenDecoderLayerModule::build(
     } else if (attention_mask.has_value() &&
                (config_.runtime.attention.prefill_mode == QwenDecoderAttentionMode::FlashGrouped ||
                 (prefix_key.has_value() &&
+                 config_.runtime.attention.prefix_mode == QwenDecoderPrefixAttentionMode::FlashWithPrefix &&
                  config_.runtime.attention.prefill_mode == QwenDecoderAttentionMode::FlashGroupedViewKV))) {
         q_heads = core::wrap_tensor(ggml_cont(ctx.ggml, q_heads.tensor), q_heads.shape, q_heads.type);
         auto k_heads = TransposeModule({{0, 2, 1, 3}, all_k.shape.rank}).build(ctx, all_k);
@@ -644,7 +649,11 @@ QwenDecoderLayerOutputs QwenDecoderLayerModule::build_with_static_cache_tail(
         if (!cache_slot.has_value()) {
             throw std::runtime_error("Qwen decoder direct static-cache update requires cache_slot");
         }
-        const FastKVSetRowsModule set_rows;
+        const FastKVSetRowsModule set_rows({
+            config_.runtime.static_cache.set_rows_mode == QwenDecoderStaticCacheSetRowsMode::BackendViewOptimized
+                ? FastKVSetRowsMode::BackendViewOptimized
+                : FastKVSetRowsMode::Exact,
+        });
         attention_key_cache = set_rows.build(ctx, cache_key, k, *cache_slot);
         attention_value_cache = set_rows.build(ctx, cache_value, v, *cache_slot);
         if (config_.activation_cast.enabled && config_.activation_cast.after_static_cache_update) {

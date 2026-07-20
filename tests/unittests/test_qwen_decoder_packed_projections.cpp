@@ -124,6 +124,9 @@ LayerResult run_layer(bool packed) {
         config.qkv_layout = packed
             ? engine::modules::QwenDecoderQKVLayout::PackedQKV
             : engine::modules::QwenDecoderQKVLayout::Separate;
+        config.runtime.mlp.mode = packed
+            ? engine::modules::QwenDecoderMLPMode::PackedGateUp
+            : engine::modules::QwenDecoderMLPMode::Exact;
         config.use_qk_norm = false;
         config.runtime.attention.prefill_mode = engine::modules::QwenDecoderAttentionMode::ManualRepeat;
 
@@ -250,7 +253,9 @@ void test_f16_kv_set_rows() {
             ctx,
             GGML_TYPE_I64,
             engine::core::TensorShape::from_dims({1}));
-        const auto output = engine::modules::FastKVSetRowsModule{}.build(ctx, cache, row, row_index);
+        const auto output = engine::modules::FastKVSetRowsModule({
+            engine::modules::FastKVSetRowsMode::BackendViewOptimized,
+        }).build(ctx, cache, row, row_index);
 
         ggml_cgraph * graph = ggml_new_graph_custom(ggml, kGraphNodes, false);
         ggml_build_forward_expand(graph, output.tensor);
@@ -313,7 +318,9 @@ void test_f16_kv_set_rows_batched() {
             ctx,
             GGML_TYPE_I64,
             engine::core::TensorShape::from_dims({2}));
-        const auto output = engine::modules::FastKVSetRowsModule{}.build(ctx, cache, rows, row_indices);
+        const auto output = engine::modules::FastKVSetRowsModule({
+            engine::modules::FastKVSetRowsMode::BackendViewOptimized,
+        }).build(ctx, cache, rows, row_indices);
 
         ggml_cgraph * graph = ggml_new_graph_custom(ggml, kGraphNodes, false);
         ggml_build_forward_expand(graph, output.tensor);
@@ -447,6 +454,9 @@ void test_higgs_decode_graph_exposes_cuda_fast_paths() {
             engine::modules::QwenDecoderAttentionMode::FlashGroupedViewKV;
         config.runtime.static_cache.update_mode =
             engine::modules::QwenDecoderStaticCacheUpdateMode::DirectSetRows;
+        config.runtime.static_cache.set_rows_mode =
+            engine::modules::QwenDecoderStaticCacheSetRowsMode::BackendViewOptimized;
+        config.runtime.mlp.mode = engine::modules::QwenDecoderMLPMode::PackedGateUp;
 
         ggml_cgraph * graph = ggml_new_graph_custom(ggml, kGraphNodes, false);
         const auto outputs = engine::modules::QwenDecoderLayerModule(config).build_with_static_cache_tail(

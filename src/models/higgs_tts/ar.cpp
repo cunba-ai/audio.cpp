@@ -55,7 +55,10 @@ modules::QwenDecoderStackConfig make_higgs_qwen_stack_config(const HiggsTextConf
     out.use_qk_norm = true;
     out.runtime.attention.prefill_mode = modules::QwenDecoderAttentionMode::FlashGroupedViewKV;
     out.runtime.attention.static_mode = modules::QwenDecoderAttentionMode::FlashGroupedViewKV;
+    out.runtime.attention.prefix_mode = modules::QwenDecoderPrefixAttentionMode::FlashWithPrefix;
     out.runtime.static_cache.update_mode = modules::QwenDecoderStaticCacheUpdateMode::DirectSetRows;
+    out.runtime.static_cache.set_rows_mode = modules::QwenDecoderStaticCacheSetRowsMode::BackendViewOptimized;
+    out.runtime.mlp.mode = modules::QwenDecoderMLPMode::PackedGateUp;
     return out;
 }
 

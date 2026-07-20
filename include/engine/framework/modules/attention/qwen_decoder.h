@@ -24,9 +24,25 @@ enum class QwenDecoderStaticCacheUpdateMode {
     DirectSetRows,
 };
 
+enum class QwenDecoderStaticCacheSetRowsMode {
+    Exact,
+    BackendViewOptimized,
+};
+
 enum class QwenDecoderQKVLayout {
     Separate,
     PackedQKV,
+};
+
+enum class QwenDecoderMLPMode {
+    Exact,
+    FusedSwiGLU,
+    PackedGateUp,
+};
+
+enum class QwenDecoderPrefixAttentionMode {
+    Exact,
+    FlashWithPrefix,
 };
 
 enum class QwenDecoderPositionEncoding {
@@ -55,16 +71,23 @@ struct QwenDecoderActivationCastPolicy {
 struct QwenDecoderAttentionPolicy {
     QwenDecoderAttentionMode prefill_mode = QwenDecoderAttentionMode::ManualRepeat;
     QwenDecoderAttentionMode static_mode = QwenDecoderAttentionMode::FlashGrouped;
+    QwenDecoderPrefixAttentionMode prefix_mode = QwenDecoderPrefixAttentionMode::Exact;
     int64_t grouped_query_min_steps = 0;
 };
 
 struct QwenDecoderStaticCachePolicy {
     QwenDecoderStaticCacheUpdateMode update_mode = QwenDecoderStaticCacheUpdateMode::ScratchTail;
+    QwenDecoderStaticCacheSetRowsMode set_rows_mode = QwenDecoderStaticCacheSetRowsMode::Exact;
+};
+
+struct QwenDecoderMLPPolicy {
+    QwenDecoderMLPMode mode = QwenDecoderMLPMode::Exact;
 };
 
 struct QwenDecoderRuntimePolicy {
     QwenDecoderAttentionPolicy attention;
     QwenDecoderStaticCachePolicy static_cache;
+    QwenDecoderMLPPolicy mlp;
 };
 
 struct QwenDecoderLayerConfig {

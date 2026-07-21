@@ -9,25 +9,37 @@
     let
       supportedSystems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
-      nixpkgsFor = forAllSystems (system: import nixpkgs { 
+      pkgs = forAllSystems (system: import nixpkgs { 
         inherit system; 
-        config.allowUnfree = true;
+      });
+      pkgsCuda = forAllSystems (system: import nixpkgs { 
+        inherit system; 
         config.cudaSupport = true;
+        config.allowUnfreePredicate = p:
+          builtins.all (
+            license:
+            license.free
+            || builtins.elem license.shortName [
+              "CUDA EULA"
+              "cuDNN EULA"
+              "cuSPARSELt EULA"
+            ]
+          ) (p.meta.licenses or (nixpkgs.lib.toList (p.meta.license or [])));
       });
     in
     {
       packages = forAllSystems (system:
         let
-          pkgs = nixpkgsFor.${system};
-          # Python environment for model_manager.py
-          myPython = pkgs.python3.withPackages (ps: with ps; [
-            torch
-            safetensors
-            pyyaml
-          ]);
-
           # A function to build audio.cpp with any set of features
-          mkAudioCpp = { cudaSupport ? false, vulkanSupport ? false, metalSupport ? pkgs.stdenv.isDarwin }: 
+          mkAudioCpp = { pkgs, cudaSupport ? false, vulkanSupport ? false, metalSupport ? pkgs.stdenv.isDarwin }: 
+            let
+              # Python environment for model_manager.py
+              myPython = pkgs.python3.withPackages (ps: with ps; [
+                (if cudaSupport then ps.torchWithCuda else if vulkanSupport then ps.torchWithVulkan else ps.torch)
+                ps.safetensors
+                ps.pyyaml
+              ]);
+            in
             pkgs.stdenv.mkDerivation {
               pname = "audio.cpp";
               version = self.shortRev or self.dirtyShortRev or "dirty";
@@ -38,11 +50,9 @@
                 cmake
                 ninja
                 pkg-config
-                makeWrapper
               ] ++ pkgs.lib.optional cudaSupport pkgs.cudaPackages.cuda_nvcc;
 
               buildInputs = with pkgs; [
-                libunwind
                 myPython
               ] ++ pkgs.lib.optionals vulkanSupport [
                 vulkan-headers
@@ -53,10 +63,7 @@
               ] ++ pkgs.lib.optionals cudaSupport [
                 pkgs.cudaPackages.cudatoolkit
               ] ++ pkgs.lib.optionals metalSupport [
-                darwin.apple_sdk.frameworks.Metal
-                darwin.apple_sdk.frameworks.Foundation
-                darwin.apple_sdk.frameworks.MetalPerformanceShaders
-                darwin.apple_sdk.frameworks.Accelerate
+                pkgs.apple-sdk_14
               ];
 
               cmakeFlags = [
@@ -72,8 +79,8 @@
 
                 mkdir -p $out/bin
                 
-                # Find and copy the built C++ executables
-                find . -type f -executable \( -name "audiocpp_cli" -o -name "audiocpp_server" -o -name "audiocpp_gguf" \) -exec cp {} $out/bin/ \;
+                # Copy the built C++ executables directly from the bin directory
+                cp bin/audiocpp_cli bin/audiocpp_server bin/audiocpp_gguf $out/bin/
 
                 # Install the python model manager script
                 cp $src/tools/model_manager.py $out/bin/audiocpp_model_manager
@@ -96,23 +103,26 @@
         in
         {
           # Expose specific backend variants
-          cpu = mkAudioCpp { cudaSupport = false; vulkanSupport = false; metalSupport = false; };
-          vulkan = mkAudioCpp { vulkanSupport = true; cudaSupport = false; metalSupport = false; };
-          cuda = mkAudioCpp { cudaSupport = true; vulkanSupport = false; metalSupport = false; };
-          metal = mkAudioCpp { metalSupport = true; cudaSupport = false; vulkanSupport = false; };
-
+          cpu = mkAudioCpp { pkgs = pkgs.${system}; cudaSupport = false; vulkanSupport = false; metalSupport = false; };
+          vulkan = mkAudioCpp { pkgs = pkgs.${system}; vulkanSupport = true; cudaSupport = false; metalSupport = false; };
+        } // pkgs.${system}.lib.optionalAttrs pkgs.${system}.stdenv.isLinux {
+          cuda = mkAudioCpp { pkgs = pkgsCuda.${system}; cudaSupport = true; vulkanSupport = false; metalSupport = false; };
+        } // pkgs.${system}.lib.optionalAttrs pkgs.${system}.stdenv.isDarwin {
+          metal = mkAudioCpp { pkgs = pkgs.${system}; metalSupport = true; cudaSupport = false; vulkanSupport = false; };
+        } // {
           # Automatically select best default for the current platform
-          default = if pkgs.stdenv.isDarwin then self.packages.${system}.metal else self.packages.${system}.vulkan;
+          default = if pkgs.${system}.stdenv.isDarwin then self.packages.${system}.metal else self.packages.${system}.vulkan;
         }
       );
 
       devShells = forAllSystems (system:
-        let
-          pkgs = nixpkgsFor.${system};
-        in
         {
-          default = pkgs.mkShell {
+          default = pkgs.${system}.mkShell {
             inputsFrom = [ self.packages.${system}.default ];
+          };
+        } // pkgs.${system}.lib.optionalAttrs pkgs.${system}.stdenv.isLinux {
+          cuda = pkgsCuda.${system}.mkShell {
+            inputsFrom = [ self.packages.${system}.cuda ];
           };
         }
       );

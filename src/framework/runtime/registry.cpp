@@ -4,7 +4,9 @@
 #include "engine/framework/assets/model_package.h"
 #include "engine/framework/io/config.h"
 #include "engine/framework/io/filesystem.h"
-// Development registry entries from Share/AudioCPP that are not present in this release tree yet:
+// Parked loaders (sources not in this release tree). When commenting these out,
+// also mark matching ModelPackage entries UnsupportedSource — see
+// docs/maintainers/loader_and_catalog.md and tools/check_loader_catalog_sync.py.
 // #include "engine/models/kokoro_tts/loader.h"
 // #include "engine/models/parakeet_tdt/loader.h"
 #include "engine/models/ace_step/loader.h"
@@ -30,6 +32,7 @@
 #include "engine/models/qwen3_asr/loader.h"
 #include "engine/models/qwen3_forced_aligner/loader.h"
 #include "engine/models/qwen3_tts/loader.h"
+#include "engine/community_models/vietneu_tts/loader.h"
 #include "engine/models/roformer/loader.h"
 #include "engine/models/silero_vad/session.h"
 #include "engine/models/seed_vc/loader.h"
@@ -242,7 +245,8 @@ ModelRegistry make_registry_from_config(
 
 ModelRegistry make_default_registry(const std::optional<std::filesystem::path> & config_path) {
     const std::vector<std::shared_ptr<IVoiceModelLoader>> available_loaders = {
-        // Development registry entries from Share/AudioCPP that are not present in this release tree yet:
+        // Parked loaders — keep catalog packages UnsupportedSource while these stay commented.
+        // See docs/maintainers/loader_and_catalog.md.
         // engine::models::kokoro_tts::make_kokoro_tts_loader(),
         // engine::models::parakeet_tdt::make_parakeet_tdt_loader(),
         engine::models::ace_step::make_ace_step_loader(),
@@ -270,6 +274,7 @@ ModelRegistry make_default_registry(const std::optional<std::filesystem::path> &
         engine::models::qwen3_asr::make_qwen3_asr_loader(),
         engine::models::index_tts2::make_index_tts2_loader(),
         engine::models::qwen3_tts::make_qwen3_tts_loader(),
+        engine::models::vietneu_tts::make_vietneu_tts_loader(),
         engine::models::sortformer_diar::make_sortformer_diar_loader(),
         engine::models::stable_audio::make_stable_audio_loader(),
         engine::models::supertonic::make_supertonic_loader(),

@@ -220,7 +220,14 @@ CATALOG: tuple[ModelPackage, ...] = (
         id="kokoro_82m_bf16",
         display_name="Kokoro 82M bf16",
         target_directory="Kokoro-82M-bf16",
-        source=SnapshotSource(repo_id="mlx-community/Kokoro-82M-bf16"),
+        source=UnsupportedSource(
+            reason=(
+                "kokoro_tts loader is not registered in this release tree yet "
+                "(commented out in src/framework/runtime/registry.cpp). "
+                "Re-enable the loader, add model_specs/kokoro_tts.json, then "
+                "restore a SnapshotSource here."
+            ),
+        ),
         required_files=("config.json", "kokoro-v1_0.safetensors", "voices/af_heart.safetensors"),
         family="kokoro_tts",
         tasks=("tts",),
@@ -502,6 +509,23 @@ CATALOG: tuple[ModelPackage, ...] = (
         ),
     ),
     ModelPackage(
+        id="vietneu_tts_v3_turbo",
+        display_name="VieNeu-TTS v3 Turbo Base",
+        target_directory="VieNeu-TTS-v3-Turbo",
+        source=SnapshotSource(repo_id="phuocnguyen90/VieNeu-TTS-v3-Turbo-GGUF"),
+        required_files=(
+            "config.json",
+            "model.gguf",
+            "speech_tokenizer/config.json",
+            "tokenizer_config.json",
+            "tokenizer.json",
+            "special_tokens_map.json",
+        ),
+        description="Installs VieNeu-TTS v3 Turbo GGUF model and configuration sidecars for C++ inference.",
+        family="vietneu_tts",
+        tasks=("tts",),
+    ),
+    ModelPackage(
         id="qwen3_tts_1_7b_base",
         display_name="Qwen3 TTS 12Hz 1.7B Base",
         target_directory="Qwen3-TTS-12Hz-1.7B-Base",
@@ -585,8 +609,17 @@ CATALOG: tuple[ModelPackage, ...] = (
         id="parakeet_tdt_0_6b_v3",
         display_name="Parakeet TDT 0.6B v3",
         target_directory="parakeet-tdt-0.6b-v3",
-        source=SnapshotSource(repo_id="nvidia/parakeet-tdt-0.6b-v3"),
+        source=UnsupportedSource(
+            reason=(
+                "parakeet_tdt loader is not registered in this release tree yet "
+                "(commented out in src/framework/runtime/registry.cpp). "
+                "Re-enable the loader, add model_specs/parakeet_tdt.json, then "
+                "restore a SnapshotSource here."
+            ),
+        ),
         required_files=("config.json", "model.safetensors", "processor_config.json", "tokenizer.json"),
+        family="parakeet_tdt",
+        tasks=("asr",),
     ),
     ModelPackage(
         id="pocket_tts",

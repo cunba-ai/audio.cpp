@@ -320,12 +320,16 @@ core::TensorValue causal_conv_transpose1d(
 }
 
 core::TensorValue l2_normalize_last(core::ModuleBuildContext & ctx, const core::TensorValue & input) {
-    auto squared = modules::MulModule{}.build(ctx, input, input);
+    const bool materialize_input = ctx.backend_type == core::BackendType::Metal;
+    const auto normalized_input = materialize_input
+        ? core::ensure_backend_addressable_layout(ctx, input)
+        : input;
+    auto squared = modules::MulModule{}.build(ctx, normalized_input, normalized_input);
     auto sum = modules::ReduceSumModule({static_cast<int>(input.shape.rank - 1)}).build(ctx, squared);
     auto shifted = core::wrap_tensor(ggml_scale_bias(ctx.ggml, sum.tensor, 1.0F, 1.0e-12F), sum.shape, GGML_TYPE_F32);
     auto denom = modules::SqrtModule{}.build(ctx, shifted);
-    auto repeated = modules::RepeatModule({input.shape}).build(ctx, denom);
-    return core::wrap_tensor(ggml_div(ctx.ggml, input.tensor, repeated.tensor), input.shape, GGML_TYPE_F32);
+    auto repeated = modules::RepeatModule({normalized_input.shape}).build(ctx, denom);
+    return core::wrap_tensor(ggml_div(ctx.ggml, normalized_input.tensor, repeated.tensor), normalized_input.shape, GGML_TYPE_F32);
 }
 
 core::TensorValue build_mlp(

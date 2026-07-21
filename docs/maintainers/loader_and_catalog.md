@@ -24,23 +24,9 @@ For every **installable, standalone** `ModelPackage`:
 Dependency / subcomponent packages (`standalone=False`, with
 `parent_package_id`) do **not** need their own loader.
 
-Bundled loaders without a downloadable package (today: `silero_vad`) are allowed.
-If you add another, list it in `BUNDLED_LOADERS_WITHOUT_PACKAGE` inside
+Registered loaders that ship as bundled assets (no downloadable package) are
+allowed. List them in `BUNDLED_LOADERS_WITHOUT_PACKAGE` inside
 `tools/check_loader_catalog_sync.py`.
-
-## Verified parked families (this release tree)
-
-These registry stubs are **commented out**, and the loader sources are **not
-present** under `src/models/` / `include/engine/models/` (or community paths):
-
-| Registry stub | Catalog package(s) | Notes |
-|---|---|---|
-| `kokoro_tts` | `kokoro_82m_bf16` | Warm-bench tests remain; no loader sources |
-| `higgs_tts` | `higgs_audio_v3_tts_4b` (`family=higgs_audio_tts`) | Name mismatch: pick one id when re-enabling |
-| `parakeet_tdt` | `parakeet_tdt_0_6b_v3` | Warm-bench / docs may remain |
-
-Matching catalog entries must use `UnsupportedSource` until the loader code is
-actually merged and registered.
 
 If a loader is not ready for this release tree:
 
@@ -50,6 +36,9 @@ If a loader is not ready for this release tree:
 3. Mark the README package row **Unavailable**.
 
 Do **not** leave a live `SnapshotSource` for a commented-out loader.
+
+Optional catalog↔registry family renames for parked stubs go in
+`PARKED_FAMILY_ALIASES` in the sync check (collapse to one id when re-enabling).
 
 ## Checklist: adding a model family
 
@@ -62,8 +51,7 @@ Do **not** leave a live `SnapshotSource` for a commented-out loader.
 3. Add `model_specs/<family>.json` when the family needs package-spec discovery.
 4. Add one or more `ModelPackage` entries in `tools/model_manager.py`:
    - Set `family="<family>"` explicitly when the package id does not strip cleanly
-     to the loader id (examples: `kokoro_82m_bf16` → `kokoro_tts`,
-     `vietneu_tts_v3_turbo` → `vietneu_tts`).
+     to the loader id.
    - Set `tasks=(...)` when defaults would be ambiguous.
    - Use `standalone=False` + `parent_package_id` for tokenizers / subcomponents.
 5. Update README supported-model / package tables.
@@ -99,9 +87,8 @@ Pick **one** family string and use it everywhere:
 - `ModelPackage.family`
 - README “Supported Models” family column
 
-Avoid mismatches such as catalog `higgs_audio_tts` with a registry stub named
-`higgs_tts`. Integrators match on the string; aliases are not implied (the sync
-check only knows the small parked alias map for currently parked stubs).
+Integrators match on the string; aliases are not implied unless listed in
+`PARKED_FAMILY_ALIASES` for currently parked stubs.
 
 ## CI
 

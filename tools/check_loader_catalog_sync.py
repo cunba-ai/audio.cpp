@@ -1,21 +1,9 @@
 #!/usr/bin/env python3
 """Fail when installable catalog packages reference unregistered loaders.
 
-The machine-readable contract from PR #74 makes package ``family`` and
-``audiocpp_cli --list-loaders`` authoritative for integrators. Catalog entries
-must not advertise installable packages for families that are commented out or
-missing from ``src/framework/runtime/registry.cpp``.
-
-Verified release-tree facts this check encodes:
-
-- Parked registry stubs currently include ``kokoro_tts``, ``higgs_tts``, and
-  ``parakeet_tdt``. Those loader *sources are not in this tree* (no
-  ``src/models/<family>`` / matching include); only comments + warm-bench tests
-  remain. Matching catalog packages must be ``UnsupportedSource``.
-- ``higgs_audio_tts`` is treated as an alias of the parked ``higgs_tts`` stub
-  until one family id is chosen when the loader returns.
-- ``silero_vad`` is a registered loader without a model_manager package (bundled
-  asset path). That is allowed; see docs/maintainers/loader_and_catalog.md.
+``model_manager list --json`` family fields and ``audiocpp_cli --list-loaders``
+must stay aligned. Installable standalone packages cannot advertise a family
+that is missing or commented out in ``src/framework/runtime/registry.cpp``.
 
 See docs/maintainers/loader_and_catalog.md.
 """
@@ -35,8 +23,7 @@ README_PATH = REPO_ROOT / "README.md"
 
 _LOADER_CALL_RE = re.compile(r"\bmake_([a-z0-9_]+)_loader\s*\(\s*\)")
 
-# Catalog family strings that refer to a differently named parked registry stub.
-# When re-enabling a loader, collapse these to one id everywhere.
+# Optional: catalog family strings that map to a differently named parked stub.
 PARKED_FAMILY_ALIASES: dict[str, set[str]] = {
     "higgs_tts": {"higgs_audio_tts"},
 }
@@ -161,7 +148,6 @@ def check_catalog(
             )
 
         if explicit is None and inferred not in active and family in active:
-            # Should be unreachable if family comes from inference, but keep tight.
             errors.append(
                 f"{package_id}: set ModelPackage.family explicitly "
                 f"(id inference '{inferred}' is not a registered loader)"
@@ -173,7 +159,6 @@ def check_catalog(
                 f"is not registered in registry.cpp{parked_hint(family, commented)}"
             )
         elif family_is_parked(family, commented):
-            # Active and commented with same name should not happen; still guard.
             errors.append(
                 f"{package_id}: family '{family}' is both active and commented in registry.cpp"
             )
@@ -250,37 +235,40 @@ def check_readme(
 class _SyncCheckSelfTests(unittest.TestCase):
     def test_parse_active_and_commented(self) -> None:
         text = """
-        // make_kokoro_tts_loader(),
-        make_pocket_tts_loader(),
-        make_higgs_tts_loader(), // trailing comment still active
+        // make_family_a_loader(),
+        make_family_b_loader(),
+        make_family_c_loader(), // trailing comment still active
         """
         active, commented = parse_registry_loaders(text)
-        self.assertEqual(active, {"pocket_tts", "higgs_tts"})
-        self.assertEqual(commented, {"kokoro_tts"})
+        self.assertEqual(active, {"family_b", "family_c"})
+        self.assertEqual(commented, {"family_a"})
 
     def test_parked_alias_blocks_installable(self) -> None:
         class Pkg:
             def __init__(self, family=None):
                 self.family = family
 
+        stub = next(iter(PARKED_FAMILY_ALIASES))
+        alias = next(iter(PARKED_FAMILY_ALIASES[stub]))
+
         def payload(package):
             return {
-                "id": "higgs_audio_v3_tts_4b",
-                "family": "higgs_audio_tts",
+                "id": "pkg_alias",
+                "family": alias,
                 "installable": True,
                 "standalone": True,
                 "source": {"kind": "huggingface_snapshot"},
             }
 
         errors, _ = check_catalog(
-            active={"pocket_tts"},
-            commented={"higgs_tts"},
-            packages=[Pkg(family="higgs_audio_tts")],
+            active={"family_b"},
+            commented={stub},
+            packages=[Pkg(family=alias)],
             package_payload=payload,
-            default_family_from_package_id=lambda _pid: "higgs_audio_v3_tts",
+            default_family_from_package_id=lambda _pid: "pkg_alias",
         )
-        self.assertTrue(any("higgs_audio_tts" in e for e in errors))
-        self.assertTrue(any("parked loader 'higgs_tts'" in e for e in errors))
+        self.assertTrue(any(alias in e for e in errors))
+        self.assertTrue(any(f"parked loader '{stub}'" in e for e in errors))
 
 
 def main() -> int:

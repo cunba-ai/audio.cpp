@@ -220,9 +220,6 @@ CATALOG: tuple[ModelPackage, ...] = (
         id="kokoro_82m_bf16",
         display_name="Kokoro 82M bf16",
         target_directory="Kokoro-82M-bf16",
-        # Loader is not registered in this release tree (see registry.cpp and
-        # docs/maintainers/loader_and_catalog.md). Keep the id for docs/history
-        # but do not advertise an installable HF snapshot.
         source=UnsupportedSource(
             reason=(
                 "kokoro_tts loader is not registered in this release tree yet "
@@ -849,9 +846,6 @@ CATALOG: tuple[ModelPackage, ...] = (
         id="higgs_audio_v3_tts_4b",
         display_name="Higgs Audio v3 TTS 4B",
         target_directory="higgs-audio-v3-tts-4b",
-        # Catalog family must match the registered loader family id. The parked
-        # registry stub currently uses higgs_tts; when re-enabling, pick one
-        # family string and use it in registry, model_specs, and this field.
         source=UnsupportedSource(
             reason=(
                 "higgs_tts / higgs_audio_tts loader is not registered in this "

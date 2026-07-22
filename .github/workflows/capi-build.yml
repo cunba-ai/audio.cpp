@@ -86,6 +86,7 @@ jobs:
         uses: ggml-org/ccache-action@v1.2.21
         with:
           key: capi-linux-${{ matrix.config.artifact_suffix }}
+          update-package-index: true
 
       - name: Configure
         run: |

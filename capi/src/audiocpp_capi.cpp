@@ -92,8 +92,8 @@ static engine::runtime::VoiceTaskKind map_task(int task) {
 
 audiocpp_model_t *audiocpp_load_model(
     const char *model_path,
-    int task,
     const char *family_hint,
+    int task,
     int backend,
     int device_id,
     int n_threads,

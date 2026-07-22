@@ -689,6 +689,18 @@ if (AUDIOCPP_BUILD_CAPI)
     endif()
 endif()
 
+# ──────────────────────────────────────────────────────────────────────────
+# C API static-link test (links engine_runtime directly, like the CLI, to
+# isolate capi logic from DLL/ABI issues)
+# ──────────────────────────────────────────────────────────────────────────
+add_executable(capi_test tests/test_capi_load.c capi/src/audiocpp_capi.cpp)
+set_target_properties(capi_test PROPERTIES CXX_VISIBILITY_PRESET default)
+target_include_directories(capi_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/capi/include")
+target_link_libraries(capi_test PRIVATE engine_runtime ggml)
+if (ENGINE_ENABLE_OPENMP)
+    target_link_libraries(capi_test PRIVATE OpenMP::OpenMP_CXX)
+endif()
+
 add_executable(audiocpp_cli
     app/cli/main.cpp
     app/cli/args.cpp

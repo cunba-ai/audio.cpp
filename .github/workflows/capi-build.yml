@@ -17,43 +17,35 @@ on:
         required: false
         type: string
 
-# Cancel superseded runs on the same ref
 concurrency:
   group: capi-build-${{ github.ref }}-${{ github.event.inputs.release_tag || 'none' }}
   cancel-in-progress: true
 
 jobs:
   # ════════════════════════════════════════════════════════════════════════
-  # Linux: CUDA + CPU, ROCm + CPU, SYCL + CPU
+  # Linux: CUDA+CPU, ROCm+CPU, SYCL+CPU
   # ════════════════════════════════════════════════════════════════════════
   linux:
     name: Linux ${{ matrix.config.name }}
-    runs-on: ${{ matrix.config.runner }}
+    runs-on: ubuntu-22.04
+    container:
+      image: ${{ matrix.config.container }}
     strategy:
       fail-fast: false
       matrix:
         config:
           - name: CUDA-CPU
-            runner: ubuntu-24.04
-            container: nvidia/cuda:12.4.1-devel-ubuntu24.04
-            cmake_extra: '-DENGINE_ENABLE_CUDA=ON -DENGINE_ENABLE_NATIVE_CPU=OFF'
+            container: nvidia/cuda:12.4.1-devel-ubuntu22.04
+            cmake_extra: '-DENGINE_ENABLE_CUDA=ON'
             artifact_suffix: linux-cuda-cpu
-            strip: true
           - name: ROCm-CPU
-            runner: ubuntu-24.04
-            container: rocm/dev-ubuntu-24.04:6.2
-            cmake_extra: '-DGGML_HIPBLAS=ON -DENGINE_ENABLE_NATIVE_CPU=OFF'
+            container: rocm/dev-ubuntu-22.04:6.2
+            cmake_extra: '-DGGML_HIP=ON'
             artifact_suffix: linux-rocm-cpu
-            strip: true
           - name: SYCL-CPU
-            runner: ubuntu-24.04
-            container: intel/oneapi-basekit:2024.2-devel-ubuntu24.04
-            cmake_extra: '-DGGML_SYCL=ON -DGGML_SYCL_TARGET=INTEL_XMX -DENGINE_ENABLE_NATIVE_CPU=OFF'
+            container: intel/oneapi-basekit:2024.2.1-0-devel-ubuntu22.04
+            cmake_extra: '-DGGML_SYCL=ON -DGGML_SYCL_TARGET=INTEL_XMX'
             artifact_suffix: linux-sycl-cpu
-            strip: true
-
-    container:
-      image: ${{ matrix.config.container }}
 
     steps:
       - name: Checkout
@@ -71,6 +63,7 @@ jobs:
             -DBUILD_SHARED_LIBS=ON \
             -DAUDIOCPP_BUILD_CAPI=ON \
             -DENGINE_BUILD_EXAMPLES=OFF \
+            -DENGINE_ENABLE_OPENMP=OFF \
             ${{ matrix.config.cmake_extra }}
 
       - name: Build audiocpp shared library
@@ -80,17 +73,10 @@ jobs:
       - name: Collect artifacts
         run: |
           mkdir -p artifacts
-          cp build/libaudiocpp.so artifacts/ 2>/dev/null || true
-          cp build/bin/libaudiocpp.so artifacts/ 2>/dev/null || true
-          # Find the .so wherever CMake put it
-          find build -name "libaudiocpp.so" -exec cp {} artifacts/ \; 2>/dev/null
+          find build -name "libaudiocpp.so" -exec cp {} artifacts/ \;
           cp capi/include/audiocpp.h artifacts/
-          ls -la artifacts/
-
-      - name: Strip (optional)
-        if: matrix.config.strip
-        run: |
           strip artifacts/libaudiocpp.so 2>/dev/null || true
+          ls -la artifacts/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -99,7 +85,7 @@ jobs:
           path: artifacts/
 
   # ════════════════════════════════════════════════════════════════════════
-  # Windows: CUDA + CPU, ROCm (HIP) + CPU, SYCL + CPU
+  # Windows: CUDA+CPU, ROCm(HIP)+CPU, SYCL+CPU
   # ════════════════════════════════════════════════════════════════════════
   windows:
     name: Windows ${{ matrix.config.name }}
@@ -109,97 +95,101 @@ jobs:
       matrix:
         config:
           - name: CUDA-CPU
-            cmake_extra: '-DENGINE_ENABLE_CUDA=ON -DGGML_CUDA=ON -DCMAKE_CUDA_COMPILER="C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/bin/nvcc.exe"'
+            setup: cuda
             artifact_suffix: windows-cuda-cpu
-            setup: ''
           - name: ROCm-CPU
-            cmake_extra: '-DGGML_HIP=ON -DCMAKE_HIP_COMPILER="C:/Program Files/AMD/ROCm/6.3/bin/clang.exe" -DAMDGPU_TARGETS=gfx1100'
+            setup: rocm
             artifact_suffix: windows-rocm-cpu
-            setup: 'rocm'
           - name: SYCL-CPU
-            cmake_extra: '-DGGML_SYCL=ON -DGGML_SYCL_TARGET=INTEL_XMX -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx'
+            setup: sycl
             artifact_suffix: windows-sycl-cpu
-            setup: 'sycl'
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup CUDA
-        if: matrix.config.setup == ''
+      - name: Setup CUDA Toolkit
+        if: matrix.config.setup == 'cuda'
         uses: Jimver/cuda-toolkit@v0.2.21
         with:
           cuda: '12.6.2'
           method: 'network'
-          sub-packages: '["nvcc", "cudart", "cublas", "cufft"]'
 
-      - name: Setup ROCm (AMD HIP SDK)
+      - name: Setup ROCm HIP SDK
         if: matrix.config.setup == 'rocm'
         shell: pwsh
         run: |
-          Write-Host "Installing AMD HIP SDK for Windows..."
-          # Download AMD HIP SDK installer
-          $installerUrl = "https://download.amd.com/developer/eula/ROCm/ROCm-6.3/AMD-Software-PRO-Edition-25.3-WindowsSvr2022-WSH.exe"
-          $installerPath = "$env:TEMP\amdrocm.exe"
-          Write-Host "Downloading from $installerUrl (this may take a while)..."
-          Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing
-          # Silent install
-          Start-Process -FilePath $installerPath -ArgumentList "-install -log $env:TEMP\rocm_install.log" -Wait -NoNewWindow
-          # Verify
-          if (Test-Path "C:/Program Files/AMD/ROCm/6.3/bin/clang.exe") {
-            Write-Host "ROCm HIP SDK installed successfully"
-          } else {
-            Write-Host "WARNING: ROCm clang not found at expected path, searching..."
-            Get-ChildItem -Path "C:/Program Files/AMD" -Recurse -Filter "clang.exe" -ErrorAction SilentlyContinue | Select-Object -First 3 -ExpandProperty FullName
-          }
+          Write-Host "Installing AMD HIP SDK..."
+          $url = "https://download.amd.com/developer/eula/ROCm/ROCm-6.3/AMD-Software-PRO-Edition-25.3-WindowsSvr2022-WSH.exe"
+          Invoke-WebRequest -Uri $url -OutFile "$env:TEMP\amdrocm.exe" -UseBasicParsing
+          Start-Process -FilePath "$env:TEMP\amdrocm.exe" -ArgumentList "-install -log $env:TEMP\rocm.log" -Wait -NoNewWindow
+          # Add HIP to PATH
+          $hipPath = "C:\Program Files\AMD\ROCm\6.3\bin"
+          if (Test-Path $hipPath) { echo "$hipPath" >> $env:GITHUB_PATH }
 
-      - name: Setup SYCL (Intel oneAPI)
+      - name: Setup Intel oneAPI
         if: matrix.config.setup == 'sycl'
         shell: pwsh
         run: |
           Write-Host "Installing Intel oneAPI Base Toolkit..."
-          # Download oneAPI installer
-          $installerUrl = "https://registrationcenter-download.intel.com/akdlm/IRC_NAS/b0bacc74-0863-4f96-844e-8a2ff5db5e96/w_BaseKit_p_2025.0.0.841_offline.exe"
-          $installerPath = "$env:TEMP\oneapi_basekit.exe"
-          Write-Host "Downloading from $installerUrl (this may take a while)..."
-          Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing
-          # Silent install (DPC++/C++ compiler component only)
-          Start-Process -FilePath $installerPath -ArgumentList "-s --action install --components intel.oneapi.win.dpcpp-cli --eula accept" -Wait -NoNewWindow
-          # Initialize oneAPI environment
-          if (Test-Path "C:/Program Files (x86)/Intel/oneAPI/setvars.bat") {
-            Write-Host "Intel oneAPI installed successfully"
-          } else {
-            Write-Host "WARNING: oneAPI setvars.bat not found at expected path"
-            Get-ChildItem -Path "C:/Program Files*" -Recurse -Filter "setvars.bat" -ErrorAction SilentlyContinue | Select-Object -First 3 -ExpandProperty FullName
-          }
+          $url = "https://registrationcenter-download.intel.com/akdlm/IRC_NAS/b0bacc74-0863-4f96-844e-8a2ff5db5e96/w_BaseKit_p_2025.0.0.841_offline.exe"
+          Invoke-WebRequest -Uri $url -OutFile "$env:TEMP\oneapi.exe" -UseBasicParsing
+          Start-Process -FilePath "$env:TEMP\oneapi.exe" -ArgumentList "-s --action install --components intel.oneapi.win.dpcpp-cli --eula accept" -Wait -NoNewWindow
 
-      - name: Configure
-        shell: pwsh
+      - name: Configure (CUDA)
+        if: matrix.config.setup == 'cuda'
+        shell: cmd
         run: |
-          $syclEnv = ""
-          if ("${{ matrix.config.setup }}" -eq "sycl") {
-            # Initialize oneAPI environment for SYCL
-            $syclEnv = '& "C:/Program Files (x86)/Intel/oneAPI/setvars.bat" intel64 vs2022; '
-          }
-          $cmd = $syclEnv + 'cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DAUDIOCPP_BUILD_CAPI=ON -DENGINE_BUILD_EXAMPLES=OFF -DENGINE_ENABLE_NATIVE_CPU=OFF ${{ matrix.config.cmake_extra }}'
-          Write-Host "Running: $cmd"
-          cmd /c $cmd
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cmake -S . -B build -G "Ninja" ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DBUILD_SHARED_LIBS=ON ^
+            -DAUDIOCPP_BUILD_CAPI=ON ^
+            -DENGINE_BUILD_EXAMPLES=OFF ^
+            -DENGINE_ENABLE_OPENMP=OFF ^
+            -DENGINE_ENABLE_CUDA=ON ^
+            -DCMAKE_CUDA_ARCHITECTURES="80;86;89;90"
+
+      - name: Configure (ROCm)
+        if: matrix.config.setup == 'rocm'
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cmake -S . -B build -G "Ninja" ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DBUILD_SHARED_LIBS=ON ^
+            -DAUDIOCPP_BUILD_CAPI=ON ^
+            -DENGINE_BUILD_EXAMPLES=OFF ^
+            -DENGINE_ENABLE_OPENMP=OFF ^
+            -DGGML_HIP=ON ^
+            -DAMDGPU_TARGETS=gfx1100
+
+      - name: Configure (SYCL)
+        if: matrix.config.setup == 'sycl'
+        shell: cmd
+        run: |
+          call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 vs2022
+          cmake -S . -B build -G "Ninja" ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DBUILD_SHARED_LIBS=ON ^
+            -DAUDIOCPP_BUILD_CAPI=ON ^
+            -DENGINE_BUILD_EXAMPLES=OFF ^
+            -DENGINE_ENABLE_OPENMP=OFF ^
+            -DGGML_SYCL=ON ^
+            -DGGML_SYCL_TARGET=INTEL_XMX
 
       - name: Build audiocpp shared library
-        shell: pwsh
+        shell: cmd
         run: |
-          cmake --build build --parallel $env:NUMBER_OF_PROCESSORS --target audiocpp
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cmake --build build --parallel %NUMBER_OF_PROCESSORS% --target audiocpp
 
       - name: Collect artifacts
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts
-          Get-ChildItem -Path build -Recurse -Filter "audiocpp.dll" | ForEach-Object {
-            Copy-Item $_.FullName -Destination artifacts/
-          }
-          Get-ChildItem -Path build -Recurse -Filter "audiocpp.lib" | ForEach-Object {
-            Copy-Item $_.FullName -Destination artifacts/
-          }
+          Get-ChildItem -Path build -Recurse -Filter "audiocpp.dll" | ForEach-Object { Copy-Item $_.FullName -Destination artifacts/ }
+          Get-ChildItem -Path build -Recurse -Filter "audiocpp.lib" | ForEach-Object { Copy-Item $_.FullName -Destination artifacts/ }
           Copy-Item capi/include/audiocpp.h -Destination artifacts/
           Get-ChildItem artifacts/
 
@@ -210,7 +200,7 @@ jobs:
           path: artifacts/
 
   # ════════════════════════════════════════════════════════════════════════
-  # Release: upload all artifacts to a GitHub release (optional)
+  # Release
   # ════════════════════════════════════════════════════════════════════════
   release:
     name: Release

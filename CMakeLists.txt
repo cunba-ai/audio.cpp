@@ -81,6 +81,12 @@ option(ENGINE_ENABLE_CUDA_GRAPHS "Enable ggml CUDA graphs support" ${ENGINE_DEFA
 option(ENGINE_ENABLE_NATIVE_CPU "Build ggml CPU kernels with native host ISA flags" ${ENGINE_DEFAULT_ENABLE_NATIVE_CPU})
 option(ENGINE_ENABLE_OPENMP "Build host code with OpenMP support" ON)
 option(ENGINE_BUILD_EXAMPLES "Build example binaries" OFF)
+
+# Position-independent code is required when building the C ABI shared library
+# (libaudiocpp.so links the static engine_runtime/ggml; they need -fPIC).
+if (AUDIOCPP_BUILD_CAPI AND NOT MSVC)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
 option(ENGINE_BUILD_TESTS "Build framework unit tests" OFF)
 option(ENGINE_BUILD_WARMBENCH "Build warmbench helper binaries" OFF)
 set(AUDIOCPP_GGML_SOURCE_DIR

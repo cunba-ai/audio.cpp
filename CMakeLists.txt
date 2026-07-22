@@ -615,6 +615,58 @@ if (ENGINE_ENABLE_CUDA)
     target_link_libraries(engine_runtime PRIVATE CUDA::cudart CUDA::cufft)
 endif()
 
+# ──────────────────────────────────────────────────────────────────────────
+# C ABI shared library (libaudiocpp.so / audiocpp.dll)
+# Hides all internal ggml/sentencepiece/etc symbols; exports only audiocpp_*.
+# ──────────────────────────────────────────────────────────────────────────
+option(AUDIOCPP_BUILD_CAPI "Build the C ABI shared library (libaudiocpp)" ON)
+if (AUDIOCPP_BUILD_CAPI)
+    add_library(audiocpp SHARED
+        capi/src/audiocpp_capi.cpp
+    )
+    target_include_directories(audiocpp PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/capi/include"
+    )
+    target_link_libraries(audiocpp PRIVATE engine_runtime ggml)
+    if (ENGINE_ENABLE_OPENMP)
+        target_link_libraries(audiocpp PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+
+    # Hide all symbols by default; only export audiocpp_* via version script / .def
+    set_target_properties(audiocpp PROPERTIES
+        CXX_VISIBILITY_PRESET hidden
+        C_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN ON
+    )
+    if (MSVC)
+        # Windows: use .def file to limit exports
+        set(AUDIOCPP_DEF_FILE "${CMAKE_CURRENT_BINARY_DIR}/audiocpp.def")
+        file(WRITE "${AUDIOCPP_DEF_FILE}"
+            "LIBRARY audiocpp\n"
+            "EXPORTS\n"
+            "    audiocpp_load_model\n"
+            "    audiocpp_free_model\n"
+            "    audiocpp_tts\n"
+            "    audiocpp_asr\n"
+            "    audiocpp_version\n"
+            "    audiocpp_free_audio\n"
+            "    audiocpp_free_text\n"
+            "    audiocpp_free_string\n"
+            "    audiocpp_clear_error\n"
+        )
+        target_link_options(audiocpp PRIVATE "/DEF:${AUDIOCPP_DEF_FILE}")
+    else()
+        # Linux/macOS: version script
+        set(AUDIOCPP_MAP_FILE "${CMAKE_CURRENT_BINARY_DIR}/audiocpp.map")
+        file(WRITE "${AUDIOCPP_MAP_FILE}"
+            "{ global: audiocpp_*; local: *; };\n"
+        )
+        target_link_options(audiocpp PRIVATE
+            "-Wl,--version-script,${AUDIOCPP_MAP_FILE}"
+        )
+    endif()
+endif()
+
 add_executable(audiocpp_cli
     app/cli/main.cpp
     app/cli/args.cpp

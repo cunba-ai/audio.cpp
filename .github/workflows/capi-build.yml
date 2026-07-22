@@ -1,0 +1,192 @@
+name: C ABI Build
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+      - capi/**
+  pull_request:
+    branches:
+      - main
+      - dev
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag (e.g. capi-v0.1.0). Leave empty to skip release upload.'
+        required: false
+        type: string
+
+# Cancel superseded runs on the same ref
+concurrency:
+  group: capi-build-${{ github.ref }}-${{ github.event.inputs.release_tag || 'none' }}
+  cancel-in-progress: true
+
+jobs:
+  # ════════════════════════════════════════════════════════════════════════
+  # Linux: CUDA + CPU, ROCm + CPU, SYCL + CPU
+  # ════════════════════════════════════════════════════════════════════════
+  linux:
+    name: Linux ${{ matrix.config.name }}
+    runs-on: ${{ matrix.config.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - name: CUDA-CPU
+            runner: ubuntu-24.04
+            container: nvidia/cuda:12.4.1-devel-ubuntu24.04
+            cmake_extra: '-DENGINE_ENABLE_CUDA=ON -DENGINE_ENABLE_NATIVE_CPU=OFF'
+            artifact_suffix: linux-cuda-cpu
+            strip: true
+          - name: ROCm-CPU
+            runner: ubuntu-24.04
+            container: rocm/dev-ubuntu-24.04:6.2
+            cmake_extra: '-DGGML_HIPBLAS=ON -DENGINE_ENABLE_NATIVE_CPU=OFF'
+            artifact_suffix: linux-rocm-cpu
+            strip: true
+          - name: SYCL-CPU
+            runner: ubuntu-24.04
+            container: intel/oneapi-basekit:2024.2-devel-ubuntu24.04
+            cmake_extra: '-DGGML_SYCL=ON -DGGML_SYCL_TARGET=INTEL_XMX -DENGINE_ENABLE_NATIVE_CPU=OFF'
+            artifact_suffix: linux-sycl-cpu
+            strip: true
+
+    container:
+      image: ${{ matrix.config.container }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          apt-get update && apt-get install -y cmake git build-essential
+
+      - name: Configure
+        run: |
+          mkdir -p build
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=ON \
+            -DAUDIOCPP_BUILD_CAPI=ON \
+            -DENGINE_BUILD_EXAMPLES=OFF \
+            ${{ matrix.config.cmake_extra }}
+
+      - name: Build audiocpp shared library
+        run: |
+          cmake --build build --parallel $(nproc) --target audiocpp
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p artifacts
+          cp build/libaudiocpp.so artifacts/ 2>/dev/null || true
+          cp build/bin/libaudiocpp.so artifacts/ 2>/dev/null || true
+          # Find the .so wherever CMake put it
+          find build -name "libaudiocpp.so" -exec cp {} artifacts/ \; 2>/dev/null
+          cp capi/include/audiocpp.h artifacts/
+          ls -la artifacts/
+
+      - name: Strip (optional)
+        if: matrix.config.strip
+        run: |
+          strip artifacts/libaudiocpp.so 2>/dev/null || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: audiocpp-${{ matrix.config.artifact_suffix }}
+          path: artifacts/
+
+  # ════════════════════════════════════════════════════════════════════════
+  # Windows: CUDA + CPU
+  # ════════════════════════════════════════════════════════════════════════
+  windows-cuda:
+    name: Windows CUDA-CPU
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build `
+            -G "Ninja" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_CUDA_COMPILER="C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/bin/nvcc.exe" `
+            -DBUILD_SHARED_LIBS=ON `
+            -DAUDIOCPP_BUILD_CAPI=ON `
+            -DENGINE_BUILD_EXAMPLES=OFF `
+            -DENGINE_ENABLE_CUDA=ON `
+            -DENGINE_ENABLE_NATIVE_CPU=OFF
+
+      - name: Build audiocpp shared library
+        shell: pwsh
+        run: |
+          cmake --build build --parallel $env:NUMBER_OF_PROCESSORS --target audiocpp
+
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts
+          # Find audiocpp.dll
+          Get-ChildItem -Path build -Recurse -Filter "audiocpp.dll" | ForEach-Object {
+            Copy-Item $_.FullName -Destination artifacts/
+          }
+          # Also grab the import library if present
+          Get-ChildItem -Path build -Recurse -Filter "audiocpp.lib" | ForEach-Object {
+            Copy-Item $_.FullName -Destination artifacts/
+          }
+          Copy-Item capi/include/audiocpp.h -Destination artifacts/
+          Get-ChildItem artifacts/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: audiocpp-windows-cuda-cpu
+          path: artifacts/
+
+  # ════════════════════════════════════════════════════════════════════════
+  # Release: upload all artifacts to a GitHub release (optional)
+  # ════════════════════════════════════════════════════════════════════════
+  release:
+    name: Release
+    needs: [linux, windows-cuda]
+    runs-on: ubuntu-latest
+    if: github.event.inputs.release_tag != ''
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Display structure
+        run: ls -R artifacts
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.release_tag }}
+          name: C ABI ${{ github.event.inputs.release_tag }}
+          body: |
+            ## audio.cpp C ABI shared libraries
+
+            | Platform | Backend | Artifact |
+            |----------|---------|----------|
+            | Linux | CUDA + CPU | `audiocpp-linux-cuda-cpu` |
+            | Linux | ROCm + CPU | `audiocpp-linux-rocm-cpu` |
+            | Linux | SYCL + CPU | `audiocpp-linux-sycl-cpu` |
+            | Windows | CUDA + CPU | `audiocpp-windows-cuda-cpu` |
+
+            Each artifact contains:
+            - `libaudiocpp.so` / `audiocpp.dll` (shared library, ggml symbols hidden)
+            - `audiocpp.h` (C ABI header)
+          files: |
+            artifacts/*/libaudiocpp.so
+            artifacts/*/audiocpp.dll
+            artifacts/*/audiocpp.lib
+            artifacts/*/audiocpp.h
+          draft: true

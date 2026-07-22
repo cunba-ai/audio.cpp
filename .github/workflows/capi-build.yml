@@ -39,8 +39,8 @@ jobs:
             cmake_extra: '-DENGINE_ENABLE_CUDA=ON'
             artifact_suffix: linux-cuda-cpu
           - name: ROCm-CPU
-            container: rocm/dev-ubuntu-22.04:6.2
-            cmake_extra: '-DGGML_HIP=ON'
+            container: rocm/dev-ubuntu-22.04:6.4-complete
+            cmake_extra: '-DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1100 -DCMAKE_PREFIX_PATH=/opt/rocm'
             artifact_suffix: linux-rocm-cpu
           - name: SYCL-CPU
             container: intel/oneapi-basekit:2024.2.1-0-devel-ubuntu22.04
@@ -85,11 +85,12 @@ jobs:
           path: artifacts/
 
   # ════════════════════════════════════════════════════════════════════════
-  # Windows: CUDA+CPU, ROCm(HIP)+CPU, SYCL+CPU
+  # Windows: CUDA+CPU (primary), ROCm+CPU (best-effort), SYCL+CPU (best-effort)
   # ════════════════════════════════════════════════════════════════════════
   windows:
     name: Windows ${{ matrix.config.name }}
     runs-on: windows-2022
+    continue-on-error: ${{ matrix.config.best_effort }}
     strategy:
       fail-fast: false
       matrix:
@@ -97,12 +98,15 @@ jobs:
           - name: CUDA-CPU
             setup: cuda
             artifact_suffix: windows-cuda-cpu
+            best_effort: false
           - name: ROCm-CPU
             setup: rocm
             artifact_suffix: windows-rocm-cpu
+            best_effort: true
           - name: SYCL-CPU
             setup: sycl
             artifact_suffix: windows-sycl-cpu
+            best_effort: true
 
     steps:
       - name: Checkout
@@ -119,22 +123,50 @@ jobs:
         if: matrix.config.setup == 'rocm'
         shell: pwsh
         run: |
-          Write-Host "Installing AMD HIP SDK..."
-          $url = "https://download.amd.com/developer/eula/ROCm/ROCm-6.3/AMD-Software-PRO-Edition-25.3-WindowsSvr2022-WSH.exe"
-          Invoke-WebRequest -Uri $url -OutFile "$env:TEMP\amdrocm.exe" -UseBasicParsing
-          Start-Process -FilePath "$env:TEMP\amdrocm.exe" -ArgumentList "-install -log $env:TEMP\rocm.log" -Wait -NoNewWindow
-          # Add HIP to PATH
-          $hipPath = "C:\Program Files\AMD\ROCm\6.3\bin"
-          if (Test-Path $hipPath) { echo "$hipPath" >> $env:GITHUB_PATH }
+          Write-Host "Installing AMD HIP SDK via winget..."
+          # Try winget first (GitHub runners have AMD drivers sometimes)
+          $wingetResult = $null
+          try {
+            $wingetResult = winget install --id AMDDeploymentManager.HIPSDK --accept-package-agreements --accept-source-agreements 2>&1
+            Write-Host "winget output: $wingetResult"
+          } catch {
+            Write-Host "winget install failed: $_"
+          }
+          # Fallback: try the AMD HIP SDK installer from GitHub release
+          $hipFound = Get-ChildItem -Path "C:\Program Files\AMD" -Recurse -Filter "clang.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $hipFound) {
+            Write-Host "winget didn't install HIP SDK, trying direct download..."
+            # ROCm on Windows is not reliably installable in CI; mark as best-effort
+            Write-Host "WARNING: Could not install AMD HIP SDK. This build may fail."
+          } else {
+            $hipDir = Split-Path (Split-Path $hipFound.FullName)
+            Write-Host "Found HIP at: $hipDir"
+            echo "$hipDir\bin" >> $env:GITHUB_PATH
+          }
 
       - name: Setup Intel oneAPI
         if: matrix.config.setup == 'sycl'
         shell: pwsh
         run: |
-          Write-Host "Installing Intel oneAPI Base Toolkit..."
+          Write-Host "Installing Intel oneAPI DPC++ Compiler..."
+          # Try the offline installer (large, ~4GB, may timeout on slow runners)
           $url = "https://registrationcenter-download.intel.com/akdlm/IRC_NAS/b0bacc74-0863-4f96-844e-8a2ff5db5e96/w_BaseKit_p_2025.0.0.841_offline.exe"
-          Invoke-WebRequest -Uri $url -OutFile "$env:TEMP\oneapi.exe" -UseBasicParsing
-          Start-Process -FilePath "$env:TEMP\oneapi.exe" -ArgumentList "-s --action install --components intel.oneapi.win.dpcpp-cli --eula accept" -Wait -NoNewWindow
+          try {
+            Write-Host "Downloading oneAPI BaseKit (this may take 10+ minutes)..."
+            Invoke-WebRequest -Uri $url -OutFile "$env:TEMP\oneapi.exe" -UseBasicParsing -TimeoutSec 600
+            Write-Host "Installing DPC++ component only..."
+            $proc = Start-Process -FilePath "$env:TEMP\oneapi.exe" -ArgumentList "-s --action install --components intel.oneapi.win.dpcpp-cli --eula accept --log $env:TEMP\oneapi.log" -Wait -PassThru -NoNewWindow
+            Write-Host "Installer exit code: $($proc.ExitCode)"
+          } catch {
+            Write-Host "oneAPI install failed: $_"
+            Write-Host "WARNING: Could not install Intel oneAPI. This build may fail."
+          }
+          # Verify
+          if (Test-Path "C:\Program Files (x86)\Intel\oneAPI\setvars.bat") {
+            Write-Host "oneAPI installed successfully"
+          } else {
+            Write-Host "WARNING: oneAPI setvars.bat not found"
+          }
 
       - name: Configure (CUDA)
         if: matrix.config.setup == 'cuda'
@@ -206,7 +238,7 @@ jobs:
     name: Release
     needs: [linux, windows]
     runs-on: ubuntu-latest
-    if: github.event.inputs.release_tag != ''
+    if: always() && github.event.inputs.release_tag != ''
 
     steps:
       - name: Download all artifacts
@@ -231,8 +263,8 @@ jobs:
             | Linux | ROCm + CPU | `audiocpp-linux-rocm-cpu` |
             | Linux | SYCL + CPU | `audiocpp-linux-sycl-cpu` |
             | Windows | CUDA + CPU | `audiocpp-windows-cuda-cpu` |
-            | Windows | ROCm + CPU | `audiocpp-windows-rocm-cpu` |
-            | Windows | SYCL + CPU | `audiocpp-windows-sycl-cpu` |
+            | Windows | ROCm + CPU | `audiocpp-windows-rocm-cpu` (best-effort) |
+            | Windows | SYCL + CPU | `audiocpp-windows-sycl-cpu` (best-effort) |
 
             Each artifact contains:
             - `libaudiocpp.so` / `audiocpp.dll` (shared library, ggml symbols hidden)

@@ -166,9 +166,10 @@ audiocpp_audio_t *audiocpp_tts(
         req.options["speed"] = std::to_string(speed);
         // Voice cloning: load reference audio if provided
         if (voice_path && voice_path[0] != '\0') {
-            // Voice reference loading depends on model; pass path as option
             req.options["voice_ref"] = voice_path;
         }
+        // Some models (e.g. Qwen3-ASR/TTS) require prepare() before run()
+        model->session->prepare(engine::runtime::build_preparation_request(req));
         auto task_result = model->offline->run(req);
         if (!task_result.audio_output || task_result.audio_output->samples.empty()) {
             throw std::runtime_error("TTS produced no audio output");
@@ -215,6 +216,8 @@ audiocpp_text_t *audiocpp_asr(
         if (language && language[0] != '\0') {
             req.options["language"] = language;
         }
+        // Some models (e.g. Qwen3-ASR) require prepare() before run()
+        model->session->prepare(engine::runtime::build_preparation_request(req));
         auto task_result = model->offline->run(req);
         result = new audiocpp_text_t{};
         result->text = dup_cstr(

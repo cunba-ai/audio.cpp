@@ -556,6 +556,16 @@ target_include_directories(cjson_vendor PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/external/cJSON
 )
 
+# Hide cJSON symbols when linked into audiocpp shared library
+set_target_properties(cjson_vendor PROPERTIES
+    CXX_VISIBILITY_PRESET hidden
+    C_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+)
+target_compile_definitions(cjson_vendor PRIVATE
+    CJSON_HIDE_SYMBOLS
+)
+
 add_library(yaml_vendor STATIC
     external/libyaml/src/api.c
     external/libyaml/src/reader.c
@@ -566,6 +576,12 @@ add_library(yaml_vendor STATIC
 
 target_include_directories(yaml_vendor PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/external/libyaml/include
+)
+
+set_target_properties(yaml_vendor PROPERTIES
+    CXX_VISIBILITY_PRESET hidden
+    C_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
 )
 
 target_compile_definitions(yaml_vendor PUBLIC

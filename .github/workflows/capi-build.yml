@@ -44,7 +44,7 @@ jobs:
             artifact_suffix: linux-rocm-cpu
           - name: SYCL-CPU
             container: intel/oneapi-basekit:2024.2.1-0-devel-ubuntu22.04
-            cmake_extra: '-DGGML_SYCL=ON -DGGML_SYCL_TARGET=INTEL_XMX'
+            cmake_extra: '-DGGML_SYCL=ON -DGGML_SYCL_TARGET=INTEL'
             artifact_suffix: linux-sycl-cpu
 
     steps:
@@ -124,7 +124,7 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "Installing AMD HIP SDK via winget..."
-          # Try winget first (GitHub runners have AMD drivers sometimes)
+          # Try winget first (GitHub runners sometimes have AMD drivers)
           $wingetResult = $null
           try {
             $wingetResult = winget install --id AMDDeploymentManager.HIPSDK --accept-package-agreements --accept-source-agreements 2>&1
@@ -132,17 +132,19 @@ jobs:
           } catch {
             Write-Host "winget install failed: $_"
           }
-          # Fallback: try the AMD HIP SDK installer from GitHub release
+          # Scan for the installed HIP clang toolchain. ROCm-on-Windows in CI is
+          # best-effort: hosted runners have no AMD GPU and winget may not
+          # provide a HIPSDK build, so treat "nothing found" as a hard stop
+          # rather than letting the build fail later with a confusing
+          # find_package(hip) error. The job stays non-gating (continue-on-error).
           $hipFound = Get-ChildItem -Path "C:\Program Files\AMD" -Recurse -Filter "clang.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $hipFound) {
-            Write-Host "winget didn't install HIP SDK, trying direct download..."
-            # ROCm on Windows is not reliably installable in CI; mark as best-effort
-            Write-Host "WARNING: Could not install AMD HIP SDK. This build may fail."
-          } else {
-            $hipDir = Split-Path (Split-Path $hipFound.FullName)
-            Write-Host "Found HIP at: $hipDir"
-            echo "$hipDir\bin" >> $env:GITHUB_PATH
+            Write-Host "##[error]AMD HIP SDK not found after winget attempt (no clang.exe under C:\Program Files\AMD). Cannot proceed with ROCm build."
+            exit 1
           }
+          $hipDir = Split-Path (Split-Path $hipFound.FullName)
+          Write-Host "Found HIP at: $hipDir"
+          echo "$hipDir\bin" >> $env:GITHUB_PATH
 
       - name: Setup Intel oneAPI
         if: matrix.config.setup == 'sycl'
@@ -165,7 +167,8 @@ jobs:
           if (Test-Path "C:\Program Files (x86)\Intel\oneAPI\setvars.bat") {
             Write-Host "oneAPI installed successfully"
           } else {
-            Write-Host "WARNING: oneAPI setvars.bat not found"
+            Write-Host "##[error]oneAPI setvars.bat not found after install; DPC++ compiler unavailable. Cannot proceed with SYCL build."
+            exit 1
           }
 
       - name: Configure (CUDA)
@@ -208,7 +211,7 @@ jobs:
             -DENGINE_BUILD_EXAMPLES=OFF ^
             -DENGINE_ENABLE_OPENMP=OFF ^
             -DGGML_SYCL=ON ^
-            -DGGML_SYCL_TARGET=INTEL_XMX
+            -DGGML_SYCL_TARGET=INTEL
 
       - name: Build audiocpp shared library
         shell: cmd

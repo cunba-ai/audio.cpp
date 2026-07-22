@@ -13,6 +13,9 @@
 #include "engine/framework/runtime/registry.h"
 #include "engine/framework/runtime/session.h"
 
+#include "cJSON.h"
+// cJSON.h is under external/cJSON/ — add include path if needed
+
 #include <cstdlib>
 #include <cstring>
 #include <exception>
@@ -146,12 +149,60 @@ void audiocpp_free_model(audiocpp_model_t *model) {
 /* TTS                                                                       */
 /* ======================================================================== */
 
+// Helper: parse JSON options string into TaskRequest fields.
+// Recognized keys:
+//   voice_ref: path to reference WAV (loads audio + sets VoiceReference)
+//   reference_text: transcript of reference audio
+//   speed, language, emotion, speaking_rate, pitch_shift, energy_scale: scalar options
+//   Any other key → passed through as option string
+static void apply_options(engine::runtime::TaskRequest & req, const char * options_json) {
+    if (!options_json || !options_json[0]) return;
+
+    // Parse JSON (use cJSON which is already vendored)
+    auto * root = cJSON_Parse(options_json);
+    if (!root) return;
+
+    // Voice cloning
+    const char * voice_ref = cJSON_GetStringValue(cJSON_GetObjectItem(root, "voice_ref"));
+    if (voice_ref && voice_ref[0]) {
+        engine::runtime::VoiceCondition voice;
+        voice.speaker = engine::runtime::VoiceReference{};
+        auto wav = engine::audio::read_wav_f32(std::filesystem::path(voice_ref));
+        engine::runtime::AudioBuffer ref_audio;
+        ref_audio.sample_rate = wav.sample_rate;
+        ref_audio.channels = wav.channels;
+        ref_audio.samples = std::move(wav.samples);
+        voice.speaker->audio = std::move(ref_audio);
+        req.voice = std::move(voice);
+    }
+
+    // Iterate all string/number keys → options map
+    for (auto * item = root->child; item; item = item->next) {
+        if (!item->string) continue;
+        std::string key = item->string;
+        // Skip voice_ref (handled above)
+        if (key == "voice_ref") continue;
+        // String values
+        if (cJSON_IsString(item)) {
+            req.options[key] = item->valuestring;
+        }
+        // Number values
+        else if (cJSON_IsNumber(item)) {
+            req.options[key] = std::to_string(item->valuedouble);
+        }
+        // Bool values → "true"/"false"
+        else if (cJSON_IsBool(item)) {
+            req.options[key] = cJSON_IsTrue(item) ? "true" : "false";
+        }
+    }
+
+    cJSON_Delete(root);
+}
+
 audiocpp_audio_t *audiocpp_tts(
     const audiocpp_model_t *model,
     const char *text,
-    const char *voice_path,
-    const char *reference_text,
-    float speed,
+    const char *options_json,
     audiocpp_error_t *err
 ) {
     audiocpp_audio_t *result = nullptr;
@@ -165,23 +216,7 @@ audiocpp_audio_t *audiocpp_tts(
         engine::runtime::TaskRequest req;
         req.text_input = engine::runtime::Transcript{};
         req.text_input->text = text;
-        req.options["speed"] = std::to_string(speed);
-        // Voice cloning: load reference audio + text if provided
-        if (voice_path && voice_path[0] != '\0') {
-            engine::runtime::VoiceCondition voice;
-            voice.speaker = engine::runtime::VoiceReference{};
-            // Load reference WAV via audio.cpp's built-in reader
-            auto wav = engine::audio::read_wav_f32(std::filesystem::path(voice_path));
-            engine::runtime::AudioBuffer ref_audio;
-            ref_audio.sample_rate = wav.sample_rate;
-            ref_audio.channels = wav.channels;
-            ref_audio.samples = std::move(wav.samples);
-            voice.speaker->audio = std::move(ref_audio);
-            if (reference_text && reference_text[0] != '\0') {
-                req.options["reference_text"] = reference_text;
-            }
-            req.voice = std::move(voice);
-        }
+        apply_options(req, options_json);
         // Some models (e.g. Qwen3-ASR/TTS) require prepare() before run()
         model->session->prepare(engine::runtime::build_preparation_request(req));
         auto task_result = model->offline->run(req);
@@ -211,7 +246,7 @@ audiocpp_text_t *audiocpp_asr(
     const float *pcm,
     int64_t n_samples,
     int sample_rate,
-    const char *language,
+    const char *options_json,
     audiocpp_error_t *err
 ) {
     audiocpp_text_t *result = nullptr;
@@ -227,9 +262,7 @@ audiocpp_text_t *audiocpp_asr(
         req.audio_input->sample_rate = sample_rate;
         req.audio_input->channels = 1;
         req.audio_input->samples.assign(pcm, pcm + n_samples);
-        if (language && language[0] != '\0') {
-            req.options["language"] = language;
-        }
+        apply_options(req, options_json);
         // Some models (e.g. Qwen3-ASR) require prepare() before run()
         model->session->prepare(engine::runtime::build_preparation_request(req));
         auto task_result = model->offline->run(req);

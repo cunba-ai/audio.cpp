@@ -114,20 +114,22 @@ void audiocpp_free_model(audiocpp_model_t *model);
 /**
  * Synthesize speech from text.
  *
- * @param model          Model handle (must be loaded with AUDIOCPP_TASK_TTS).
- * @param text           UTF-8 input text.
- * @param voice_path     Optional path to reference WAV for voice cloning (NULL = default/no clone).
- * @param reference_text Optional transcript of the reference audio (required by Qwen3-TTS Base).
- * @param speed          Speech speed multiplier (1.0 = normal).
- * @param err            Optional error output.
+ * @param model       Model handle (must be loaded with AUDIOCPP_TASK_TTS).
+ * @param text        UTF-8 input text.
+ * @param options     JSON string of model-specific options, e.g.:
+ *                      {"voice_ref": "/path/to/ref.wav",
+ *                       "reference_text": "transcript of ref audio",
+ *                       "speed": 1.0,
+ *                       "language": "en",
+ *                       "emotion": "happy"}
+ *                    Pass NULL or "{}" for defaults.
+ * @param err         Optional error output.
  * @return Audio output, or NULL on failure. Caller MUST free with audiocpp_free_audio.
  */
 audiocpp_audio_t *audiocpp_tts(
     const audiocpp_model_t *model,
     const char *text,
-    const char *voice_path,
-    const char *reference_text,
-    float speed,
+    const char *options_json,
     audiocpp_error_t *err
 );
 
@@ -142,7 +144,9 @@ audiocpp_audio_t *audiocpp_tts(
  * @param pcm         PCM samples (mono f32, [-1.0, 1.0]).
  * @param n_samples   Number of PCM samples.
  * @param sample_rate Sample rate (e.g. 16000).
- * @param language    Optional language hint (e.g. "en", "zh"); NULL = auto.
+ * @param options     JSON string of model-specific options, e.g.:
+ *                      {"language": "zh", "return_timestamps": "true"}
+ *                    Pass NULL or "{}" for defaults.
  * @param err         Optional error output.
  * @return Text result, or NULL on failure. Caller MUST free with audiocpp_free_text.
  */
@@ -151,7 +155,7 @@ audiocpp_text_t *audiocpp_asr(
     const float *pcm,
     int64_t n_samples,
     int sample_rate,
-    const char *language,
+    const char *options_json,
     audiocpp_error_t *err
 );
 

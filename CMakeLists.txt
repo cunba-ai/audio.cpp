@@ -649,7 +649,10 @@ if (AUDIOCPP_BUILD_CAPI)
     target_include_directories(audiocpp PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/capi/include"
     )
-    target_link_libraries(audiocpp PRIVATE engine_runtime ggml)
+    target_include_directories(audiocpp PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/external/cJSON"
+    )
+    target_link_libraries(audiocpp PRIVATE engine_runtime ggml cjson_vendor)
     if (ENGINE_ENABLE_OPENMP)
         target_link_libraries(audiocpp PRIVATE OpenMP::OpenMP_CXX)
     endif()

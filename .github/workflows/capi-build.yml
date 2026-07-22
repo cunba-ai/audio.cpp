@@ -203,20 +203,8 @@ jobs:
         env:
           WINDOWS_BASEKIT_URL: https://registrationcenter-download.intel.com/akdlm/IRC_NAS/b60765d1-2b85-4e85-86b6-cb0e9563a699/intel-deep-learning-essentials-2025.3.3.18_offline.exe
           WINDOWS_DPCPP_MKL: intel.oneapi.win.cpp-dpcpp-common:intel.oneapi.win.mkl.devel:intel.oneapi.win.dnnl:intel.oneapi.win.tbb.devel
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          Write-Host "Downloading oneAPI DPC++/MKL offline installer..."
-          Invoke-WebRequest -Uri $env:WINDOWS_BASEKIT_URL -OutFile "$env:RUNNER_TEMP\oneapi.exe" -UseBasicParsing -TimeoutSec 900
-          Write-Host "Installing selected oneAPI components (silent)..."
-          $proc = Start-Process -FilePath "$env:RUNNER_TEMP\oneapi.exe" `
-            -ArgumentList "-s -a --silent --components $env:WINDOWS_DPCPP_MKL --eula accept --log $env:RUNNER_TEMP\oneapi.log" `
-            -Wait -PassThru -NoNewWindow
-          Write-Host "Installer exit code: $($proc.ExitCode)"
-          if ($proc.ExitCode -ne 0) {
-            Write-Host "##[error]oneAPI installer failed with exit code $($proc.ExitCode)."
-            exit 1
-          }
+        shell: cmd
+        run: scripts\install-oneapi.bat "%WINDOWS_BASEKIT_URL%" "%WINDOWS_DPCPP_MKL%"
 
       - name: Install Level Zero SDK
         if: matrix.config.setup == 'sycl'

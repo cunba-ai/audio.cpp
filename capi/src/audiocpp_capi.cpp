@@ -7,6 +7,7 @@
 
 #include "audiocpp.h"
 
+#include "engine/framework/audio/wav_reader.h"
 #include "engine/framework/core/backend.h"
 #include "engine/framework/runtime/model.h"
 #include "engine/framework/runtime/registry.h"
@@ -149,6 +150,7 @@ audiocpp_audio_t *audiocpp_tts(
     const audiocpp_model_t *model,
     const char *text,
     const char *voice_path,
+    const char *reference_text,
     float speed,
     audiocpp_error_t *err
 ) {
@@ -164,9 +166,21 @@ audiocpp_audio_t *audiocpp_tts(
         req.text_input = engine::runtime::Transcript{};
         req.text_input->text = text;
         req.options["speed"] = std::to_string(speed);
-        // Voice cloning: load reference audio if provided
+        // Voice cloning: load reference audio + text if provided
         if (voice_path && voice_path[0] != '\0') {
-            req.options["voice_ref"] = voice_path;
+            engine::runtime::VoiceCondition voice;
+            voice.speaker = engine::runtime::VoiceReference{};
+            // Load reference WAV via audio.cpp's built-in reader
+            auto wav = engine::audio::read_wav_f32(std::filesystem::path(voice_path));
+            engine::runtime::AudioBuffer ref_audio;
+            ref_audio.sample_rate = wav.sample_rate;
+            ref_audio.channels = wav.channels;
+            ref_audio.samples = std::move(wav.samples);
+            voice.speaker->audio = std::move(ref_audio);
+            if (reference_text && reference_text[0] != '\0') {
+                req.options["reference_text"] = reference_text;
+            }
+            req.voice = std::move(voice);
         }
         // Some models (e.g. Qwen3-ASR/TTS) require prepare() before run()
         model->session->prepare(engine::runtime::build_preparation_request(req));

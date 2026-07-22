@@ -114,17 +114,19 @@ void audiocpp_free_model(audiocpp_model_t *model);
 /**
  * Synthesize speech from text.
  *
- * @param model       Model handle (must be loaded with AUDIOCPP_TASK_TTS).
- * @param text        UTF-8 input text.
- * @param voice_path  Optional path to reference audio for voice cloning (NULL = default voice).
- * @param speed       Speech speed multiplier (1.0 = normal).
- * @param err         Optional error output.
+ * @param model          Model handle (must be loaded with AUDIOCPP_TASK_TTS).
+ * @param text           UTF-8 input text.
+ * @param voice_path     Optional path to reference WAV for voice cloning (NULL = default/no clone).
+ * @param reference_text Optional transcript of the reference audio (required by Qwen3-TTS Base).
+ * @param speed          Speech speed multiplier (1.0 = normal).
+ * @param err            Optional error output.
  * @return Audio output, or NULL on failure. Caller MUST free with audiocpp_free_audio.
  */
 audiocpp_audio_t *audiocpp_tts(
     const audiocpp_model_t *model,
     const char *text,
     const char *voice_path,
+    const char *reference_text,
     float speed,
     audiocpp_error_t *err
 );

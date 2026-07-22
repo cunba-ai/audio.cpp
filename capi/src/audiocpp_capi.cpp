@@ -93,6 +93,7 @@ static engine::runtime::VoiceTaskKind map_task(int task) {
 audiocpp_model_t *audiocpp_load_model(
     const char *model_path,
     int task,
+    const char *family_hint,
     int backend,
     int device_id,
     int n_threads,
@@ -106,6 +107,9 @@ audiocpp_model_t *audiocpp_load_model(
         auto registry = engine::runtime::make_default_registry();
         engine::runtime::ModelLoadRequest req;
         req.model_path = model_path;
+        if (family_hint && family_hint[0] != '\0') {
+            req.family_hint = family_hint;
+        }
         auto loaded = registry.load(req);
         if (!loaded) {
             throw std::runtime_error("failed to load model: " + std::string(model_path));

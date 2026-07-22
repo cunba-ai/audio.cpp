@@ -1,0 +1,10 @@
+{
+  "mcp": {
+    "servers": {
+      "symgraph": {
+        "command": "symgraph",
+        "args": ["serve"]
+      }
+    }
+  }
+}

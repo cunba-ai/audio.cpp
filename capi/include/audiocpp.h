@@ -86,6 +86,7 @@ enum {
  * Load a model and create a task session.
  *
  * @param model_path   Path to model directory or GGUF file.
+ * @param family_hint  Model family hint (e.g. "qwen3_asr", "qwen3_tts"); NULL = auto-detect.
  * @param task         One of AUDIOCPP_TASK_* (TTS, ASR, VAD, etc.).
  * @param backend      One of AUDIOCPP_BACKEND_*.
  * @param device_id    GPU device index (0 for first GPU; ignored for CPU).
@@ -95,6 +96,7 @@ enum {
  */
 audiocpp_model_t *audiocpp_load_model(
     const char *model_path,
+    const char *family_hint,
     int task,
     int backend,
     int device_id,

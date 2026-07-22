@@ -254,6 +254,7 @@ jobs:
             -DBUILD_SHARED_LIBS=ON `
             -DAUDIOCPP_BUILD_CAPI=ON `
             -DENGINE_BUILD_EXAMPLES=OFF `
+            -DENGINE_ENABLE_OPENMP=OFF `
             -DGGML_HIP=ON `
             -DGPU_TARGETS="${{ env.AMDGPU_TARGETS }}" `
             -DCMAKE_PREFIX_PATH="$hipPath"

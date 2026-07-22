@@ -1,11 +1,30 @@
 name: C ABI Build
 
+# Builds the C ABI shared library (libaudiocpp.so / audiocpp.dll) for each GPU
+# backend, borrowing the proven toolchain-install patterns from llama.cpp's
+# build-combined-backends.yml (cached CUDA/HIP SDK, the real AMD HIP SDK .exe,
+# the offline oneAPI installer + Level Zero SDK, ccache). Unlike the llama.cpp
+# reference, this produces single-backend shared libraries (no Vulkan co-build,
+# no GGML_BACKEND_DL) and ships them via a GitHub draft release (no OSS).
+#
+# Linux jobs run in vendor containers (CUDA/ROCm/SYCL) and are the reliable
+# signal. Windows CUDA must pass; Windows ROCm and SYCL are best-effort
+# (continue-on-error): hosted runners have no AMD/Intel GPU, so they only
+# prove MSVC configure/compile, and the vendor toolchains are large/flaky.
+
 on:
   push:
     branches:
       - main
       - dev
       - capi/**
+    paths:
+      - '.github/workflows/capi-build.yml'
+      - 'CMakeLists.txt'
+      - 'capi/**'
+      - 'src/**'
+      - 'include/**'
+      - 'external/ggml/**'
   pull_request:
     branches:
       - main
@@ -16,6 +35,14 @@ on:
         description: 'Release tag (e.g. capi-v0.1.0). Leave empty to skip release upload.'
         required: false
         type: string
+
+permissions:
+  contents: read
+  actions: write   # needed to save toolchain caches
+
+env:
+  CUDA_ARCHS: "80;86;89;90"
+  AMDGPU_TARGETS: "gfx1100;gfx1101;gfx1102;gfx1150;gfx1151"
 
 concurrency:
   group: capi-build-${{ github.ref }}-${{ github.event.inputs.release_tag || 'none' }}
@@ -49,11 +76,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install build deps
         run: |
           apt-get update && apt-get install -y cmake git build-essential
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: capi-linux-${{ matrix.config.artifact_suffix }}
 
       - name: Configure
         run: |
@@ -79,7 +111,7 @@ jobs:
           ls -la artifacts/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: audiocpp-${{ matrix.config.artifact_suffix }}
           path: artifacts/
@@ -110,7 +142,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup CUDA Toolkit
         if: matrix.config.setup == 'cuda'
@@ -119,51 +151,87 @@ jobs:
           cuda: '12.6.2'
           method: 'network'
 
-      - name: Setup ROCm HIP SDK
+      # ── ROCm/HIP: real AMD HIP SDK installer (llama.cpp pattern) ──────────
+      # Hosted runners have no AMD GPU, so this only proves configure/compile.
+      # Best-effort (continue-on-error) — Linux ROCm is the reliable signal.
+      - name: Cache ROCm Installation
+        if: matrix.config.setup == 'rocm'
+        id: cache-rocm
+        uses: actions/cache@v5
+        with:
+          path: C:\Program Files\AMD\ROCm
+          key: cache-gha-rocm-26.Q1-${{ runner.os }}
+
+      - name: Install ROCm HIP SDK
+        if: matrix.config.setup == 'rocm' && steps.cache-rocm.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $url = "https://download.amd.com/developer/eula/rocm-hub/AMD-Software-PRO-Edition-26.Q1-Win11-For-HIP.exe"
+          Write-Host "Downloading AMD HIP SDK Installer..."
+          Invoke-WebRequest -Uri $url -OutFile "${env:RUNNER_TEMP}\rocm-install.exe" -UseBasicParsing
+          Write-Host "Installing AMD HIP SDK..."
+          $proc = Start-Process "${env:RUNNER_TEMP}\rocm-install.exe" -ArgumentList '-install' -NoNewWindow -PassThru
+          $completed = $proc.WaitForExit(600000)
+          if (-not $completed) {
+            Write-Host "##[error]ROCm installation timed out after 10 minutes. Killing the process."
+            $proc.Kill()
+            exit 1
+          }
+          if ($proc.ExitCode -ne 0) {
+            Write-Host "##[error]ROCm installation failed with exit code $($proc.ExitCode)."
+            exit 1
+          }
+
+      - name: Verify ROCm HIP SDK
         if: matrix.config.setup == 'rocm'
         shell: pwsh
         run: |
-          Write-Host "Installing AMD HIP SDK via winget..."
-          # Try winget first (GitHub runners sometimes have AMD drivers)
-          $wingetResult = $null
-          try {
-            $wingetResult = winget install --id AMDDeploymentManager.HIPSDK --accept-package-agreements --accept-source-agreements 2>&1
-            Write-Host "winget output: $wingetResult"
-          } catch {
-            Write-Host "winget install failed: $_"
-          }
-          # Scan for the installed HIP clang toolchain. ROCm-on-Windows in CI is
-          # best-effort: hosted runners have no AMD GPU and winget may not
-          # provide a HIPSDK build, so treat "nothing found" as a hard stop
-          # rather than letting the build fail later with a confusing
-          # find_package(hip) error. The job stays non-gating (continue-on-error).
-          $hipFound = Get-ChildItem -Path "C:\Program Files\AMD" -Recurse -Filter "clang.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $hipFound) {
-            Write-Host "##[error]AMD HIP SDK not found after winget attempt (no clang.exe under C:\Program Files\AMD). Cannot proceed with ROCm build."
+          $hipClang = Get-ChildItem -Path "C:\Program Files\AMD\ROCm" -Recurse -Filter "clang.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $hipClang) {
+            Write-Host "##[error]AMD HIP SDK not found (no clang.exe under C:\Program Files\AMD\ROCm). Cannot proceed with ROCm build."
             exit 1
           }
-          $hipDir = Split-Path (Split-Path $hipFound.FullName)
-          Write-Host "Found HIP at: $hipDir"
-          echo "$hipDir\bin" >> $env:GITHUB_PATH
+          Write-Host "Found HIP clang at: $($hipClang.FullName)"
 
-      - name: Setup Intel oneAPI
+      # ── SYCL/DPC++: offline oneAPI installer + Level Zero (llama.cpp pattern) ──
+      # Pinned to a known-good oneAPI Essentials offline installer. This URL
+      # will eventually rot on Intel's release schedule — swap the constant
+      # below if it 403/Access-Denies. Best-effort (continue-on-error).
+      - name: Download & Install oneAPI
+        if: matrix.config.setup == 'sycl'
+        env:
+          WINDOWS_BASEKIT_URL: https://registrationcenter-download.intel.com/akdlm/IRC_NAS/b60765d1-2b85-4e85-86b6-cb0e9563a699/intel-deep-learning-essentials-2025.3.3.18_offline.exe
+          WINDOWS_DPCPP_MKL: intel.oneapi.win.cpp-dpcpp-common:intel.oneapi.win.mkl.devel:intel.oneapi.win.dnnl:intel.oneapi.win.tbb.devel
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Write-Host "Downloading oneAPI DPC++/MKL offline installer..."
+          Invoke-WebRequest -Uri $env:WINDOWS_BASEKIT_URL -OutFile "$env:RUNNER_TEMP\oneapi.exe" -UseBasicParsing -TimeoutSec 900
+          Write-Host "Installing selected oneAPI components (silent)..."
+          $proc = Start-Process -FilePath "$env:RUNNER_TEMP\oneapi.exe" `
+            -ArgumentList "-s -a --silent --components $env:WINDOWS_DPCPP_MKL --eula accept --log $env:RUNNER_TEMP\oneapi.log" `
+            -Wait -PassThru -NoNewWindow
+          Write-Host "Installer exit code: $($proc.ExitCode)"
+          if ($proc.ExitCode -ne 0) {
+            Write-Host "##[error]oneAPI installer failed with exit code $($proc.ExitCode)."
+            exit 1
+          }
+
+      - name: Install Level Zero SDK
+        if: matrix.config.setup == 'sycl'
+        env:
+          LEVEL_ZERO_SDK_URL: https://github.com/oneapi-src/level-zero/releases/download/v1.28.2/level-zero-win-sdk-1.28.2.zip
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri $env:LEVEL_ZERO_SDK_URL -OutFile "level-zero-win-sdk.zip" -UseBasicParsing
+          Expand-Archive -Path "level-zero-win-sdk.zip" -DestinationPath "C:/level-zero-sdk" -Force
+          "LEVEL_ZERO_V1_SDK_PATH=C:/level-zero-sdk" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Verify oneAPI
         if: matrix.config.setup == 'sycl'
         shell: pwsh
         run: |
-          Write-Host "Installing Intel oneAPI DPC++ Compiler..."
-          # Try the offline installer (large, ~4GB, may timeout on slow runners)
-          $url = "https://registrationcenter-download.intel.com/akdlm/IRC_NAS/b0bacc74-0863-4f96-844e-8a2ff5db5e96/w_BaseKit_p_2025.0.0.841_offline.exe"
-          try {
-            Write-Host "Downloading oneAPI BaseKit (this may take 10+ minutes)..."
-            Invoke-WebRequest -Uri $url -OutFile "$env:TEMP\oneapi.exe" -UseBasicParsing -TimeoutSec 600
-            Write-Host "Installing DPC++ component only..."
-            $proc = Start-Process -FilePath "$env:TEMP\oneapi.exe" -ArgumentList "-s --action install --components intel.oneapi.win.dpcpp-cli --eula accept --log $env:TEMP\oneapi.log" -Wait -PassThru -NoNewWindow
-            Write-Host "Installer exit code: $($proc.ExitCode)"
-          } catch {
-            Write-Host "oneAPI install failed: $_"
-            Write-Host "WARNING: Could not install Intel oneAPI. This build may fail."
-          }
-          # Verify
           if (Test-Path "C:\Program Files (x86)\Intel\oneAPI\setvars.bat") {
             Write-Host "oneAPI installed successfully"
           } else {
@@ -183,39 +251,65 @@ jobs:
             -DENGINE_BUILD_EXAMPLES=OFF ^
             -DENGINE_ENABLE_OPENMP=OFF ^
             -DENGINE_ENABLE_CUDA=ON ^
-            -DCMAKE_CUDA_ARCHITECTURES="80;86;89;90"
+            -DCMAKE_CUDA_ARCHITECTURES="${{ env.CUDA_ARCHS }}"
 
       - name: Configure (ROCm)
         if: matrix.config.setup == 'rocm'
-        shell: cmd
+        shell: pwsh
         run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
-          cmake -S . -B build -G "Ninja" ^
-            -DCMAKE_BUILD_TYPE=Release ^
-            -DBUILD_SHARED_LIBS=ON ^
-            -DAUDIOCPP_BUILD_CAPI=ON ^
-            -DENGINE_BUILD_EXAMPLES=OFF ^
-            -DENGINE_ENABLE_OPENMP=OFF ^
-            -DGGML_HIP=ON ^
-            -DAMDGPU_TARGETS=gfx1100
+          $hipPath = (Resolve-Path 'C:\Program Files\AMD\ROCm\*\bin\clang.exe' | Split-Path | Split-Path)
+          Write-Host "HIP_PATH: $hipPath"
+          cmake -G "Unix Makefiles" -B build -S . `
+            -DCMAKE_C_COMPILER="$hipPath\bin\clang.exe" `
+            -DCMAKE_CXX_COMPILER="$hipPath\bin\clang++.exe" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DBUILD_SHARED_LIBS=ON `
+            -DAUDIOCPP_BUILD_CAPI=ON `
+            -DENGINE_BUILD_EXAMPLES=OFF `
+            -DGGML_HIP=ON `
+            -DGPU_TARGETS="${{ env.AMDGPU_TARGETS }}" `
+            -DCMAKE_PREFIX_PATH="$hipPath"
 
       - name: Configure (SYCL)
         if: matrix.config.setup == 'sycl'
         shell: cmd
         run: |
-          call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 vs2022
+          call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 --force
           cmake -S . -B build -G "Ninja" ^
             -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_C_COMPILER=cl ^
+            -DCMAKE_CXX_COMPILER=icx ^
             -DBUILD_SHARED_LIBS=ON ^
             -DAUDIOCPP_BUILD_CAPI=ON ^
             -DENGINE_BUILD_EXAMPLES=OFF ^
-            -DENGINE_ENABLE_OPENMP=OFF ^
             -DGGML_SYCL=ON ^
+            -DGGML_SYCL_F16=OFF ^
             -DGGML_SYCL_TARGET=INTEL
 
-      - name: Build audiocpp shared library
+      - name: Build audiocpp shared library (CUDA)
+        if: matrix.config.setup == 'cuda'
         shell: cmd
         run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cmake --build build --parallel %NUMBER_OF_PROCESSORS% --target audiocpp
+
+      # ROCm builds with clang (HIP), not MSVC. Add HIP bin to PATH so the
+      # clang/clang++ recorded by Configure remains invokable.
+      - name: Build audiocpp shared library (ROCm)
+        if: matrix.config.setup == 'rocm'
+        shell: pwsh
+        run: |
+          $hipPath = (Resolve-Path 'C:\Program Files\AMD\ROCm\*\bin\clang.exe' | Split-Path | Split-Path)
+          $env:Path = "$hipPath\bin;$env:Path"
+          cmake --build build --parallel $env:NUMBER_OF_PROCESSORS --target audiocpp
+
+      # SYCL needs oneAPI's setvars.bat (for icx) AND vcvars64.bat (for cl,
+      # the C frontend icx targets on Windows).
+      - name: Build audiocpp shared library (SYCL)
+        if: matrix.config.setup == 'sycl'
+        shell: cmd
+        run: |
+          call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 --force
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
           cmake --build build --parallel %NUMBER_OF_PROCESSORS% --target audiocpp
 
@@ -229,13 +323,13 @@ jobs:
           Get-ChildItem artifacts/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: audiocpp-${{ matrix.config.artifact_suffix }}
           path: artifacts/
 
   # ════════════════════════════════════════════════════════════════════════
-  # Release
+  # Release (GitHub draft release; no OSS publish in this repo)
   # ════════════════════════════════════════════════════════════════════════
   release:
     name: Release
@@ -245,7 +339,7 @@ jobs:
 
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: artifacts
 

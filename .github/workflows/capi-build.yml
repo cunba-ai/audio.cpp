@@ -80,7 +80,10 @@ jobs:
 
       - name: Install build deps
         run: |
-          apt-get update && apt-get install -y cmake git build-essential
+          apt-get update
+          # Retry downloads: archive.ubuntu.com is intermittently unreachable
+          # from inside GitHub Actions containers (transient connection drops).
+          apt-get -o Acquire::Retries=5 install -y cmake git build-essential
 
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.21

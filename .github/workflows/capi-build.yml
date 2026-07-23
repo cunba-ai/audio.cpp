@@ -43,6 +43,9 @@ permissions:
 env:
   CUDA_ARCHS: "60;61;70;75;80;86;89;90"
   AMDGPU_TARGETS: "gfx1100;gfx1101;gfx1102;gfx1150;gfx1151;gfx1200;gfx1201"
+  OSS_BUCKET: "miaosoft-internal"
+  OSS_ENDPOINT: "oss-cn-shanghai.aliyuncs.com"
+  OSS_PREFIX: "cunba.ai/audio.cpp"
 
 concurrency:
   group: capi-build-${{ github.ref }}-${{ github.event.inputs.release_tag || 'none' }}
@@ -373,3 +376,62 @@ jobs:
             artifacts/*/audiocpp.lib
             artifacts/*/audiocpp.h
           draft: true
+
+  # ════════════════════════════════════════════════════════════════════════
+  # Publish to Alibaba Cloud OSS (always runs; best-effort Windows jobs
+  # that fail are skipped since their artifacts won't exist)
+  # ════════════════════════════════════════════════════════════════════════
+  publish-oss:
+    name: Publish to OSS
+    runs-on: ubuntu-22.04
+    needs: [linux, windows]
+    if: always()
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Compute version strings
+        run: |
+          echo "BUILD_DATE=$(date -u +%Y%m%d)" >> $GITHUB_ENV
+          echo "COMMIT_ID=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: ./artifact
+          merge-multiple: true
+
+      - name: List downloaded artifacts
+        run: ls -la artifact/ || true
+
+      - name: Install ossutil
+        run: |
+          curl -o ossutil64 "https://gosspublic.alicdn.com/ossutil/1.7.18/ossutil64"
+          chmod +x ossutil64
+          ./ossutil64 version || true
+
+      - name: Upload to OSS
+        env:
+          OSS_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_KEY: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+        run: |
+          set -e
+          cd artifact
+          shopt -s nullglob
+          files=( * )
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No artifacts to upload"; exit 0
+          fi
+          for f in "${files[@]}"; do
+            [ -f "$f" ] || continue
+            echo "== $f =="
+            # Dated snapshot (retention/history)
+            ./../ossutil64 cp "$f" "oss://${{ env.OSS_BUCKET }}/${{ env.OSS_PREFIX }}/${{ env.BUILD_DATE }}-${{ env.COMMIT_ID }}/$f" \
+              -i "$OSS_ID" -k "$OSS_KEY" -e "${{ env.OSS_ENDPOINT }}" -f
+            # Latest pointer (always overwritten)
+            ./../ossutil64 cp "$f" "oss://${{ env.OSS_BUCKET }}/${{ env.OSS_PREFIX }}/latest/$f" \
+              -i "$OSS_ID" -k "$OSS_KEY" -e "${{ env.OSS_ENDPOINT }}" -f
+          done

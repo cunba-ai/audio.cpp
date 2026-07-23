@@ -93,8 +93,11 @@ jobs:
 
       - name: Configure
         run: |
-          # Source oneAPI env if present (SYCL container); harmless otherwise.
-          if [ -f /opt/intel/oneapi/setvars.sh ]; then . /opt/intel/oneapi/setvars.sh; fi
+          # Source oneAPI env if present AND not already loaded (the SYCL
+          # container auto-sources setvars, so re-sourcing errors out).
+          if [ -f /opt/intel/oneapi/setvars.sh ] && [ -z "$ONEAPI_ROOT" ]; then
+            . /opt/intel/oneapi/setvars.sh
+          fi
           mkdir -p build
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Release \
@@ -106,7 +109,9 @@ jobs:
 
       - name: Build audiocpp shared library
         run: |
-          if [ -f /opt/intel/oneapi/setvars.sh ]; then . /opt/intel/oneapi/setvars.sh; fi
+          if [ -f /opt/intel/oneapi/setvars.sh ] && [ -z "$ONEAPI_ROOT" ]; then
+            . /opt/intel/oneapi/setvars.sh
+          fi
           cmake --build build --parallel $(nproc) --target audiocpp
 
       - name: Collect artifacts

@@ -63,7 +63,7 @@ jobs:
         config:
           - name: CUDA-CPU
             container: nvidia/cuda:12.4.1-devel-ubuntu22.04
-            cmake_extra: '-DENGINE_ENABLE_CUDA=ON'
+            cmake_extra: '-DENGINE_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="60;61;70;75;80;86;89;90"'
             artifact_suffix: linux-cuda-cpu
           - name: ROCm-CPU
             container: rocm/dev-ubuntu-22.04:6.4-complete

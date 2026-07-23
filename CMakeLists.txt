@@ -686,10 +686,12 @@ if (AUDIOCPP_BUILD_CAPI)
             "    audiocpp_free_string\n"
             "    audiocpp_clear_error\n"
         )
-        if (MSVC)
+        if (MSVC OR CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
+            # MSVC link.exe and icx (which drives link.exe on Windows) both
+            # accept /DEF:path directly.
             target_link_options(audiocpp PRIVATE "/DEF:${AUDIOCPP_DEF_FILE}")
         else()
-            # clang++ (e.g. AMD ROCm) driving lld-link: forward via -Wl,
+            # clang++ (e.g. AMD ROCm) drives lld-link: forward via -Wl,
             target_link_options(audiocpp PRIVATE "-Wl,/DEF:${AUDIOCPP_DEF_FILE}")
         endif()
     else()

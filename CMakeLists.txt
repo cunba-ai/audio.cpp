@@ -663,8 +663,8 @@ if (AUDIOCPP_BUILD_CAPI)
         C_VISIBILITY_PRESET hidden
         VISIBILITY_INLINES_HIDDEN ON
     )
-    if (MSVC)
-        # Windows: use .def file to limit exports
+    if (MSVC OR WIN32)
+        # Windows: use .def file to limit exports (covers MSVC and clang-MSVC)
         set(AUDIOCPP_DEF_FILE "${CMAKE_CURRENT_BINARY_DIR}/audiocpp.def")
         file(WRITE "${AUDIOCPP_DEF_FILE}"
             "LIBRARY audiocpp\n"

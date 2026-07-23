@@ -133,6 +133,28 @@ audiocpp_audio_t *audiocpp_tts(
     audiocpp_error_t *err
 );
 
+/**
+ * Synthesize speech with inline voice reference PCM (no temp file).
+ *
+ * @param model            Model handle (must be TTS).
+ * @param text             UTF-8 input text.
+ * @param options_json     Options (reference_text, speed, language, ...).
+ *                         voice_ref in options_json is ignored when voice_ref_pcm is non-NULL.
+ * @param voice_ref_pcm    Float32 mono PCM samples for voice cloning. NULL = no clone.
+ * @param voice_ref_n      Number of samples in voice_ref_pcm (0 if NULL).
+ * @param voice_ref_sr     Sample rate of voice_ref_pcm (e.g. 16000).
+ * @param err              Optional error output.
+ */
+audiocpp_audio_t *audiocpp_tts_with_voice_ref(
+    const audiocpp_model_t *model,
+    const char *text,
+    const char *options_json,
+    const float *voice_ref_pcm,
+    int64_t voice_ref_n,
+    int voice_ref_sr,
+    audiocpp_error_t *err
+);
+
 /* ======================================================================== */
 /* ASR: audio → text                                                         */
 /* ======================================================================== */

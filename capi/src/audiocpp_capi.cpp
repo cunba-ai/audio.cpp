@@ -237,6 +237,59 @@ audiocpp_audio_t *audiocpp_tts(
     return result;
 }
 
+audiocpp_audio_t *audiocpp_tts_with_voice_ref(
+    const audiocpp_model_t *model,
+    const char *text,
+    const char *options_json,
+    const float *voice_ref_pcm,
+    int64_t voice_ref_n,
+    int voice_ref_sr,
+    audiocpp_error_t *err
+) {
+    audiocpp_audio_t *result = nullptr;
+    AUDIOCPP_CATCH(err, {
+        if (!model || !model->offline) {
+            throw std::runtime_error("invalid model handle");
+        }
+        if (!text) {
+            throw std::runtime_error("text is null");
+        }
+        engine::runtime::TaskRequest req;
+        req.text_input = engine::runtime::Transcript{};
+        req.text_input->text = text;
+        apply_options(req, options_json);
+
+        // Inline voice reference PCM overrides file-based voice_ref
+        if (voice_ref_pcm && voice_ref_n > 0) {
+            engine::runtime::VoiceCondition voice;
+            voice.speaker = engine::runtime::VoiceReference{};
+            engine::runtime::AudioBuffer ref_audio;
+            ref_audio.sample_rate = voice_ref_sr;
+            ref_audio.channels = 1;
+            ref_audio.samples.assign(voice_ref_pcm, voice_ref_pcm + voice_ref_n);
+            voice.speaker->audio = std::move(ref_audio);
+            req.voice = std::move(voice);
+        }
+
+        model->session->prepare(engine::runtime::build_preparation_request(req));
+        auto task_result = model->offline->run(req);
+        if (!task_result.audio_output || task_result.audio_output->samples.empty()) {
+            throw std::runtime_error("TTS produced no audio output");
+        }
+        const auto &buf = *task_result.audio_output;
+        result = new audiocpp_audio_t{};
+        result->n_samples = static_cast<int64_t>(buf.samples.size());
+        result->sample_rate = buf.sample_rate;
+        result->samples = static_cast<float *>(malloc(buf.samples.size() * sizeof(float)));
+        if (!result->samples) {
+            delete result;
+            throw std::runtime_error("out of memory allocating audio output");
+        }
+        std::memcpy(result->samples, buf.samples.data(), buf.samples.size() * sizeof(float));
+    });
+    return result;
+}
+
 /* ======================================================================== */
 /* ASR                                                                       */
 /* ======================================================================== */

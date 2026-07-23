@@ -672,6 +672,7 @@ if (AUDIOCPP_BUILD_CAPI)
             "    audiocpp_load_model\n"
             "    audiocpp_free_model\n"
             "    audiocpp_tts\n"
+            "    audiocpp_tts_with_voice_ref\n"
             "    audiocpp_asr\n"
             "    audiocpp_diar\n"
             "    audiocpp_vad\n"

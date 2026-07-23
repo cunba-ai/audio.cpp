@@ -82,11 +82,15 @@ static engine::core::BackendType map_backend(int backend) {
 
 static engine::runtime::VoiceTaskKind map_task(int task) {
     switch (task) {
-        case AUDIOCPP_TASK_TTS: return engine::runtime::VoiceTaskKind::Tts;
-        case AUDIOCPP_TASK_ASR: return engine::runtime::VoiceTaskKind::Asr;
-        case AUDIOCPP_TASK_VAD: return engine::runtime::VoiceTaskKind::Vad;
-        case AUDIOCPP_TASK_DIAR: return engine::runtime::VoiceTaskKind::Diarization;
-        default:                 return engine::runtime::VoiceTaskKind::Tts;
+        case AUDIOCPP_TASK_TTS:   return engine::runtime::VoiceTaskKind::Tts;
+        case AUDIOCPP_TASK_ASR:   return engine::runtime::VoiceTaskKind::Asr;
+        case AUDIOCPP_TASK_VAD:   return engine::runtime::VoiceTaskKind::Vad;
+        case AUDIOCPP_TASK_DIAR:  return engine::runtime::VoiceTaskKind::Diarization;
+        case AUDIOCPP_TASK_SEP:   return engine::runtime::VoiceTaskKind::SourceSeparation;
+        case AUDIOCPP_TASK_GEN:   return engine::runtime::VoiceTaskKind::AudioGeneration;
+        case AUDIOCPP_TASK_ALIGN: return engine::runtime::VoiceTaskKind::Alignment;
+        case AUDIOCPP_TASK_VC:    return engine::runtime::VoiceTaskKind::VoiceConversion;
+        default:                  return engine::runtime::VoiceTaskKind::Tts;
     }
 }
 
@@ -174,6 +178,19 @@ static void apply_options(engine::runtime::TaskRequest & req, const char * optio
         ref_audio.samples = std::move(wav.samples);
         voice.speaker->audio = std::move(ref_audio);
         req.voice = std::move(voice);
+    }
+
+    // Transcript text(for forced aligner: audio + transcript contract)
+    const char * text = cJSON_GetStringValue(cJSON_GetObjectItem(root, "text"));
+    const char * lang = cJSON_GetStringValue(cJSON_GetObjectItem(root, "language"));
+    if (text && text[0] && !req.text_input.has_value()) {
+        req.text_input = engine::runtime::Transcript{};
+        req.text_input->text = text;
+        if (lang && lang[0]) {
+            req.text_input->language = lang;
+        }
+    } else if (lang && lang[0] && req.text_input.has_value() && req.text_input->language.empty()) {
+        req.text_input->language = lang;
     }
 
     // Iterate all string/number keys → options map
@@ -330,8 +347,122 @@ audiocpp_text_t *audiocpp_asr(
 }
 
 /* ======================================================================== */
-/* Diarization                                                               */
+/* Audio transform: audio → audio (Source Separation, Voice Conversion)      */
 /* ======================================================================== */
+
+audiocpp_audio_t *audiocpp_audio_transform(
+    const audiocpp_model_t *model,
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    const char *options_json,
+    audiocpp_error_t *err
+) {
+    audiocpp_audio_t *result = nullptr;
+    AUDIOCPP_CATCH(err, {
+        if (!model || !model->offline) {
+            throw std::runtime_error("invalid model handle");
+        }
+        if (!pcm || n_samples <= 0) {
+            throw std::runtime_error("invalid audio input");
+        }
+        engine::runtime::TaskRequest req;
+        req.audio_input = engine::runtime::AudioBuffer{};
+        req.audio_input->sample_rate = sample_rate;
+        req.audio_input->channels = 1;
+        req.audio_input->samples.assign(pcm, pcm + n_samples);
+        apply_options(req, options_json);
+        model->session->prepare(engine::runtime::build_preparation_request(req));
+        auto task_result = model->offline->run(req);
+        // VC/audio→audio:用 audio_output;SEP(HTDemucs):用 named_audio_outputs[0]
+        // (多 stem 输出,返回第一个 — 通常是 "vocals")
+        const engine::runtime::AudioBuffer *buf_ptr = nullptr;
+        if (task_result.audio_output && !task_result.audio_output->samples.empty()) {
+            buf_ptr = &(*task_result.audio_output);
+        } else if (!task_result.named_audio_outputs.empty() &&
+                   !task_result.named_audio_outputs[0].audio.samples.empty()) {
+            buf_ptr = &task_result.named_audio_outputs[0].audio;
+        }
+        if (!buf_ptr) {
+            throw std::runtime_error("audio transform produced no audio output");
+        }
+        const auto &buf = *buf_ptr;
+        result = new audiocpp_audio_t{};
+        result->n_samples = static_cast<int64_t>(buf.samples.size());
+        result->sample_rate = buf.sample_rate;
+        result->samples = static_cast<float *>(malloc(buf.samples.size() * sizeof(float)));
+        if (!result->samples) {
+            delete result;
+            throw std::runtime_error("out of memory allocating audio output");
+        }
+        std::memcpy(result->samples, buf.samples.data(), buf.samples.size() * sizeof(float));
+    });
+    return result;
+}
+
+audiocpp_audio_t *audiocpp_audio_transform_with_voice_ref(
+    const audiocpp_model_t *model,
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    const char *options_json,
+    const float *voice_ref_pcm,
+    int64_t voice_ref_n,
+    int voice_ref_sr,
+    audiocpp_error_t *err
+) {
+    audiocpp_audio_t *result = nullptr;
+    AUDIOCPP_CATCH(err, {
+        if (!model || !model->offline) {
+            throw std::runtime_error("invalid model handle");
+        }
+        if (!pcm || n_samples <= 0) {
+            throw std::runtime_error("invalid audio input");
+        }
+        engine::runtime::TaskRequest req;
+        req.audio_input = engine::runtime::AudioBuffer{};
+        req.audio_input->sample_rate = sample_rate;
+        req.audio_input->channels = 1;
+        req.audio_input->samples.assign(pcm, pcm + n_samples);
+        apply_options(req, options_json);
+
+        // Inline voice reference PCM (target speaker for VC)
+        if (voice_ref_pcm && voice_ref_n > 0) {
+            engine::runtime::VoiceCondition voice;
+            voice.speaker = engine::runtime::VoiceReference{};
+            engine::runtime::AudioBuffer ref_audio;
+            ref_audio.sample_rate = voice_ref_sr;
+            ref_audio.channels = 1;
+            ref_audio.samples.assign(voice_ref_pcm, voice_ref_pcm + voice_ref_n);
+            voice.speaker->audio = std::move(ref_audio);
+            req.voice = std::move(voice);
+        }
+
+        model->session->prepare(engine::runtime::build_preparation_request(req));
+        auto task_result = model->offline->run(req);
+        const engine::runtime::AudioBuffer *buf_ptr = nullptr;
+        if (task_result.audio_output && !task_result.audio_output->samples.empty()) {
+            buf_ptr = &(*task_result.audio_output);
+        } else if (!task_result.named_audio_outputs.empty() &&
+                   !task_result.named_audio_outputs[0].audio.samples.empty()) {
+            buf_ptr = &task_result.named_audio_outputs[0].audio;
+        }
+        if (!buf_ptr) {
+            throw std::runtime_error("audio transform produced no audio output");
+        }
+        const auto &buf = *buf_ptr;
+        result = new audiocpp_audio_t{};
+        result->n_samples = static_cast<int64_t>(buf.samples.size());
+        result->sample_rate = buf.sample_rate;
+        result->samples = static_cast<float *>(malloc(buf.samples.size() * sizeof(float)));
+        if (!result->samples) {
+            delete result;
+            throw std::runtime_error("out of memory allocating audio output");
+        }
+        std::memcpy(result->samples, buf.samples.data(), buf.samples.size() * sizeof(float));
+    });
+    return result;
+}
 
 audiocpp_diar_t *audiocpp_diar(
     const audiocpp_model_t *model,

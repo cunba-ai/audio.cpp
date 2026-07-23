@@ -72,10 +72,14 @@ enum {
 /* ======================================================================== */
 
 enum {
-    AUDIOCPP_TASK_TTS    = 5,  /**< Text-to-Speech */
-    AUDIOCPP_TASK_ASR    = 1,  /**< Speech-to-Text */
     AUDIOCPP_TASK_VAD    = 0,  /**< Voice Activity Detection */
+    AUDIOCPP_TASK_ASR    = 1,  /**< Speech-to-Text */
     AUDIOCPP_TASK_DIAR   = 2,  /**< Speaker Diarization */
+    AUDIOCPP_TASK_SEP    = 3,  /**< Source Separation (vocal/accompaniment split) */
+    AUDIOCPP_TASK_GEN    = 4,  /**< Audio/Music Generation */
+    AUDIOCPP_TASK_TTS    = 5,  /**< Text-to-Speech */
+    AUDIOCPP_TASK_ALIGN  = 6,  /**< Forced Alignment (audio + text → timestamps) */
+    AUDIOCPP_TASK_VC     = 7,  /**< Voice Conversion (speaker timbre transfer) */
 };
 
 /* ======================================================================== */
@@ -178,6 +182,56 @@ audiocpp_text_t *audiocpp_asr(
     int64_t n_samples,
     int sample_rate,
     const char *options_json,
+    audiocpp_error_t *err
+);
+
+/* ======================================================================== */
+/* Audio transform: audio → audio (SEP / VC)                                 */
+/* ======================================================================== */
+
+/**
+ * Transform audio to audio (source separation, voice conversion).
+ *
+ * @param model       Model handle (must be loaded with AUDIOCPP_TASK_SEP or AUDIOCPP_TASK_VC).
+ * @param pcm         Input PCM samples (mono f32, [-1.0, 1.0]).
+ * @param n_samples   Number of PCM samples.
+ * @param sample_rate Sample rate (e.g. 16000 or 44100).
+ * @param options_json JSON options (NULL = defaults).
+ * @param err         Optional error output.
+ * @return Audio output, or NULL on failure. Caller MUST free with audiocpp_free_audio.
+ */
+audiocpp_audio_t *audiocpp_audio_transform(
+    const audiocpp_model_t *model,
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    const char *options_json,
+    audiocpp_error_t *err
+);
+
+/**
+ * Transform audio with inline voice reference (for Voice Conversion).
+ *
+ * @param model            Model handle (must be AUDIOCPP_TASK_VC).
+ * @param pcm              Input PCM (source audio to convert).
+ * @param n_samples        Number of input samples.
+ * @param sample_rate      Input sample rate.
+ * @param options_json     Options (NULL = defaults).
+ * @param voice_ref_pcm    Target speaker PCM (mono f32). NULL = no voice ref.
+ * @param voice_ref_n      Number of voice_ref samples (0 if NULL).
+ * @param voice_ref_sr     Voice ref sample rate.
+ * @param err              Optional error output.
+ * @return Audio output, or NULL on failure. Caller MUST free with audiocpp_free_audio.
+ */
+audiocpp_audio_t *audiocpp_audio_transform_with_voice_ref(
+    const audiocpp_model_t *model,
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    const char *options_json,
+    const float *voice_ref_pcm,
+    int64_t voice_ref_n,
+    int voice_ref_sr,
     audiocpp_error_t *err
 );
 

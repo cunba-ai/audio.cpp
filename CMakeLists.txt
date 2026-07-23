@@ -676,6 +676,8 @@ if (AUDIOCPP_BUILD_CAPI)
             "    audiocpp_tts\n"
             "    audiocpp_tts_with_voice_ref\n"
             "    audiocpp_asr\n"
+            "    audiocpp_audio_transform\n"
+            "    audiocpp_audio_transform_with_voice_ref\n"
             "    audiocpp_diar\n"
             "    audiocpp_vad\n"
             "    audiocpp_version\n"

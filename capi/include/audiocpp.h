@@ -198,6 +198,43 @@ audiocpp_diar_t *audiocpp_diar(
 );
 
 /* ======================================================================== */
+/* VAD: audio → speech segments                                              */
+/* ======================================================================== */
+
+/** VAD speech segment. */
+typedef struct {
+    int64_t start_sample;
+    int64_t end_sample;
+    float confidence;
+} audiocpp_vad_segment_t;
+
+/** VAD result. Caller owns; free with audiocpp_free_vad. */
+typedef struct {
+    audiocpp_vad_segment_t *segments;
+    int64_t n_segments;
+} audiocpp_vad_t;
+
+/**
+ * Detect speech segments in audio.
+ *
+ * @param model       Model handle (must be loaded with AUDIOCPP_TASK_VAD).
+ * @param pcm         PCM samples (mono f32, [-1.0, 1.0]).
+ * @param n_samples   Number of PCM samples.
+ * @param sample_rate Sample rate (e.g. 16000).
+ * @param options_json JSON options (NULL = defaults).
+ * @param err         Optional error output.
+ * @return VAD result, or NULL on failure. Caller MUST free with audiocpp_free_vad.
+ */
+audiocpp_vad_t *audiocpp_vad(
+    const audiocpp_model_t *model,
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    const char *options_json,
+    audiocpp_error_t *err
+);
+
+/* ======================================================================== */
 /* Utilities                                                                 */
 /* ======================================================================== */
 
@@ -212,6 +249,9 @@ void audiocpp_free_text(audiocpp_text_t *text);
 
 /** Free a diarization result. Safe to call with NULL. */
 void audiocpp_free_diar(audiocpp_diar_t *diar);
+
+/** Free a VAD result. Safe to call with NULL. */
+void audiocpp_free_vad(audiocpp_vad_t *vad);
 
 /** Free a string returned in audiocpp_error_t. Safe to call with NULL. */
 void audiocpp_free_string(char *str);

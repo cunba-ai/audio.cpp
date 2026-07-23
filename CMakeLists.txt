@@ -674,10 +674,12 @@ if (AUDIOCPP_BUILD_CAPI)
             "    audiocpp_tts\n"
             "    audiocpp_asr\n"
             "    audiocpp_diar\n"
+            "    audiocpp_vad\n"
             "    audiocpp_version\n"
             "    audiocpp_free_audio\n"
             "    audiocpp_free_text\n"
             "    audiocpp_free_diar\n"
+            "    audiocpp_free_vad\n"
             "    audiocpp_free_string\n"
             "    audiocpp_clear_error\n"
         )

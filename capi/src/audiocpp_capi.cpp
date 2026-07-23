@@ -325,6 +325,53 @@ audiocpp_diar_t *audiocpp_diar(
 }
 
 /* ======================================================================== */
+/* VAD                                                                       */
+/* ======================================================================== */
+
+audiocpp_vad_t *audiocpp_vad(
+    const audiocpp_model_t *model,
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    const char *options_json,
+    audiocpp_error_t *err
+) {
+    audiocpp_vad_t *result = nullptr;
+    AUDIOCPP_CATCH(err, {
+        if (!model || !model->offline) {
+            throw std::runtime_error("invalid model handle");
+        }
+        if (!pcm || n_samples <= 0) {
+            throw std::runtime_error("invalid audio input");
+        }
+        engine::runtime::TaskRequest req;
+        req.audio_input = engine::runtime::AudioBuffer{};
+        req.audio_input->sample_rate = sample_rate;
+        req.audio_input->channels = 1;
+        req.audio_input->samples.assign(pcm, pcm + n_samples);
+        apply_options(req, options_json);
+        model->session->prepare(engine::runtime::build_preparation_request(req));
+        auto task_result = model->offline->run(req);
+
+        const auto & segs = task_result.speech_segments;
+        result = new audiocpp_vad_t{};
+        result->n_segments = static_cast<int64_t>(segs.size());
+        if (segs.empty()) {
+            result->segments = nullptr;
+        } else {
+            result->segments = static_cast<audiocpp_vad_segment_t *>(
+                calloc(segs.size(), sizeof(audiocpp_vad_segment_t)));
+            for (size_t i = 0; i < segs.size(); ++i) {
+                result->segments[i].start_sample = segs[i].span.start_sample;
+                result->segments[i].end_sample = segs[i].span.end_sample;
+                result->segments[i].confidence = segs[i].confidence;
+            }
+        }
+    });
+    return result;
+}
+
+/* ======================================================================== */
 /* Utilities                                                                 */
 /* ======================================================================== */
 
@@ -356,6 +403,12 @@ void audiocpp_free_diar(audiocpp_diar_t *diar) {
         free(diar->turns);
     }
     delete diar;
+}
+
+void audiocpp_free_vad(audiocpp_vad_t *vad) {
+    if (!vad) return;
+    free(vad->segments);
+    delete vad;
 }
 
 void audiocpp_free_string(char *str) {

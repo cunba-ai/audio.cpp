@@ -13,6 +13,7 @@ param(
     [ValidateSet("ON", "OFF")]
     [string]$Llamafile = $null,
     [switch]$DeploymentBuild,
+    [switch]$Ccache,
     [string]$VsInstall = ""
 )
 
@@ -511,6 +512,25 @@ if ($isCudaPreset -and $arch -ne "") {
     $configureArgs += "-DCMAKE_CUDA_ARCHITECTURES=$arch"
 } elseif ($isCudaPreset) {
     $configureArgs += @("-U", "CMAKE_CUDA_ARCHITECTURES")
+}
+
+# ccache: cache .obj files so unchanged sources (vendored deps like ggml,
+# sentencepiece, cJSON) skip recompilation on clean rebuilds. Auto-detect
+# if ccache is on PATH; override with -Ccache to force-enable.
+$ccacheExe = $null
+if ($Ccache) {
+    $ccacheExe = Get-Command "ccache" -ErrorAction SilentlyContinue
+    if (-not $ccacheExe) {
+        Write-Host "WARNING: -Ccache specified but ccache not found on PATH. Continuing without cache."
+    }
+} else {
+    $ccacheExe = Get-Command "ccache" -ErrorAction SilentlyContinue
+}
+if ($ccacheExe) {
+    $ccachePath = $ccacheExe.Source
+    Write-Host "ccache: $ccachePath"
+    $configureArgs += "-DCMAKE_C_COMPILER_LAUNCHER=$ccachePath"
+    $configureArgs += "-DCMAKE_CXX_COMPILER_LAUNCHER=$ccachePath"
 }
 
 Invoke-Checked $cmake $configureArgs

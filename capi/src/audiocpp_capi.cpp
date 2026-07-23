@@ -277,6 +277,54 @@ audiocpp_text_t *audiocpp_asr(
 }
 
 /* ======================================================================== */
+/* Diarization                                                               */
+/* ======================================================================== */
+
+audiocpp_diar_t *audiocpp_diar(
+    const audiocpp_model_t *model,
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    const char *options_json,
+    audiocpp_error_t *err
+) {
+    audiocpp_diar_t *result = nullptr;
+    AUDIOCPP_CATCH(err, {
+        if (!model || !model->offline) {
+            throw std::runtime_error("invalid model handle");
+        }
+        if (!pcm || n_samples <= 0) {
+            throw std::runtime_error("invalid audio input");
+        }
+        engine::runtime::TaskRequest req;
+        req.audio_input = engine::runtime::AudioBuffer{};
+        req.audio_input->sample_rate = sample_rate;
+        req.audio_input->channels = 1;
+        req.audio_input->samples.assign(pcm, pcm + n_samples);
+        apply_options(req, options_json);
+        model->session->prepare(engine::runtime::build_preparation_request(req));
+        auto task_result = model->offline->run(req);
+
+        const auto & turns = task_result.speaker_turns;
+        result = new audiocpp_diar_t{};
+        result->n_turns = static_cast<int64_t>(turns.size());
+        if (turns.empty()) {
+            result->turns = nullptr;
+        } else {
+            result->turns = static_cast<audiocpp_speaker_turn_t *>(
+                calloc(turns.size(), sizeof(audiocpp_speaker_turn_t)));
+            for (size_t i = 0; i < turns.size(); ++i) {
+                result->turns[i].start_sample = turns[i].span.start_sample;
+                result->turns[i].end_sample = turns[i].span.end_sample;
+                result->turns[i].speaker_id = dup_cstr(turns[i].speaker_id);
+                result->turns[i].confidence = turns[i].confidence;
+            }
+        }
+    });
+    return result;
+}
+
+/* ======================================================================== */
 /* Utilities                                                                 */
 /* ======================================================================== */
 
@@ -297,6 +345,17 @@ void audiocpp_free_text(audiocpp_text_t *text) {
     free(text->text);
     free(text->language);
     delete text;
+}
+
+void audiocpp_free_diar(audiocpp_diar_t *diar) {
+    if (!diar) return;
+    if (diar->turns) {
+        for (int64_t i = 0; i < diar->n_turns; ++i) {
+            free(diar->turns[i].speaker_id);
+        }
+        free(diar->turns);
+    }
+    delete diar;
 }
 
 void audiocpp_free_string(char *str) {

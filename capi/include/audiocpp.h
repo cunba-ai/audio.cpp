@@ -160,6 +160,44 @@ audiocpp_text_t *audiocpp_asr(
 );
 
 /* ======================================================================== */
+/* Diarization: audio → speaker turns                                       */
+/* ======================================================================== */
+
+/** Speaker turn (one segment of one speaker). */
+typedef struct {
+    int64_t start_sample;   /**< Start position in samples */
+    int64_t end_sample;     /**< End position in samples */
+    char *speaker_id;       /**< Speaker ID string (may be NULL) */
+    float confidence;       /**< Confidence score [0,1] */
+} audiocpp_speaker_turn_t;
+
+/** Diarization result. Caller owns; free with audiocpp_free_diar. */
+typedef struct {
+    audiocpp_speaker_turn_t *turns;  /**< Array of speaker turns */
+    int64_t n_turns;                 /**< Number of turns */
+} audiocpp_diar_t;
+
+/**
+ * Perform speaker diarization on audio.
+ *
+ * @param model       Model handle (must be loaded with AUDIOCPP_TASK_DIAR).
+ * @param pcm         PCM samples (mono f32, [-1.0, 1.0]).
+ * @param n_samples   Number of PCM samples.
+ * @param sample_rate Sample rate (e.g. 16000).
+ * @param options_json JSON string of model-specific options (NULL = defaults).
+ * @param err         Optional error output.
+ * @return Diarization result, or NULL on failure. Caller MUST free with audiocpp_free_diar.
+ */
+audiocpp_diar_t *audiocpp_diar(
+    const audiocpp_model_t *model,
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    const char *options_json,
+    audiocpp_error_t *err
+);
+
+/* ======================================================================== */
 /* Utilities                                                                 */
 /* ======================================================================== */
 
@@ -171,6 +209,9 @@ void audiocpp_free_audio(audiocpp_audio_t *audio);
 
 /** Free a text result. Safe to call with NULL. */
 void audiocpp_free_text(audiocpp_text_t *text);
+
+/** Free a diarization result. Safe to call with NULL. */
+void audiocpp_free_diar(audiocpp_diar_t *diar);
 
 /** Free a string returned in audiocpp_error_t. Safe to call with NULL. */
 void audiocpp_free_string(char *str);

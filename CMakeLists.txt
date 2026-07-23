@@ -664,7 +664,9 @@ if (AUDIOCPP_BUILD_CAPI)
         VISIBILITY_INLINES_HIDDEN ON
     )
     if (MSVC OR WIN32)
-        # Windows: use .def file to limit exports (covers MSVC and clang-MSVC)
+        # Windows: use .def file to limit exports (covers MSVC and clang-MSVC).
+        # MSVC's link.exe takes /DEF:path; clang++/lld-link takes the same
+        # via -Wl,/DEF:path so the compiler driver forwards it correctly.
         set(AUDIOCPP_DEF_FILE "${CMAKE_CURRENT_BINARY_DIR}/audiocpp.def")
         file(WRITE "${AUDIOCPP_DEF_FILE}"
             "LIBRARY audiocpp\n"
@@ -684,7 +686,12 @@ if (AUDIOCPP_BUILD_CAPI)
             "    audiocpp_free_string\n"
             "    audiocpp_clear_error\n"
         )
-        target_link_options(audiocpp PRIVATE "/DEF:${AUDIOCPP_DEF_FILE}")
+        if (MSVC)
+            target_link_options(audiocpp PRIVATE "/DEF:${AUDIOCPP_DEF_FILE}")
+        else()
+            # clang++ (e.g. AMD ROCm) driving lld-link: forward via -Wl,
+            target_link_options(audiocpp PRIVATE "-Wl,/DEF:${AUDIOCPP_DEF_FILE}")
+        endif()
     else()
         # Linux/macOS: version script
         set(AUDIOCPP_MAP_FILE "${CMAKE_CURRENT_BINARY_DIR}/audiocpp.map")

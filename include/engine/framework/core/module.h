@@ -15,6 +15,7 @@ enum class BackendType {
     Cuda,
     Vulkan,
     Metal,
+    Sycl,
     BestAvailable,
 };
 

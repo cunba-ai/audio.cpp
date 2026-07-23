@@ -687,6 +687,9 @@ if (AUDIOCPP_BUILD_CAPI)
             "    audiocpp_free_vad\n"
             "    audiocpp_free_string\n"
             "    audiocpp_clear_error\n"
+            "    audiocpp_device_count\n"
+            "    audiocpp_device_info\n"
+            "    audiocpp_list_devices\n"
         )
         if (MSVC OR CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
             # MSVC link.exe and icx (which drives link.exe on Windows) both

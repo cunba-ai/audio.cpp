@@ -61,10 +61,11 @@ typedef struct {
 
 enum {
     AUDIOCPP_BACKEND_CPU    = 0,
-    AUDIOCPP_BACKEND_CUDA   = 1,
+    AUDIOCPP_BACKEND_CUDA   = 1,  /**< NVIDIA CUDA / AMD ROCm (HIP) */
     AUDIOCPP_BACKEND_VULKAN = 2,
     AUDIOCPP_BACKEND_METAL  = 3,
-    AUDIOCPP_BACKEND_BEST   = 4,  /**< auto-select best available */
+    AUDIOCPP_BACKEND_SYCL   = 4,  /**< Intel oneAPI SYCL */
+    AUDIOCPP_BACKEND_BEST   = 5,  /**< auto-select best available */
 };
 
 /* ======================================================================== */
@@ -309,6 +310,43 @@ audiocpp_vad_t *audiocpp_vad(
     const char *options_json,
     audiocpp_error_t *err
 );
+
+/* ======================================================================== */
+/* Device enumeration                                                        */
+/* ======================================================================== */
+
+/** Device type (mirrors ggml_backend_dev_type). */
+enum {
+    AUDIOCPP_DEVICE_CPU  = 0,  /**< CPU */
+    AUDIOCPP_DEVICE_GPU  = 1,  /**< Discrete GPU */
+    AUDIOCPP_DEVICE_IGPU = 2,  /**< Integrated GPU */
+};
+
+/** Information about a compute device.
+ *  Use audiocpp_device_count / audiocpp_device_info to enumerate before
+ *  calling audiocpp_load_model, so the client can pick the right backend
+ *  and device_id. */
+typedef struct {
+    char name[128];         /**< Device name (e.g. "NVIDIA GeForce RTX 4090") */
+    char description[256];  /**< Longer description (may be empty) */
+    int  backend;           /**< AUDIOCPP_BACKEND_* this device belongs to */
+    int  device_id;         /**< Per-backend index — pass to audiocpp_load_model */
+    int  type;              /**< AUDIOCPP_DEVICE_* (CPU/GPU/IGPU) */
+    uint64_t memory_total;  /**< Total memory in bytes (0 if unknown) */
+    uint64_t memory_free;   /**< Free memory in bytes (0 if unknown) */
+} audiocpp_device_info_t;
+
+/** Count available compute devices across all compiled backends. */
+int audiocpp_device_count(void);
+
+/** Get info for a device by index (0 .. count-1).
+ *  @param index  Device index (global, not per-backend).
+ *  @param out    Receives device info.
+ *  @return 0 on success, -1 if index out of range or out is NULL. */
+int audiocpp_device_info(int index, audiocpp_device_info_t *out);
+
+/** Print all devices to stdout (for CLI / debugging convenience). */
+void audiocpp_list_devices(void);
 
 /* ======================================================================== */
 /* Utilities                                                                 */

@@ -21,6 +21,10 @@
 #include "ggml-metal.h"
 #endif
 
+#ifdef GGML_USE_SYCL
+#include "ggml-sycl.h"
+#endif
+
 namespace engine::core {
 
 namespace {
@@ -58,6 +62,19 @@ bool is_metal_backend_handle(ggml_backend_t backend) {
     }
     ggml_backend_dev_t device = ggml_backend_get_device(backend);
     return device != nullptr && ggml_backend_dev_backend_reg(device) == ggml_backend_metal_reg();
+#else
+    (void)backend;
+    return false;
+#endif
+}
+
+bool is_sycl_backend_handle(ggml_backend_t backend) {
+#ifdef GGML_USE_SYCL
+    if (backend == nullptr) {
+        return false;
+    }
+    ggml_backend_dev_t device = ggml_backend_get_device(backend);
+    return device != nullptr && ggml_backend_dev_backend_reg(device) == ggml_backend_sycl_reg();
 #else
     (void)backend;
     return false;
@@ -139,6 +156,17 @@ ggml_backend_t init_backend(const BackendConfig & config) {
             throw std::runtime_error("Metal backend requested but this build does not include GGML_USE_METAL");
 #endif
         }
+        case BackendType::Sycl: {
+#ifdef GGML_USE_SYCL
+            ggml_backend_t backend = ggml_backend_sycl_init(config.device);
+            if (backend == nullptr) {
+                throw std::runtime_error("Failed to initialize SYCL backend");
+            }
+            return backend;
+#else
+            throw std::runtime_error("SYCL backend requested but this build does not include GGML_USE_SYCL");
+#endif
+        }
         case BackendType::BestAvailable: {
             ggml_backend_t backend = ggml_backend_init_best();
             if (backend == nullptr) {
@@ -177,6 +205,9 @@ BackendType backend_type(ggml_backend_t backend) {
     }
     if (is_metal_backend_handle(backend)) {
         return BackendType::Metal;
+    }
+    if (is_sycl_backend_handle(backend)) {
+        return BackendType::Sycl;
     }
     return BackendType::BestAvailable;
 }
@@ -346,6 +377,23 @@ BackendMemorySnapshot query_backend_memory(const BackendConfig & config) {
                     snapshot.free_bytes = static_cast<int64_t>(free_bytes);
                     snapshot.used_bytes = static_cast<int64_t>(total_bytes - free_bytes);
                 }
+            }
+            return snapshot;
+        }
+#else
+            return snapshot;
+#endif
+        case BackendType::Sycl:
+#ifdef GGML_USE_SYCL
+        {
+            size_t free_bytes = 0;
+            size_t total_bytes = 0;
+            ggml_backend_sycl_get_device_memory(config.device, &free_bytes, &total_bytes);
+            if (total_bytes > 0 && free_bytes <= total_bytes) {
+                snapshot.available = true;
+                snapshot.total_bytes = static_cast<int64_t>(total_bytes);
+                snapshot.free_bytes = static_cast<int64_t>(free_bytes);
+                snapshot.used_bytes = static_cast<int64_t>(total_bytes - free_bytes);
             }
             return snapshot;
         }

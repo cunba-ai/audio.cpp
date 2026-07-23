@@ -13,6 +13,21 @@
 #include "engine/framework/runtime/registry.h"
 #include "engine/framework/runtime/session.h"
 
+#include "ggml-backend.h"
+
+#ifdef GGML_USE_CUDA
+#include "ggml-cuda.h"
+#endif
+#ifdef GGML_USE_SYCL
+#include "ggml-sycl.h"
+#endif
+#ifdef GGML_USE_VULKAN
+#include "ggml-vulkan.h"
+#endif
+#ifdef GGML_USE_METAL
+#include "ggml-metal.h"
+#endif
+
 #include "cJSON.h"
 // cJSON.h is under external/cJSON/ — add include path if needed
 
@@ -75,6 +90,7 @@ static engine::core::BackendType map_backend(int backend) {
         case AUDIOCPP_BACKEND_CUDA:   return engine::core::BackendType::Cuda;
         case AUDIOCPP_BACKEND_VULKAN: return engine::core::BackendType::Vulkan;
         case AUDIOCPP_BACKEND_METAL:  return engine::core::BackendType::Metal;
+        case AUDIOCPP_BACKEND_SYCL:   return engine::core::BackendType::Sycl;
         case AUDIOCPP_BACKEND_BEST:   return engine::core::BackendType::BestAvailable;
         default:                      return engine::core::BackendType::Cpu;
     }
@@ -607,3 +623,115 @@ void audiocpp_clear_error(audiocpp_error_t *err) {
     }
     err->code = 0;
 }
+
+/* ======================================================================== */
+/* Device enumeration                                                        */
+/* ======================================================================== */
+
+namespace {
+
+// Map a ggml backend registration to our AUDIOCPP_BACKEND_* enum.
+int backend_reg_to_id(ggml_backend_reg_t reg) {
+    if (!reg) return AUDIOCPP_BACKEND_CPU;
+#ifdef GGML_USE_CUDA
+    if (reg == ggml_backend_cuda_reg()) return AUDIOCPP_BACKEND_CUDA;
+#endif
+#ifdef GGML_USE_SYCL
+    if (reg == ggml_backend_sycl_reg()) return AUDIOCPP_BACKEND_SYCL;
+#endif
+#ifdef GGML_USE_VULKAN
+    if (reg == ggml_backend_vk_reg()) return AUDIOCPP_BACKEND_VULKAN;
+#endif
+#ifdef GGML_USE_METAL
+    if (reg == ggml_backend_metal_reg()) return AUDIOCPP_BACKEND_METAL;
+#endif
+    // CPU and any unknown backend
+    return AUDIOCPP_BACKEND_CPU;
+}
+
+int dev_type_to_id(enum ggml_backend_dev_type type) {
+    switch (type) {
+        case GGML_BACKEND_DEVICE_TYPE_GPU:  return AUDIOCPP_DEVICE_GPU;
+        case GGML_BACKEND_DEVICE_TYPE_IGPU: return AUDIOCPP_DEVICE_IGPU;
+        default:                             return AUDIOCPP_DEVICE_CPU;
+    }
+}
+
+void copy_cstr(char *dst, size_t dst_size, const char *src) {
+    if (!src || dst_size == 0) {
+        if (dst_size > 0) dst[0] = '\0';
+        return;
+    }
+    size_t len = strlen(src);
+    if (len >= dst_size) len = dst_size - 1;
+    memcpy(dst, src, len);
+    dst[len] = '\0';
+}
+
+}  // namespace
+
+int audiocpp_device_count(void) {
+    return static_cast<int>(ggml_backend_dev_count());
+}
+
+int audiocpp_device_info(int index, audiocpp_device_info_t *out) {
+    if (!out || index < 0 || static_cast<size_t>(index) >= ggml_backend_dev_count()) {
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+
+    ggml_backend_dev_t dev = ggml_backend_dev_get(static_cast<size_t>(index));
+    if (!dev) return -1;
+
+    ggml_backend_dev_props props;
+    ggml_backend_dev_get_props(dev, &props);
+
+    copy_cstr(out->name, sizeof(out->name), props.name);
+    copy_cstr(out->description, sizeof(out->description), props.description);
+    out->type = dev_type_to_id(props.type);
+    out->memory_total = static_cast<uint64_t>(props.memory_total);
+    out->memory_free = static_cast<uint64_t>(props.memory_free);
+
+    // Determine which backend this device belongs to.
+    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+    out->backend = backend_reg_to_id(reg);
+
+    // Compute per-backend device index: count how many earlier devices in the
+    // global list share the same backend reg. This aligns with
+    // ggml_backend_cuda_init(device) / ggml_backend_sycl_init(device) which
+    // take backend-relative indices.
+    int per_backend_idx = 0;
+    for (int i = 0; i < index; ++i) {
+        ggml_backend_dev_t earlier = ggml_backend_dev_get(static_cast<size_t>(i));
+        if (earlier && ggml_backend_dev_backend_reg(earlier) == reg) {
+            ++per_backend_idx;
+        }
+    }
+    out->device_id = per_backend_idx;
+
+    return 0;
+}
+
+void audiocpp_list_devices(void) {
+    int count = audiocpp_device_count();
+    printf("audio.cpp devices (%d):\n", count);
+    printf("  %-4s  %-10s  %-6s  %-10s  %-30s\n",
+           "idx", "backend", "type", "device_id", "name");
+    printf("  %s\n", "---------------------------------------------------------------");
+    static const char *backend_names[] = {
+        "CPU", "CUDA", "Vulkan", "Metal", "SYCL", "BEST"
+    };
+    static const char *type_names[] = {"CPU", "GPU", "IGPU"};
+    for (int i = 0; i < count; ++i) {
+        audiocpp_device_info_t info;
+        if (audiocpp_device_info(i, &info) == 0) {
+            const char *bn = (info.backend >= 0 && info.backend <= 5)
+                ? backend_names[info.backend] : "?";
+            const char *tn = (info.type >= 0 && info.type <= 2)
+                ? type_names[info.type] : "?";
+            printf("  %-4d  %-10s  %-6s  %-10d  %-30s\n",
+                   i, bn, tn, info.device_id, info.name);
+        }
+    }
+}
+

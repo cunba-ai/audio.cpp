@@ -99,6 +99,8 @@ jobs:
           mkdir -p build
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DBUILD_SHARED_LIBS=ON \
             -DAUDIOCPP_BUILD_CAPI=ON \
             -DENGINE_BUILD_EXAMPLES=OFF \
@@ -153,6 +155,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: capi-windows-${{ matrix.config.artifact_suffix }}
+          update-package-index: true
 
       - name: Setup CUDA Toolkit
         if: matrix.config.setup == 'cuda'
@@ -244,6 +252,8 @@ jobs:
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
           cmake -S . -B build -G "Ninja" ^
             -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache ^
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache ^
             -DBUILD_SHARED_LIBS=ON ^
             -DAUDIOCPP_BUILD_CAPI=ON ^
             -DENGINE_BUILD_EXAMPLES=OFF ^
@@ -260,6 +270,8 @@ jobs:
           cmake -G "Unix Makefiles" -B build -S . `
             -DCMAKE_C_COMPILER="$hipPath\bin\clang.exe" `
             -DCMAKE_CXX_COMPILER="$hipPath\bin\clang++.exe" `
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache `
             -DCMAKE_BUILD_TYPE=Release `
             -DBUILD_SHARED_LIBS=ON `
             -DAUDIOCPP_BUILD_CAPI=ON `
@@ -276,6 +288,8 @@ jobs:
           call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 --force
           cmake -S . -B build -G "Ninja" ^
             -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache ^
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache ^
             -DCMAKE_C_COMPILER=cl ^
             -DCMAKE_CXX_COMPILER=icx ^
             -DBUILD_SHARED_LIBS=ON ^
@@ -352,10 +366,9 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           path: ./artifact
-          merge-multiple: true
 
       - name: List downloaded artifacts
-        run: ls -la artifact/ || true
+        run: ls -R artifact/ || true
 
       - name: Install ossutil
         run: |
@@ -369,19 +382,24 @@ jobs:
           OSS_KEY: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
         run: |
           set -e
-          cd artifact
-          shopt -s nullglob
-          files=( * )
-          if [ ${#files[@]} -eq 0 ]; then
+          # Each artifact downloads as a subdirectory (audiocpp-windows-cuda-cpu/,
+          # audiocpp-linux-sycl-cpu/, etc). Zip each into a single .zip for OSS.
+          mkdir -p zips
+          for d in artifact/*/; do
+            name=$(basename "$d")
+            (cd "$d" && zip -r "../../zips/${name}.zip" .)
+            echo "zipped ${name}.zip"
+          done
+          if [ ! -d zips ] || [ -z "$(ls -A zips 2>/dev/null)" ]; then
             echo "No artifacts to upload"; exit 0
           fi
-          for f in "${files[@]}"; do
+          for f in zips/*.zip; do
             [ -f "$f" ] || continue
             echo "== $f =="
             # Dated snapshot (retention/history)
-            ./../ossutil64 cp "$f" "oss://${{ env.OSS_BUCKET }}/${{ env.OSS_PREFIX }}/${{ env.BUILD_DATE }}-${{ env.COMMIT_ID }}/$f" \
+            ./ossutil64 cp "$f" "oss://${{ env.OSS_BUCKET }}/${{ env.OSS_PREFIX }}/${{ env.BUILD_DATE }}-${{ env.COMMIT_ID }}/$(basename $f)" \
               -i "$OSS_ID" -k "$OSS_KEY" -e "${{ env.OSS_ENDPOINT }}" -f
             # Latest pointer (always overwritten)
-            ./../ossutil64 cp "$f" "oss://${{ env.OSS_BUCKET }}/${{ env.OSS_PREFIX }}/latest/$f" \
+            ./ossutil64 cp "$f" "oss://${{ env.OSS_BUCKET }}/${{ env.OSS_PREFIX }}/latest/$(basename $f)" \
               -i "$OSS_ID" -k "$OSS_KEY" -e "${{ env.OSS_ENDPOINT }}" -f
           done

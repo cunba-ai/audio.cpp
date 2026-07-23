@@ -648,6 +648,10 @@ if (AUDIOCPP_BUILD_CAPI)
     add_library(audiocpp SHARED
         capi/src/audiocpp_capi.cpp
     )
+    # Define AUDIOCPP_EXPORTS so __declspec(dllexport) is applied when building
+    # the DLL. This makes symbol export work across all compilers (MSVC, icx,
+    # clang) without relying solely on the .def file.
+    target_compile_definitions(audiocpp PRIVATE AUDIOCPP_EXPORTS)
     target_include_directories(audiocpp PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/capi/include"
     )
@@ -719,6 +723,7 @@ endif()
 # ──────────────────────────────────────────────────────────────────────────
 add_executable(capi_test tests/test_capi_load.c capi/src/audiocpp_capi.cpp)
 set_target_properties(capi_test PROPERTIES CXX_VISIBILITY_PRESET default)
+target_compile_definitions(capi_test PRIVATE AUDIOCPP_EXPORTS)
 target_include_directories(capi_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/capi/include")
 target_link_libraries(capi_test PRIVATE engine_runtime ggml)
 if (ENGINE_ENABLE_OPENMP)

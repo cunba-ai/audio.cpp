@@ -22,6 +22,20 @@
 #ifndef AUDIOCPP_H
 #define AUDIOCPP_H
 
+/* Export macro: when building audiocpp.dll, AUDIOCPP_EXPORTS is defined and
+ * functions get __declspec(dllexport). Consumers just include the header
+ * (no macro needed) or link dynamically. This works across MSVC, icx, and
+ * clang — no .def file dependency. */
+#if defined(_WIN32) || defined(__CYGWIN__)
+  #ifdef AUDIOCPP_EXPORTS
+    #define AUDIOCPP_API __declspec(dllexport)
+  #else
+    #define AUDIOCPP_API __declspec(dllimport)
+  #endif
+#else
+  #define AUDIOCPP_API __attribute__((visibility("default")))
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -99,7 +113,7 @@ enum {
  * @param err          Optional error output (pass NULL to ignore).
  * @return Model handle, or NULL on failure (check err).
  */
-audiocpp_model_t *audiocpp_load_model(
+AUDIOCPP_API audiocpp_model_t *audiocpp_load_model(
     const char *model_path,
     const char *family_hint,
     int task,
@@ -110,7 +124,7 @@ audiocpp_model_t *audiocpp_load_model(
 );
 
 /** Free a model handle. Safe to call with NULL. */
-void audiocpp_free_model(audiocpp_model_t *model);
+AUDIOCPP_API void audiocpp_free_model(audiocpp_model_t *model);
 
 /* ======================================================================== */
 /* TTS: text → audio                                                         */
@@ -131,7 +145,7 @@ void audiocpp_free_model(audiocpp_model_t *model);
  * @param err         Optional error output.
  * @return Audio output, or NULL on failure. Caller MUST free with audiocpp_free_audio.
  */
-audiocpp_audio_t *audiocpp_tts(
+AUDIOCPP_API audiocpp_audio_t *audiocpp_tts(
     const audiocpp_model_t *model,
     const char *text,
     const char *options_json,
@@ -150,7 +164,7 @@ audiocpp_audio_t *audiocpp_tts(
  * @param voice_ref_sr     Sample rate of voice_ref_pcm (e.g. 16000).
  * @param err              Optional error output.
  */
-audiocpp_audio_t *audiocpp_tts_with_voice_ref(
+AUDIOCPP_API audiocpp_audio_t *audiocpp_tts_with_voice_ref(
     const audiocpp_model_t *model,
     const char *text,
     const char *options_json,
@@ -177,7 +191,7 @@ audiocpp_audio_t *audiocpp_tts_with_voice_ref(
  * @param err         Optional error output.
  * @return Text result, or NULL on failure. Caller MUST free with audiocpp_free_text.
  */
-audiocpp_text_t *audiocpp_asr(
+AUDIOCPP_API audiocpp_text_t *audiocpp_asr(
     const audiocpp_model_t *model,
     const float *pcm,
     int64_t n_samples,
@@ -201,7 +215,7 @@ audiocpp_text_t *audiocpp_asr(
  * @param err         Optional error output.
  * @return Audio output, or NULL on failure. Caller MUST free with audiocpp_free_audio.
  */
-audiocpp_audio_t *audiocpp_audio_transform(
+AUDIOCPP_API audiocpp_audio_t *audiocpp_audio_transform(
     const audiocpp_model_t *model,
     const float *pcm,
     int64_t n_samples,
@@ -224,7 +238,7 @@ audiocpp_audio_t *audiocpp_audio_transform(
  * @param err              Optional error output.
  * @return Audio output, or NULL on failure. Caller MUST free with audiocpp_free_audio.
  */
-audiocpp_audio_t *audiocpp_audio_transform_with_voice_ref(
+AUDIOCPP_API audiocpp_audio_t *audiocpp_audio_transform_with_voice_ref(
     const audiocpp_model_t *model,
     const float *pcm,
     int64_t n_samples,
@@ -265,7 +279,7 @@ typedef struct {
  * @param err         Optional error output.
  * @return Diarization result, or NULL on failure. Caller MUST free with audiocpp_free_diar.
  */
-audiocpp_diar_t *audiocpp_diar(
+AUDIOCPP_API audiocpp_diar_t *audiocpp_diar(
     const audiocpp_model_t *model,
     const float *pcm,
     int64_t n_samples,
@@ -302,7 +316,7 @@ typedef struct {
  * @param err         Optional error output.
  * @return VAD result, or NULL on failure. Caller MUST free with audiocpp_free_vad.
  */
-audiocpp_vad_t *audiocpp_vad(
+AUDIOCPP_API audiocpp_vad_t *audiocpp_vad(
     const audiocpp_model_t *model,
     const float *pcm,
     int64_t n_samples,
@@ -337,41 +351,41 @@ typedef struct {
 } audiocpp_device_info_t;
 
 /** Count available compute devices across all compiled backends. */
-int audiocpp_device_count(void);
+AUDIOCPP_API int audiocpp_device_count(void);
 
 /** Get info for a device by index (0 .. count-1).
  *  @param index  Device index (global, not per-backend).
  *  @param out    Receives device info.
  *  @return 0 on success, -1 if index out of range or out is NULL. */
-int audiocpp_device_info(int index, audiocpp_device_info_t *out);
+AUDIOCPP_API int audiocpp_device_info(int index, audiocpp_device_info_t *out);
 
 /** Print all devices to stdout (for CLI / debugging convenience). */
-void audiocpp_list_devices(void);
+AUDIOCPP_API void audiocpp_list_devices(void);
 
 /* ======================================================================== */
 /* Utilities                                                                 */
 /* ======================================================================== */
 
 /** Get the audio.cpp version string (static, do NOT free). */
-const char *audiocpp_version(void);
+AUDIOCPP_API const char *audiocpp_version(void);
 
 /** Free an audio result. Safe to call with NULL. */
-void audiocpp_free_audio(audiocpp_audio_t *audio);
+AUDIOCPP_API void audiocpp_free_audio(audiocpp_audio_t *audio);
 
 /** Free a text result. Safe to call with NULL. */
-void audiocpp_free_text(audiocpp_text_t *text);
+AUDIOCPP_API void audiocpp_free_text(audiocpp_text_t *text);
 
 /** Free a diarization result. Safe to call with NULL. */
-void audiocpp_free_diar(audiocpp_diar_t *diar);
+AUDIOCPP_API void audiocpp_free_diar(audiocpp_diar_t *diar);
 
 /** Free a VAD result. Safe to call with NULL. */
-void audiocpp_free_vad(audiocpp_vad_t *vad);
+AUDIOCPP_API void audiocpp_free_vad(audiocpp_vad_t *vad);
 
 /** Free a string returned in audiocpp_error_t. Safe to call with NULL. */
-void audiocpp_free_string(char *str);
+AUDIOCPP_API void audiocpp_free_string(char *str);
 
 /** Clear an error struct (frees message, resets code to 0). */
-void audiocpp_clear_error(audiocpp_error_t *err);
+AUDIOCPP_API void audiocpp_clear_error(audiocpp_error_t *err);
 
 #ifdef __cplusplus
 } /* extern "C" */

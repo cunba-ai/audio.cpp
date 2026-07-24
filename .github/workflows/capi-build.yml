@@ -102,6 +102,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_HIP_COMPILER_LAUNCHER=ccache \
             -DBUILD_SHARED_LIBS=ON \
             -DAUDIOCPP_BUILD_CAPI=ON \
             -DENGINE_BUILD_EXAMPLES=OFF \
@@ -269,6 +271,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release ^
             -DCMAKE_C_COMPILER_LAUNCHER=ccache ^
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache ^
+            -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache ^
             -DBUILD_SHARED_LIBS=ON ^
             -DAUDIOCPP_BUILD_CAPI=ON ^
             -DENGINE_BUILD_EXAMPLES=OFF ^
@@ -287,6 +290,7 @@ jobs:
             -DCMAKE_CXX_COMPILER="$hipPath\bin\clang++.exe" `
             -DCMAKE_C_COMPILER_LAUNCHER=ccache `
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache `
+            -DCMAKE_HIP_COMPILER_LAUNCHER=ccache `
             -DCMAKE_BUILD_TYPE=Release `
             -DBUILD_SHARED_LIBS=ON `
             -DAUDIOCPP_BUILD_CAPI=ON `

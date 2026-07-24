@@ -11,6 +11,7 @@ name: C ABI Build
 # signal. Windows CUDA must pass; Windows ROCm and SYCL are best-effort
 # (continue-on-error): hosted runners have no AMD/Intel GPU, so they only
 # prove MSVC configure/compile, and the vendor toolchains are large/flaky.
+# All jobs must pass (no continue-on-error).
 
 on:
   push:
@@ -114,6 +115,24 @@ jobs:
           fi
           cmake --build build --parallel $(nproc) --target audiocpp
 
+      - name: Verify exported symbols (Linux)
+        shell: bash
+        run: |
+          set -e
+          # Extract exported function symbols; fail if any non-audiocpp_ leak.
+          SO=$(find build -name "libaudiocpp.so" | head -1)
+          echo "Checking: $SO"
+          EXPORTED=$(nm -D --defined-only "$SO" | awk '$2 == "T" {print $3}')
+          echo "Exported symbols:"
+          echo "$EXPORTED" | sed 's/^/  /'
+          LEAKED=$(echo "$EXPORTED" | grep -v '^audiocpp_' || true)
+          if [ -n "$LEAKED" ]; then
+            echo "::error::Non-audiocpp_ symbols leaked into export table:"
+            echo "$LEAKED" | sed 's/^/  /'
+            exit 1
+          fi
+          echo "✅ All exported symbols are audiocpp_*"
+
       - name: Collect artifacts
         run: |
           mkdir -p artifacts
@@ -134,7 +153,6 @@ jobs:
   windows:
     name: Windows ${{ matrix.config.name }}
     runs-on: windows-2022
-    continue-on-error: ${{ matrix.config.best_effort }}
     strategy:
       fail-fast: false
       matrix:
@@ -142,15 +160,12 @@ jobs:
           - name: CUDA-CPU
             setup: cuda
             artifact_suffix: windows-cuda-cpu
-            best_effort: false
           - name: ROCm-CPU
             setup: rocm
             artifact_suffix: windows-rocm-cpu
-            best_effort: true
           - name: SYCL-CPU
             setup: sycl
             artifact_suffix: windows-sycl-cpu
-            best_effort: true
 
     steps:
       - name: Checkout
@@ -325,6 +340,26 @@ jobs:
           call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 --force
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
           cmake --build build --parallel %NUMBER_OF_PROCESSORS% --target audiocpp
+
+      - name: Verify exported symbols (Windows)
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem -Path build -Recurse -Filter "audiocpp.dll" | Select-Object -First 1
+          if (-not $dll) { Write-Host "##[error]audiocpp.dll not found"; exit 1 }
+          Write-Host "Checking: $($dll.FullName)"
+          # dumpbin /exports → parse the symbol name column
+          $output = & dumpbin /exports $dll.FullName 2>$null
+          $symbols = $output | Select-String -Pattern '^\s+\d+\s+[0-9A-F]+\s+(\S+)' -AllMatches |
+                     ForEach-Object { $_.Matches[0].Groups[1].Value }
+          Write-Host "Exported symbols ($($symbols.Count)):"
+          $symbols | ForEach-Object { Write-Host "  $_" }
+          $leaked = $symbols | Where-Object { $_ -notmatch '^audiocpp_' }
+          if ($leaked) {
+            Write-Host "##[error]Non-audiocpp_ symbols leaked into export table:"
+            $leaked | ForEach-Object { Write-Host "  $_" }
+            exit 1
+          }
+          Write-Host "✅ All exported symbols are audiocpp_*"
 
       - name: Collect artifacts
         shell: pwsh

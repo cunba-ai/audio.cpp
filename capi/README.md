@@ -179,14 +179,36 @@ audiocpp_stream_free(stream);
 | Function | Description |
 |---|---|
 | `audiocpp_stream_start` | Create streaming session (RunMode::Streaming) |
-| `audiocpp_stream_push` | Push audio chunk, get event (VAD/ASR/TTS) |
+| `audiocpp_stream_push` | Push audio chunk, get event (VAD/ASR). No-op for TTS (input=None). |
+| `audiocpp_stream_pull` | Pull next generated event (streaming TTS). Use this, not push, for TTS. |
 | `audiocpp_stream_finish` | End stream, get final accumulated result |
-| `audiocpp_free_stream_event` | Free event returned by push |
+| `audiocpp_free_stream_event` | Free event returned by push/pull |
 | `audiocpp_stream_free` | Free stream handle |
 
-**Two streaming patterns supported**:
-- **VAD (silero)**: each chunk returns voice-activity events immediately
-- **ASR (nemotron)**: chunks accumulate; final decode happens in `finish`
+**Three streaming patterns** (StreamingPolicy distinguishes them):
+
+- **VAD (silero_vad)** — `input=AudioChunks, output=PullEvents`: each `push`
+  returns voice-activity events immediately (speech start/end).
+- **ASR (nemotron_asr / higgs_audio_stt / voxtral_realtime)** — `input=AudioChunks`:
+  `push` accumulates audio; `finish` triggers decode, returns final text.
+- **TTS (supertonic / omnivoice / voxcpm2)** — `input=None, output=PullEvents`:
+  `push` is a no-op (these models don't consume audio). The text to synthesize
+  is passed in `stream_start`'s `options_json` as `{"text":"...","language":"zh"}`.
+  Call `stream_pull` repeatedly to get synthesized audio chunks:
+  ```c
+  stream = audiocpp_stream_start(model, TASK_TTS,
+      "{\"text\":\"你好世界\",\"language\":\"zh\"}", 0, &err);
+  while (true) {
+      audiocpp_stream_event_t *ev = audiocpp_stream_pull(stream, -1, &err);
+      if (!ev) break;  // stream exhausted
+      // ev->audio_samples  → synthesized PCM (use ev->audio_sample_rate)
+      audiocpp_free_stream_event(ev);
+  }
+  ```
+
+**Streamable models** (7): silero_vad (VAD), nemotron_asr/higgs_audio_stt/
+voxtral_realtime (ASR), omnivoice/supertonic/voxcpm2 (TTS). Other models
+(vibevoice_asr, etc.) reject `stream_start` → caller should fall back to offline.
 
 ---
 

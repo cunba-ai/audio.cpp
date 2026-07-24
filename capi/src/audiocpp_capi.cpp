@@ -1047,6 +1047,15 @@ audiocpp_stream_event_t *audiocpp_stream_push(
             throw std::runtime_error("invalid audio chunk");
         }
 
+        // For PullEvents-stream models (streaming TTS: input=None), process_audio_chunk
+        // throws ("does not consume audio chunks"). Return an empty event so push is a
+        // no-op for such models; callers should use audiocpp_stream_pull instead.
+        const auto policy = stream->streaming->streaming_policy();
+        if (policy.input == engine::runtime::StreamingInputKind::None) {
+            result = new audiocpp_stream_event_t{};
+            memset(result, 0, sizeof(*result));
+        } else {
+
         engine::runtime::AudioChunk chunk;
         chunk.sample_rate = sample_rate;
         chunk.channels = 1;
@@ -1089,6 +1098,7 @@ audiocpp_stream_event_t *audiocpp_stream_push(
                             buf.samples.size() * sizeof(float));
             }
         }
+        }  // end else (input != None)
     });
     return result;
 }
@@ -1128,6 +1138,70 @@ void audiocpp_free_stream_event(audiocpp_stream_event_t *event) {
     free(event->partial_text);
     free(event->audio_samples);
     delete event;
+}
+
+audiocpp_stream_event_t *audiocpp_stream_pull(
+    audiocpp_stream_t *stream,
+    int timeout_ms,
+    audiocpp_error_t *err
+) {
+    audiocpp_stream_event_t *result = nullptr;
+    AUDIOCPP_CATCH(err, {
+        if (!stream || !stream->streaming) {
+            throw std::runtime_error("invalid stream handle");
+        }
+        // next_stream_event() pulls one generated event (PullEvents output).
+        // For streaming TTS (supertonic/omnivoice/voxcpm2) this returns audio
+        // chunks; for input=None models process_audio_chunk would throw, so
+        // callers MUST use stream_pull (not stream_push) for TTS.
+        (void)timeout_ms;  // current impl: next_stream_event is synchronous/blocking internally
+        auto maybe_ev = stream->streaming->next_stream_event();
+        if (!maybe_ev) {
+            // Stream exhausted (no more data) — result stays nullptr, not an error
+        } else {
+        const auto &ev = *maybe_ev;
+        result = new audiocpp_stream_event_t{};
+        memset(result, 0, sizeof(*result));
+        result->is_final = ev.is_final ? 1 : 0;
+
+        // Map VAD events
+        if (!ev.voice_activity.empty()) {
+            result->n_va_events = static_cast<int>(ev.voice_activity.size());
+            result->va_events = static_cast<audiocpp_va_event_t *>(
+                calloc(result->n_va_events, sizeof(audiocpp_va_event_t)));
+            for (int i = 0; i < result->n_va_events; ++i) {
+                result->va_events[i].kind = static_cast<int>(ev.voice_activity[i].kind);
+                result->va_events[i].sample = ev.voice_activity[i].sample;
+                result->va_events[i].probability = ev.voice_activity[i].probability;
+            }
+        }
+
+        // Map partial text
+        if (ev.partial_text && !ev.partial_text->text.empty()) {
+            result->partial_text = dup_cstr(ev.partial_text->text);
+        }
+
+        // Map audio output: prefer audio_output, fall back to first named_audio_output
+        // (streaming TTS like supertonic uses named_audio_outputs)
+        const engine::runtime::AudioBuffer *audio_buf = nullptr;
+        if (ev.audio_output && !ev.audio_output->samples.empty()) {
+            audio_buf = &(*ev.audio_output);
+        } else if (!ev.named_audio_outputs.empty() && !ev.named_audio_outputs[0].audio.samples.empty()) {
+            audio_buf = &ev.named_audio_outputs[0].audio;
+        }
+        if (audio_buf) {
+            result->audio_sample_rate = audio_buf->sample_rate;
+            result->n_audio_samples = static_cast<int64_t>(audio_buf->samples.size());
+            result->audio_samples = static_cast<float *>(
+                malloc(audio_buf->samples.size() * sizeof(float)));
+            if (result->audio_samples) {
+                std::memcpy(result->audio_samples, audio_buf->samples.data(),
+                            audio_buf->samples.size() * sizeof(float));
+            }
+        }
+        }  // end else (maybe_ev has value)
+    });
+    return result;
 }
 
 void audiocpp_stream_free(audiocpp_stream_t *stream) {

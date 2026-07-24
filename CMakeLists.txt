@@ -706,6 +706,7 @@ if (AUDIOCPP_BUILD_CAPI)
             "    audiocpp_artifact_free\n"
             "    audiocpp_stream_start\n"
             "    audiocpp_stream_push\n"
+            "    audiocpp_stream_pull\n"
             "    audiocpp_stream_finish\n"
             "    audiocpp_free_stream_event\n"
             "    audiocpp_stream_free\n"

@@ -674,6 +674,30 @@ AUDIOCPP_API int audiocpp_stream_finish(
 /** Free a stream event. Safe to call with NULL. */
 AUDIOCPP_API void audiocpp_free_stream_event(audiocpp_stream_event_t *event);
 
+/**
+ * Pull the next generated event from a PullEvents stream (streaming TTS).
+ *
+ * For streaming TTS models (supertonic/omnivoice/voxcpm2) whose
+ * StreamingPolicy.input is None, stream_push() throws because they don't
+ * consume audio chunks. Use this function instead to pull synthesized audio
+ * chunks one at a time. The text to synthesize is passed in stream_start's
+ * options_json as {"text":"...","language":"zh"}.
+ *
+ * @param stream      Stream handle from audiocpp_stream_start.
+ * @param timeout_ms  Max wait: -1 = block until an event is available;
+ *                    0 = non-blocking try (return NULL immediately if empty);
+ *                    >0 = wait at most N ms.
+ * @param err         Optional error output.
+ * @return Stream event (typically audio_samples for TTS), or NULL if the
+ *         stream is exhausted (no more data) or on timeout with no event.
+ *         Caller MUST free non-NULL results with audiocpp_free_stream_event.
+ */
+AUDIOCPP_API audiocpp_stream_event_t *audiocpp_stream_pull(
+    audiocpp_stream_t *stream,
+    int timeout_ms,
+    audiocpp_error_t *err
+);
+
 /** Free a stream handle. Safe to call with NULL. */
 AUDIOCPP_API void audiocpp_stream_free(audiocpp_stream_t *stream);
 

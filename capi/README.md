@@ -25,6 +25,51 @@ Each zip contains:
 - `audiocpp.lib` — Windows import library (not needed for runtime loading)
 - `audiocpp.h` — the C header
 
+### Local Build
+
+#### Windows (CUDA, local GPU)
+
+```powershell
+# Build audiocpp.dll for your local NVIDIA GPU
+.\scripts\build_windows.ps1 `
+    -Preset windows-cuda-release `
+    -Target audiocpp `
+    -CudaArchitectures "120-real" `
+    -DeploymentBuild `
+    -Ccache
+
+# Output: build/windows-cuda-release/bin/audiocpp.dll
+```
+
+Parameters:
+- `-CudaArchitectures "120-real"` — target sm_120 (Blackwell RTX 50-series).
+  Use `"89-real"` for RTX 40-series, `"86-real"` for RTX 30-series.
+  Multiple: `"75;80;86;89;120"` (matches CI config).
+- `-DeploymentBuild` — embed model specs into the DLL (required for standalone
+  deployment without external `model_specs/` directory).
+- `-Ccache` — enable ccache for faster rebuilds.
+
+#### Windows (CPU only)
+
+```powershell
+.\scripts\build_windows.ps1 `
+    -Preset windows-cpu-release `
+    -Target audiocpp `
+    -Ccache
+
+# Output: build/windows-cpu-release/bin/audiocpp.dll
+```
+
+#### Linux
+
+```bash
+# CUDA
+scripts/build_linux.sh --backend cuda --target audiocpp
+
+# CPU
+scripts/build_linux.sh --backend cpu --target audiocpp
+```
+
 ### Minimal Usage (Rust via libloading)
 
 ```rust

@@ -95,6 +95,11 @@ enum {
     AUDIOCPP_TASK_TTS    = 5,  /**< Text-to-Speech */
     AUDIOCPP_TASK_ALIGN  = 6,  /**< Forced Alignment (audio + text → timestamps) */
     AUDIOCPP_TASK_VC     = 7,  /**< Voice Conversion (speaker timbre transfer) */
+    AUDIOCPP_TASK_CLON   = 8,  /**< Voice Cloning (TTS with speaker reference) */
+    AUDIOCPP_TASK_S2S    = 9,  /**< Speech-to-Speech (codec-based) */
+    AUDIOCPP_TASK_VDES   = 10, /**< Voice Design (prompt-based voice creation) */
+    AUDIOCPP_TASK_SPK    = 11, /**< Speaker Recognition (embeddings) */
+    AUDIOCPP_TASK_SVC    = 12, /**< Singing Voice Conversion */
 };
 
 /* ======================================================================== */
@@ -370,6 +375,139 @@ AUDIOCPP_API audiocpp_align_t *audiocpp_align(
 
 /** Free an alignment result. Safe to call with NULL. */
 AUDIOCPP_API void audiocpp_free_align(audiocpp_align_t *align);
+
+/* ======================================================================== */
+/* Multi-stem audio transform (SEP / music generation)                      */
+/* ======================================================================== */
+
+/** Named audio stem (e.g. "vocals", "drums", "bass", "other", "instrumental"). */
+typedef struct {
+    char *name;             /**< Stem name (owned by result) */
+    float *samples;         /**< PCM samples, mono, [-1.0, 1.0] (owned) */
+    int64_t n_samples;      /**< Number of samples */
+    int sample_rate;        /**< Sample rate in Hz */
+} audiocpp_stem_t;
+
+/** Multi-stem audio result. Caller owns; free with audiocpp_free_stems. */
+typedef struct {
+    audiocpp_stem_t *stems;  /**< Array of stems */
+    int64_t n_stems;         /**< Number of stems (may be 0) */
+} audiocpp_stems_t;
+
+/**
+ * Transform audio → multi-stem audio (source separation, music generation).
+ * Returns ALL named outputs (vocals, drums, bass, instrumental, etc.),
+ * unlike audiocpp_audio_transform which only returns the first.
+ *
+ * @param model       Model handle (SEP or GEN task).
+ * @param pcm         Input PCM (mono f32, [-1.0, 1.0]).
+ * @param n_samples   Number of samples.
+ * @param sample_rate Sample rate.
+ * @param options_json Options (NULL = defaults).
+ * @param voice_ref_pcm  Optional target speaker PCM for VC (NULL = none).
+ * @param voice_ref_n    Voice ref sample count.
+ * @param voice_ref_sr   Voice ref sample rate.
+ * @param err         Optional error output.
+ * @return Multi-stem result, or NULL on failure. Free with audiocpp_free_stems.
+ */
+AUDIOCPP_API audiocpp_stems_t *audiocpp_transform_stems(
+    const audiocpp_model_t *model,
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    const char *options_json,
+    const float *voice_ref_pcm,
+    int64_t voice_ref_n,
+    int voice_ref_sr,
+    audiocpp_error_t *err
+);
+
+/** Free a multi-stem result. Safe to call with NULL. */
+AUDIOCPP_API void audiocpp_free_stems(audiocpp_stems_t *stems);
+
+/* ======================================================================== */
+/* Model inspection                                                         */
+/* ======================================================================== */
+
+/** Model capability info (what a loaded model can do). */
+typedef struct {
+    int  supports_speaker_reference;  /**< 1 if model accepts voice ref audio */
+    int  supports_style_condition;    /**< 1 if model accepts style/emotion control */
+    int  supports_timestamps;         /**< 1 if model produces word timestamps */
+    int  n_supported_tasks;           /**< Number of entries in supported_tasks */
+    int  *supported_tasks;            /**< Array of AUDIOCPP_TASK_* values (owned) */
+    int  n_languages;                 /**< Number of language codes */
+    char **languages;                 /**< Array of language code strings (owned) */
+} audiocpp_model_capabilities_t;
+
+/** Model metadata (family, variant, description). */
+typedef struct {
+    char *family;        /**< Model family (e.g. "qwen3_asr") */
+    char *variant;       /**< Model variant (may be empty) */
+    char *description;   /**< Human-readable description (may be empty) */
+} audiocpp_model_info_t;
+
+/**
+ * Get metadata for a loaded model.
+ * @param model  Model handle.
+ * @param out    Receives metadata. Caller frees with audiocpp_free_model_info.
+ * @return 0 on success, -1 on error.
+ */
+AUDIOCPP_API int audiocpp_model_info(
+    const audiocpp_model_t *model,
+    audiocpp_model_info_t *out
+);
+
+/**
+ * Get capabilities for a loaded model (supported tasks, languages, etc.).
+ * @param model  Model handle.
+ * @param out    Receives capabilities. Caller frees with audiocpp_free_capabilities.
+ * @return 0 on success, -1 on error.
+ */
+AUDIOCPP_API int audiocpp_model_capabilities(
+    const audiocpp_model_t *model,
+    audiocpp_model_capabilities_t *out
+);
+
+/** Free model info. Safe to call with NULL. */
+AUDIOCPP_API void audiocpp_free_model_info(audiocpp_model_info_t *info);
+
+/** Free model capabilities. Safe to call with NULL. */
+AUDIOCPP_API void audiocpp_free_capabilities(audiocpp_model_capabilities_t *caps);
+
+/* ======================================================================== */
+/* WAV I/O utilities                                                        */
+/* ======================================================================== */
+
+/**
+ * Read a WAV file into mono f32 PCM samples.
+ * @param path         WAV file path.
+ * @param out_samples  Receives malloc'd float array (caller frees with free()).
+ * @param out_n        Receives sample count.
+ * @param out_rate     Receives sample rate.
+ * @return 0 on success, -1 on error.
+ */
+AUDIOCPP_API int audiocpp_read_wav(
+    const char *path,
+    float **out_samples,
+    int64_t *out_n,
+    int *out_rate
+);
+
+/**
+ * Write mono f32 PCM samples to a 16-bit WAV file.
+ * @param path         Output WAV path.
+ * @param samples      PCM samples [-1.0, 1.0].
+ * @param n_samples    Number of samples.
+ * @param sample_rate  Sample rate.
+ * @return 0 on success, -1 on error.
+ */
+AUDIOCPP_API int audiocpp_write_wav(
+    const char *path,
+    const float *samples,
+    int64_t n_samples,
+    int sample_rate
+);
 
 /* ======================================================================== */
 /* Device enumeration                                                        */

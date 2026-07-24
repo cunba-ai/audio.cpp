@@ -12,6 +12,9 @@
 #include "engine/framework/runtime/model.h"
 #include "engine/framework/runtime/registry.h"
 #include "engine/framework/runtime/session.h"
+#include "engine/framework/runtime/model.h"
+#include "engine/framework/audio/wav_reader.h"
+#include "engine/framework/audio/wav_writer.h"
 
 #include "ggml-backend.h"
 
@@ -106,6 +109,11 @@ static engine::runtime::VoiceTaskKind map_task(int task) {
         case AUDIOCPP_TASK_GEN:   return engine::runtime::VoiceTaskKind::AudioGeneration;
         case AUDIOCPP_TASK_ALIGN: return engine::runtime::VoiceTaskKind::Alignment;
         case AUDIOCPP_TASK_VC:    return engine::runtime::VoiceTaskKind::VoiceConversion;
+        case AUDIOCPP_TASK_CLON:  return engine::runtime::VoiceTaskKind::VoiceCloning;
+        case AUDIOCPP_TASK_S2S:   return engine::runtime::VoiceTaskKind::SpeechToSpeech;
+        case AUDIOCPP_TASK_VDES:  return engine::runtime::VoiceTaskKind::VoiceDesign;
+        case AUDIOCPP_TASK_SPK:   return engine::runtime::VoiceTaskKind::SpeakerRecognition;
+        case AUDIOCPP_TASK_SVC:   return engine::runtime::VoiceTaskKind::Svc;
         default:                  return engine::runtime::VoiceTaskKind::Tts;
     }
 }
@@ -685,6 +693,206 @@ void audiocpp_free_align(audiocpp_align_t *align) {
     }
     free(align->language);
     delete align;
+}
+
+/* ======================================================================== */
+/* Multi-stem audio transform                                               */
+/* ======================================================================== */
+
+audiocpp_stems_t *audiocpp_transform_stems(
+    const audiocpp_model_t *model,
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    const char *options_json,
+    const float *voice_ref_pcm,
+    int64_t voice_ref_n,
+    int voice_ref_sr,
+    audiocpp_error_t *err
+) {
+    audiocpp_stems_t *result = nullptr;
+    AUDIOCPP_CATCH(err, {
+        if (!model || !model->offline) {
+            throw std::runtime_error("invalid model handle");
+        }
+        if (!pcm || n_samples <= 0) {
+            throw std::runtime_error("invalid audio input");
+        }
+        engine::runtime::TaskRequest req;
+        req.audio_input = engine::runtime::AudioBuffer{};
+        req.audio_input->sample_rate = sample_rate;
+        req.audio_input->channels = 1;
+        req.audio_input->samples.assign(pcm, pcm + n_samples);
+        apply_options(req, options_json);
+        if (voice_ref_pcm && voice_ref_n > 0) {
+            engine::runtime::VoiceCondition voice;
+            voice.speaker = engine::runtime::VoiceReference{};
+            engine::runtime::AudioBuffer ref_audio;
+            ref_audio.sample_rate = voice_ref_sr;
+            ref_audio.channels = 1;
+            ref_audio.samples.assign(voice_ref_pcm, voice_ref_pcm + voice_ref_n);
+            voice.speaker->audio = std::move(ref_audio);
+            req.voice = std::move(voice);
+        }
+        model->session->prepare(engine::runtime::build_preparation_request(req));
+        auto task_result = model->offline->run(req);
+
+        // Collect ALL named audio outputs as stems
+        result = new audiocpp_stems_t{};
+        auto collect_stem = [&](const char *name, const engine::runtime::AudioBuffer &buf) {
+            audiocpp_stem_t stem;
+            stem.name = dup_cstr(name);
+            stem.sample_rate = buf.sample_rate;
+            stem.n_samples = static_cast<int64_t>(buf.samples.size());
+            stem.samples = static_cast<float *>(
+                malloc(buf.samples.size() * sizeof(float)));
+            if (stem.samples) {
+                std::memcpy(stem.samples, buf.samples.data(),
+                            buf.samples.size() * sizeof(float));
+            }
+            // Grow the stems array
+            int64_t idx = result->n_stems;
+            result->n_stems = idx + 1;
+            result->stems = static_cast<audiocpp_stem_t *>(
+                realloc(result->stems, result->n_stems * sizeof(audiocpp_stem_t)));
+            result->stems[idx] = stem;
+        };
+
+        // If there's a primary audio_output, include it as "output"
+        if (task_result.audio_output && !task_result.audio_output->samples.empty()) {
+            collect_stem("output", *task_result.audio_output);
+        }
+        // Include all named outputs (vocals, drums, bass, instrumental, etc.)
+        for (const auto &named : task_result.named_audio_outputs) {
+            if (!named.audio.samples.empty()) {
+                collect_stem(named.id.c_str(), named.audio);
+            }
+        }
+    });
+    return result;
+}
+
+void audiocpp_free_stems(audiocpp_stems_t *stems) {
+    if (!stems) return;
+    if (stems->stems) {
+        for (int64_t i = 0; i < stems->n_stems; ++i) {
+            free(stems->stems[i].name);
+            free(stems->stems[i].samples);
+        }
+        free(stems->stems);
+    }
+    delete stems;
+}
+
+/* ======================================================================== */
+/* Model inspection                                                         */
+/* ======================================================================== */
+
+int audiocpp_model_info(
+    const audiocpp_model_t *model,
+    audiocpp_model_info_t *out
+) {
+    if (!model || !model->loaded_model || !out) return -1;
+    const auto &meta = model->loaded_model->metadata();
+    out->family = dup_cstr(meta.family);
+    out->variant = dup_cstr(meta.variant);
+    out->description = dup_cstr(meta.description);
+    return 0;
+}
+
+int audiocpp_model_capabilities(
+    const audiocpp_model_t *model,
+    audiocpp_model_capabilities_t *out
+) {
+    if (!model || !model->loaded_model || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    const auto &caps = model->loaded_model->capabilities();
+    out->supports_speaker_reference = caps.supports_speaker_reference ? 1 : 0;
+    out->supports_style_condition = caps.supports_style_condition ? 1 : 0;
+    out->supports_timestamps = caps.supports_timestamps ? 1 : 0;
+    // Supported tasks
+    out->n_supported_tasks = static_cast<int>(caps.supported_tasks.size());
+    if (out->n_supported_tasks > 0) {
+        out->supported_tasks = static_cast<int *>(
+            calloc(out->n_supported_tasks, sizeof(int)));
+        for (int i = 0; i < out->n_supported_tasks; ++i) {
+            out->supported_tasks[i] = static_cast<int>(caps.supported_tasks[i].task);
+        }
+    }
+    // Languages
+    out->n_languages = static_cast<int>(caps.languages.size());
+    if (out->n_languages > 0) {
+        out->languages = static_cast<char **>(
+            calloc(out->n_languages, sizeof(char *)));
+        for (int i = 0; i < out->n_languages; ++i) {
+            out->languages[i] = dup_cstr(caps.languages[i]);
+        }
+    }
+    return 0;
+}
+
+void audiocpp_free_model_info(audiocpp_model_info_t *info) {
+    if (!info) return;
+    free(info->family);
+    free(info->variant);
+    free(info->description);
+    memset(info, 0, sizeof(*info));
+}
+
+void audiocpp_free_capabilities(audiocpp_model_capabilities_t *caps) {
+    if (!caps) return;
+    free(caps->supported_tasks);
+    if (caps->languages) {
+        for (int i = 0; i < caps->n_languages; ++i) {
+            free(caps->languages[i]);
+        }
+        free(caps->languages);
+    }
+    memset(caps, 0, sizeof(*caps));
+}
+
+/* ======================================================================== */
+/* WAV I/O utilities                                                        */
+/* ======================================================================== */
+
+int audiocpp_read_wav(
+    const char *path,
+    float **out_samples,
+    int64_t *out_n,
+    int *out_rate
+) {
+    if (!path || !out_samples || !out_n || !out_rate) return -1;
+    try {
+        auto wav = engine::audio::read_wav_f32(std::filesystem::path(path));
+        *out_n = static_cast<int64_t>(wav.samples.size());
+        *out_rate = wav.sample_rate;
+        *out_samples = static_cast<float *>(malloc(wav.samples.size() * sizeof(float)));
+        if (!*out_samples) return -1;
+        std::memcpy(*out_samples, wav.samples.data(), wav.samples.size() * sizeof(float));
+        return 0;
+    } catch (...) {
+        return -1;
+    }
+}
+
+int audiocpp_write_wav(
+    const char *path,
+    const float *samples,
+    int64_t n_samples,
+    int sample_rate
+) {
+    if (!path || !samples || n_samples <= 0) return -1;
+    try {
+        std::vector<float> vec(samples, samples + n_samples);
+        engine::audio::write_pcm16_wav(
+            std::filesystem::path(path),
+            sample_rate,
+            1,
+            vec);
+        return 0;
+    } catch (...) {
+        return -1;
+    }
 }
 
 void audiocpp_free_string(char *str) {

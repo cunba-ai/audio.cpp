@@ -691,6 +691,8 @@ if (AUDIOCPP_BUILD_CAPI)
             "    audiocpp_free_text\n"
             "    audiocpp_free_diar\n"
             "    audiocpp_free_vad\n"
+            "    audiocpp_align\n"
+            "    audiocpp_free_align\n"
             "    audiocpp_free_string\n"
             "    audiocpp_clear_error\n"
             "    audiocpp_device_count\n"

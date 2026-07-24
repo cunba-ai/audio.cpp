@@ -611,6 +611,82 @@ void audiocpp_free_vad(audiocpp_vad_t *vad) {
     delete vad;
 }
 
+/* ======================================================================== */
+/* Forced Alignment                                                          */
+/* ======================================================================== */
+
+audiocpp_align_t *audiocpp_align(
+    const audiocpp_model_t *model,
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    const char *text,
+    const char *language,
+    const char *options_json,
+    audiocpp_error_t *err
+) {
+    audiocpp_align_t *result = nullptr;
+    AUDIOCPP_CATCH(err, {
+        if (!model || !model->offline) {
+            throw std::runtime_error("invalid model handle");
+        }
+        if (!pcm || n_samples <= 0) {
+            throw std::runtime_error("invalid audio input");
+        }
+        if (!text || text[0] == '\0') {
+            throw std::runtime_error("align requires non-empty transcript text");
+        }
+        if (!language || language[0] == '\0') {
+            throw std::runtime_error("align requires a language code (e.g. \"en\", \"zh\")");
+        }
+
+        engine::runtime::TaskRequest req;
+        req.audio_input = engine::runtime::AudioBuffer{};
+        req.audio_input->sample_rate = sample_rate;
+        req.audio_input->channels = 1;
+        req.audio_input->samples.assign(pcm, pcm + n_samples);
+        req.text_input = engine::runtime::Transcript{};
+        req.text_input->text = text;
+        req.text_input->language = language;
+        apply_options(req, options_json);
+
+        model->session->prepare(engine::runtime::build_preparation_request(req));
+        auto task_result = model->offline->run(req);
+
+        const auto &wt = task_result.word_timestamps;
+        const double inv_rate = sample_rate > 0 ? 1.0 / static_cast<double>(sample_rate) : 0.0;
+
+        result = new audiocpp_align_t{};
+        result->language = dup_cstr(language);
+        result->n_words = static_cast<int64_t>(wt.size());
+        if (wt.empty()) {
+            result->words = nullptr;
+        } else {
+            result->words = static_cast<audiocpp_word_t *>(
+                calloc(wt.size(), sizeof(audiocpp_word_t)));
+            for (size_t i = 0; i < wt.size(); ++i) {
+                result->words[i].start_seconds = static_cast<double>(wt[i].span.start_sample) * inv_rate;
+                result->words[i].end_seconds = static_cast<double>(wt[i].span.end_sample) * inv_rate;
+                result->words[i].word = dup_cstr(wt[i].word);
+                result->words[i].confidence = wt[i].confidence;
+            }
+        }
+    });
+    return result;
+}
+
+void audiocpp_free_align(audiocpp_align_t *align) {
+    if (!align) return;
+    if (align->words) {
+        for (int64_t i = 0; i < align->n_words; ++i) {
+            free(align->words[i].word);
+        }
+        free(align->words);
+    }
+    free(align->language);
+    delete align;
+}
+
 void audiocpp_free_string(char *str) {
     free(str);
 }

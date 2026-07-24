@@ -326,6 +326,52 @@ AUDIOCPP_API audiocpp_vad_t *audiocpp_vad(
 );
 
 /* ======================================================================== */
+/* Forced Alignment: audio + text → word timestamps                         */
+/* ======================================================================== */
+
+/** Word alignment result (one word with its time span). */
+typedef struct {
+    double start_seconds;   /**< Word start time in seconds */
+    double end_seconds;     /**< Word end time in seconds */
+    char *word;             /**< UTF-8 word text (owned by result, freed with audiocpp_free_align) */
+    float confidence;       /**< Confidence score [0,1] */
+} audiocpp_word_t;
+
+/** Alignment result. Caller owns; free with audiocpp_free_align. */
+typedef struct {
+    audiocpp_word_t *words;  /**< Array of word alignments */
+    int64_t n_words;         /**< Number of words */
+    char *language;          /**< Language code used (may be NULL) */
+} audiocpp_align_t;
+
+/**
+ * Force-align audio to a transcript, producing per-word timestamps.
+ *
+ * @param model       Model handle (must be loaded with AUDIOCPP_TASK_ALIGN).
+ * @param pcm         PCM samples (mono f32, [-1.0, 1.0]).
+ * @param n_samples   Number of PCM samples.
+ * @param sample_rate Sample rate (e.g. 16000).
+ * @param text        Transcript text to align (non-NULL, non-empty).
+ * @param language    Language code, e.g. "en", "zh" (non-NULL, non-empty).
+ * @param options_json JSON options (NULL = defaults).
+ * @param err         Optional error output.
+ * @return Alignment result, or NULL on failure. Caller MUST free with audiocpp_free_align.
+ */
+AUDIOCPP_API audiocpp_align_t *audiocpp_align(
+    const audiocpp_model_t *model,
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    const char *text,
+    const char *language,
+    const char *options_json,
+    audiocpp_error_t *err
+);
+
+/** Free an alignment result. Safe to call with NULL. */
+AUDIOCPP_API void audiocpp_free_align(audiocpp_align_t *align);
+
+/* ======================================================================== */
 /* Device enumeration                                                        */
 /* ======================================================================== */
 

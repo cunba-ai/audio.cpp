@@ -52,6 +52,14 @@ struct audiocpp_model {
     engine::runtime::IOfflineVoiceTaskSession *offline = nullptr;
 };
 
+struct audiocpp_stream {
+    std::unique_ptr<engine::runtime::IVoiceTaskSession> session;
+    engine::runtime::IStreamingVoiceTaskSession *streaming = nullptr;
+    int64_t next_start_sample = 0;
+    // Sink-collected events for models that emit via callback (nemotron ASR)
+    std::vector<engine::runtime::StreamEvent> sink_events;
+};
+
 /* ======================================================================== */
 /* Error helpers                                                             */
 /* ======================================================================== */
@@ -893,6 +901,167 @@ int audiocpp_write_wav(
     } catch (...) {
         return -1;
     }
+}
+
+/* ======================================================================== */
+/* Streaming (chunk-push model)                                             */
+/* ======================================================================== */
+
+audiocpp_stream_t *audiocpp_stream_start(
+    const audiocpp_model_t *model,
+    int task,
+    const char *options_json,
+    int64_t preferred_chunk_samples,
+    audiocpp_error_t *err
+) {
+    audiocpp_stream_t *result = nullptr;
+    AUDIOCPP_CATCH(err, {
+        if (!model || !model->loaded_model) {
+            throw std::runtime_error("invalid model handle");
+        }
+        // Create a new streaming session
+        engine::runtime::TaskSpec task_spec;
+        task_spec.task = map_task(task);
+        task_spec.mode = engine::runtime::RunMode::Streaming;
+
+        // Reuse the model's backend options
+        engine::runtime::SessionOptions opts;
+        opts.backend.type = model->session->run_mode() == engine::runtime::RunMode::Streaming
+            ? opts.backend.type : opts.backend.type;  // just keep default
+
+        auto session = model->loaded_model->create_task_session(task_spec, opts);
+        if (!session) {
+            throw std::runtime_error("failed to create streaming task session");
+        }
+
+        auto *streaming = dynamic_cast<engine::runtime::IStreamingVoiceTaskSession *>(
+            session.get());
+        if (!streaming) {
+            throw std::runtime_error("model does not support streaming for this task");
+        }
+
+        result = new audiocpp_stream{};
+        result->session = std::move(session);
+        result->streaming = streaming;
+        result->next_start_sample = 0;
+
+        // Register a sink to collect events emitted via callback
+        result->sink_events.clear();
+        streaming->set_stream_event_sink([&result](const engine::runtime::StreamEvent &ev) {
+            result->sink_events.push_back(ev);
+        });
+
+        // Build an initial request from options and start the stream
+        engine::runtime::TaskRequest req;
+        apply_options(req, options_json);
+        streaming->start_stream(req);
+    });
+    return result;
+}
+
+audiocpp_stream_event_t *audiocpp_stream_push(
+    audiocpp_stream_t *stream,
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    audiocpp_error_t *err
+) {
+    audiocpp_stream_event_t *result = nullptr;
+    AUDIOCPP_CATCH(err, {
+        if (!stream || !stream->streaming) {
+            throw std::runtime_error("invalid stream handle");
+        }
+        if (!pcm || n_samples <= 0) {
+            throw std::runtime_error("invalid audio chunk");
+        }
+
+        engine::runtime::AudioChunk chunk;
+        chunk.sample_rate = sample_rate;
+        chunk.channels = 1;
+        chunk.start_sample = stream->next_start_sample;
+        chunk.samples.assign(pcm, pcm + n_samples);
+        stream->next_start_sample += n_samples;
+
+        auto ev = stream->streaming->process_audio_chunk(chunk);
+
+        result = new audiocpp_stream_event_t{};
+        memset(result, 0, sizeof(*result));
+        result->is_final = ev.is_final ? 1 : 0;
+
+        // Map VAD events
+        if (!ev.voice_activity.empty()) {
+            result->n_va_events = static_cast<int>(ev.voice_activity.size());
+            result->va_events = static_cast<audiocpp_va_event_t *>(
+                calloc(result->n_va_events, sizeof(audiocpp_va_event_t)));
+            for (int i = 0; i < result->n_va_events; ++i) {
+                result->va_events[i].kind = static_cast<int>(ev.voice_activity[i].kind);
+                result->va_events[i].sample = ev.voice_activity[i].sample;
+                result->va_events[i].probability = ev.voice_activity[i].probability;
+            }
+        }
+
+        // Map partial text
+        if (ev.partial_text && !ev.partial_text->text.empty()) {
+            result->partial_text = dup_cstr(ev.partial_text->text);
+        }
+
+        // Map audio output
+        if (ev.audio_output && !ev.audio_output->samples.empty()) {
+            const auto &buf = *ev.audio_output;
+            result->audio_sample_rate = buf.sample_rate;
+            result->n_audio_samples = static_cast<int64_t>(buf.samples.size());
+            result->audio_samples = static_cast<float *>(
+                malloc(buf.samples.size() * sizeof(float)));
+            if (result->audio_samples) {
+                std::memcpy(result->audio_samples, buf.samples.data(),
+                            buf.samples.size() * sizeof(float));
+            }
+        }
+    });
+    return result;
+}
+
+int audiocpp_stream_finish(
+    audiocpp_stream_t *stream,
+    audiocpp_text_t *out_text,
+    audiocpp_error_t *err
+) {
+    if (!stream) return -1;
+    AUDIOCPP_CATCH(err, {
+        if (!stream->streaming) {
+            throw std::runtime_error("invalid stream handle");
+        }
+        auto task_result = stream->streaming->finish_stream();
+
+        // Clear the sink
+        stream->streaming->set_stream_event_sink(nullptr);
+
+        // Extract final text (for ASR)
+        if (out_text) {
+            memset(out_text, 0, sizeof(*out_text));
+            if (task_result.text_output) {
+                out_text->text = dup_cstr(task_result.text_output->text);
+                out_text->language = !task_result.text_output->language.empty()
+                    ? dup_cstr(task_result.text_output->language)
+                    : nullptr;
+            }
+        }
+    });
+    return err && err->code != 0 ? -1 : 0;
+}
+
+void audiocpp_free_stream_event(audiocpp_stream_event_t *event) {
+    if (!event) return;
+    free(event->va_events);
+    free(event->partial_text);
+    free(event->audio_samples);
+    delete event;
+}
+
+void audiocpp_stream_free(audiocpp_stream_t *stream) {
+    if (!stream) return;
+    // session unique_ptr cleans up the C++ session object
+    delete stream;
 }
 
 void audiocpp_free_string(char *str) {

@@ -510,6 +510,113 @@ AUDIOCPP_API int audiocpp_write_wav(
 );
 
 /* ======================================================================== */
+/* Streaming (chunk-push model)                                             */
+/* ======================================================================== */
+
+/** Opaque handle to a streaming session. */
+typedef struct audiocpp_stream audiocpp_stream_t;
+
+/** Voice activity event kinds (mirrors VoiceActivityEvent::Kind). */
+enum {
+    AUDIOCPP_VA_SPEECH_START   = 0,  /**< Speech onset detected */
+    AUDIOCPP_VA_SPEECH_END     = 1,  /**< Speech offset detected */
+    AUDIOCPP_VA_SPEECH_SEGMENT = 2,  /**< Complete speech segment */
+};
+
+/** Voice activity event in a stream. */
+typedef struct {
+    int kind;               /**< AUDIOCPP_VA_* */
+    int64_t sample;         /**< Sample position in the stream */
+    float probability;      /**< Speech probability [0,1] */
+} audiocpp_va_event_t;
+
+/** Event returned by audiocpp_stream_push. Caller frees with
+ *  audiocpp_free_stream_event. Fields that are NULL/0 mean "no data
+ *  of this type in this chunk". */
+typedef struct {
+    /* VAD events (silero_vad: one or more per chunk) */
+    audiocpp_va_event_t *va_events;
+    int n_va_events;
+    /* Partial text (nemotron_asr: incremental transcript, may be NULL) */
+    char *partial_text;
+    /* Streaming audio output (streaming TTS, may be NULL) */
+    float *audio_samples;
+    int64_t n_audio_samples;
+    int audio_sample_rate;
+    /* True when the stream signals completion */
+    int is_final;
+} audiocpp_stream_event_t;
+
+/**
+ * Start a streaming session from a loaded model.
+ *
+ * Creates a new streaming task session (separate from the model's
+ * offline session). The model must support streaming for the given task.
+ *
+ * @param model       Loaded model handle.
+ * @param task        AUDIOCPP_TASK_* (VAD, ASR, TTS, etc.).
+ * @param options_json Optional JSON options (NULL = defaults).
+ * @param preferred_chunk_samples Preferred audio chunk size in samples (0 = model default).
+ * @param err         Optional error output.
+ * @return Stream handle, or NULL on failure (check err).
+ */
+AUDIOCPP_API audiocpp_stream_t *audiocpp_stream_start(
+    const audiocpp_model_t *model,
+    int task,
+    const char *options_json,
+    int64_t preferred_chunk_samples,
+    audiocpp_error_t *err
+);
+
+/**
+ * Push an audio chunk to the stream and get the resulting event.
+ *
+ * For VAD: each chunk returns voice-activity events immediately.
+ * For ASR: chunks accumulate audio; events are empty until finish.
+ * For streaming TTS: may return audio output per chunk.
+ *
+ * @param stream      Stream handle from audiocpp_stream_start.
+ * @param pcm         Audio chunk (mono f32, [-1.0, 1.0]).
+ * @param n_samples   Number of samples in this chunk.
+ * @param sample_rate Sample rate (e.g. 16000).
+ * @param err         Optional error output.
+ * @return Stream event (may have all-zero fields if nothing happened).
+ *         Caller MUST free with audiocpp_free_stream_event. Returns NULL
+ *         only on hard error (check err).
+ */
+AUDIOCPP_API audiocpp_stream_event_t *audiocpp_stream_push(
+    audiocpp_stream_t *stream,
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    audiocpp_error_t *err
+);
+
+/**
+ * Finish the stream and get the final result.
+ *
+ * Triggers any deferred processing (e.g. ASR decode) and returns the
+ * accumulated final output.
+ *
+ * @param stream   Stream handle (invalidated after this call).
+ * @param out_text Optional: receives final transcript (for ASR). Pass NULL to skip.
+ *                 Caller owns and must free with audiocpp_free_text.
+ * @param err      Optional error output.
+ * @return 0 on success, -1 on error.
+ */
+AUDIOCPP_API int audiocpp_stream_finish(
+    audiocpp_stream_t *stream,
+    audiocpp_text_t *out_text,
+    audiocpp_error_t *err
+);
+
+/** Free a stream event. Safe to call with NULL. */
+AUDIOCPP_API void audiocpp_free_stream_event(audiocpp_stream_event_t *event);
+
+/** Free a stream handle. Safe to call with NULL. */
+AUDIOCPP_API void audiocpp_stream_free(audiocpp_stream_t *stream);
+
+/* ======================================================================== */
 /* Device enumeration                                                        */
 /* ======================================================================== */
 

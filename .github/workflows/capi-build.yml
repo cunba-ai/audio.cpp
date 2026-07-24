@@ -37,7 +37,7 @@ permissions:
   actions: write   # needed to save toolchain caches
 
 env:
-  CUDA_ARCHS: "60;61;70;75;80;86;89;90"
+  CUDA_ARCHS: "61;70;75;80;86;89;120"
   AMDGPU_TARGETS: "gfx1100;gfx1101;gfx1102;gfx1150;gfx1151;gfx1200;gfx1201"
   OSS_BUCKET: "miaosoft-internal"
   OSS_ENDPOINT: "oss-cn-shanghai.aliyuncs.com"
@@ -61,8 +61,8 @@ jobs:
       matrix:
         config:
           - name: CUDA-CPU
-            container: nvidia/cuda:12.4.1-devel-ubuntu22.04
-            cmake_extra: '-DENGINE_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="60;61;70;75;80;86;89;90"'
+            container: nvidia/cuda:12.9.1-devel-ubuntu22.04
+            cmake_extra: '-DENGINE_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="61;70;75;80;86;89;120"'
             artifact_suffix: linux-cuda-cpu
           - name: ROCm-CPU
             container: rocm/dev-ubuntu-22.04:6.4-complete
@@ -179,9 +179,9 @@ jobs:
 
       - name: Setup CUDA Toolkit
         if: matrix.config.setup == 'cuda'
-        uses: Jimver/cuda-toolkit@v0.2.21
+        uses: Jimver/cuda-toolkit@v0.2.35
         with:
-          cuda: '12.6.2'
+          cuda: '12.9.0'
           method: 'network'
 
       # ── ROCm/HIP: real AMD HIP SDK installer (llama.cpp pattern) ──────────

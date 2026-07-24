@@ -24,7 +24,7 @@ core compute backends are `ggml`'s CPU, CUDA, Vulkan, and Metal.
 | `app/server/` | `audiocpp_server` — HTTP server, multipart uploads, config, runtime, `busy_guard` |
 | `app/gguf/` | `audiocpp_gguf` — platform-neutral GGUF load/convert/run binary |
 | `app/streaming/`, `app/workflow/` | Streaming session + experimental JSON pipeline/workflow engine (linked into the CLI) |
-| `capi/` | C ABI shared library `libaudiocpp` (`include/audiocpp.h`, `src/audiocpp_capi.cpp`) — gated by `AUDIOCPP_BUILD_CAPI` |
+| `capi/` | C ABI shared library `libaudiocpp` (`include/audiocpp.h`, `src/audiocpp_capi.cpp`, `README.md`) — gated by `AUDIOCPP_BUILD_CAPI`. Exposes 37 functions: model lifecycle, TTS/ASR/VAD/Diar/Align/SEP/VC, streaming (chunk-push), device enumeration, model inspection, WAV I/O, artifact types. CI builds 6 platform/backend variants and uploads to OSS. |
 | `include/engine/` | Public headers mirrored by subsystem (`framework/`, `models/`, `community_models/`) |
 | `tests/` | Per-family test dirs + `tests/unittests/` (registered via `add_engine_unittest`), `tests/core/`, `tests/perf/`, parity/conversion Python scripts |
 | `tools/` | Build/packaging + model tooling, incl. `check_loader_catalog_sync.py` |

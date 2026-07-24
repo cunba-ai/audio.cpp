@@ -904,6 +904,78 @@ int audiocpp_write_wav(
 }
 
 /* ======================================================================== */
+/* Artifacts (reserved for future use)                                      */
+/* ======================================================================== */
+
+audiocpp_artifact_t *audiocpp_artifact_create(
+    int kind,
+    const char *id,
+    const uint8_t *payload,
+    int64_t payload_size
+) {
+    if (!id) return nullptr;
+    auto *art = new audiocpp_artifact_t{};
+    art->kind = kind;
+    art->id = dup_cstr(id);
+    art->n_meta = 0;
+    art->meta_keys = nullptr;
+    art->meta_values = nullptr;
+    if (payload && payload_size > 0) {
+        art->payload = static_cast<uint8_t *>(malloc(static_cast<size_t>(payload_size)));
+        if (art->payload) {
+            std::memcpy(art->payload, payload, static_cast<size_t>(payload_size));
+            art->payload_size = payload_size;
+        }
+    }
+    return art;
+}
+
+int audiocpp_artifact_set_meta(
+    audiocpp_artifact_t *artifact,
+    const char *key,
+    const char *value
+) {
+    if (!artifact || !key || !value) return -1;
+    // Check if key already exists
+    for (int i = 0; i < artifact->n_meta; ++i) {
+        if (std::strcmp(artifact->meta_keys[i], key) == 0) {
+            free(artifact->meta_values[i]);
+            artifact->meta_values[i] = dup_cstr(value);
+            return 0;
+        }
+    }
+    // Append new key-value pair
+    int idx = artifact->n_meta;
+    artifact->n_meta = idx + 1;
+    artifact->meta_keys = static_cast<char **>(
+        realloc(artifact->meta_keys, artifact->n_meta * sizeof(char *)));
+    artifact->meta_values = static_cast<char **>(
+        realloc(artifact->meta_values, artifact->n_meta * sizeof(char *)));
+    artifact->meta_keys[idx] = dup_cstr(key);
+    artifact->meta_values[idx] = dup_cstr(value);
+    return 0;
+}
+
+void audiocpp_artifact_free(audiocpp_artifact_t *artifact) {
+    if (!artifact) return;
+    free(artifact->id);
+    free(artifact->payload);
+    if (artifact->meta_keys) {
+        for (int i = 0; i < artifact->n_meta; ++i) {
+            free(artifact->meta_keys[i]);
+        }
+        free(artifact->meta_keys);
+    }
+    if (artifact->meta_values) {
+        for (int i = 0; i < artifact->n_meta; ++i) {
+            free(artifact->meta_values[i]);
+        }
+        free(artifact->meta_values);
+    }
+    delete artifact;
+}
+
+/* ======================================================================== */
 /* Streaming (chunk-push model)                                             */
 /* ======================================================================== */
 

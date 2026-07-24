@@ -510,6 +510,67 @@ AUDIOCPP_API int audiocpp_write_wav(
 );
 
 /* ======================================================================== */
+/* Artifacts (reserved for future use)                                      */
+/* ======================================================================== */
+/* VoiceArtifact types for passing opaque data (embeddings, tokens, state)
+ * between models. Currently no shipping model produces or consumes
+ * artifacts. These types exist so client code can be written against the
+ * ABI surface before engine support lands. */
+
+/** Artifact kind (mirrors engine::runtime::ArtifactKind). */
+enum {
+    AUDIOCPP_ARTIFACT_SPEAKER_EMBEDDING = 0,
+    AUDIOCPP_ARTIFACT_STYLE_EMBEDDING   = 1,
+    AUDIOCPP_ARTIFACT_PROMPT_EMBEDDING  = 2,
+    AUDIOCPP_ARTIFACT_ACOUSTIC_TOKENS   = 3,
+    AUDIOCPP_ARTIFACT_ALIGNMENT         = 4,
+    AUDIOCPP_ARTIFACT_DIARIZATION_STATE = 5,
+    AUDIOCPP_ARTIFACT_VAD_STATE         = 6,
+    AUDIOCPP_ARTIFACT_CUSTOM            = 7,
+};
+
+/** Opaque artifact (raw bytes + metadata key-value pairs).
+ *  Built with audiocpp_artifact_create, freed with audiocpp_artifact_free. */
+typedef struct {
+    int kind;                /**< AUDIOCPP_ARTIFACT_* */
+    char *id;                /**< Artifact identifier (owned) */
+    uint8_t *payload;        /**< Raw byte payload (owned, may be NULL) */
+    int64_t payload_size;    /**< Payload byte count (0 if no payload) */
+    int n_meta;              /**< Number of metadata key-value pairs */
+    char **meta_keys;        /**< Metadata keys array (owned) */
+    char **meta_values;      /**< Metadata values array (owned) */
+} audiocpp_artifact_t;
+
+/**
+ * Create an artifact (reserved for future use — no current model accepts it).
+ * @param kind         AUDIOCPP_ARTIFACT_*
+ * @param id           Artifact identifier (copied).
+ * @param payload      Raw payload bytes (copied; NULL = no payload).
+ * @param payload_size Payload byte count.
+ * @return New artifact handle. Free with audiocpp_artifact_free.
+ */
+AUDIOCPP_API audiocpp_artifact_t *audiocpp_artifact_create(
+    int kind,
+    const char *id,
+    const uint8_t *payload,
+    int64_t payload_size
+);
+
+/**
+ * Set a metadata key-value pair on an artifact.
+ * If the key already exists, its value is replaced.
+ * @return 0 on success, -1 on error.
+ */
+AUDIOCPP_API int audiocpp_artifact_set_meta(
+    audiocpp_artifact_t *artifact,
+    const char *key,
+    const char *value
+);
+
+/** Free an artifact and all owned data. Safe to call with NULL. */
+AUDIOCPP_API void audiocpp_artifact_free(audiocpp_artifact_t *artifact);
+
+/* ======================================================================== */
 /* Streaming (chunk-push model)                                             */
 /* ======================================================================== */
 

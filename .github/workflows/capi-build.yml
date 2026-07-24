@@ -347,10 +347,43 @@ jobs:
           $dll = Get-ChildItem -Path build -Recurse -Filter "audiocpp.dll" | Select-Object -First 1
           if (-not $dll) { Write-Host "##[error]audiocpp.dll not found"; exit 1 }
           Write-Host "Checking: $($dll.FullName)"
-          # dumpbin /exports → parse the symbol name column
-          $output = & dumpbin /exports $dll.FullName 2>$null
-          $symbols = $output | Select-String -Pattern '^\s+\d+\s+[0-9A-F]+\s+(\S+)' -AllMatches |
-                     ForEach-Object { $_.Matches[0].Groups[1].Value }
+          # Parse PE export table directly (no dumpbin dependency)
+          $bytes = [System.IO.File]::ReadAllBytes($dll.FullName)
+          $peOff = [BitConverter]::ToInt32($bytes, 0x3C)
+          $optHdr = $peOff + 24
+          $magic = [BitConverter]::ToUInt16($bytes, $optHdr)
+          $ddOff = if ($magic -eq 0x10b) { $optHdr + 96 } else { $optHdr + 112 }
+          $expRVA = [BitConverter]::ToInt32($bytes, $ddOff)
+          $expSize = [BitConverter]::ToInt32($bytes, $ddOff + 4)
+          if ($expSize -eq 0) { Write-Host "✅ No exports (empty DLL?)"; exit 0 }
+          # Section table to map RVA → file offset
+          $numSec = [BitConverter]::ToUInt16($bytes, $peOff + 6)
+          $szOpt  = [BitConverter]::ToUInt16($bytes, $peOff + 20)
+          $secOff = $peOff + 24 + $szOpt
+          function RvaToOff($rva) {
+            for ($i = 0; $i -lt $numSec; $i++) {
+              $b = $secOff + $i * 40
+              $va = [BitConverter]::ToUInt32($bytes, $b + 12)
+              $vs = [BitConverter]::ToUInt32($bytes, $b + 8)
+              $raw = [BitConverter]::ToUInt32($bytes, $b + 20)
+              if ($va -le $rva -and $rva -lt ($va + [Math]::Max($vs, [BitConverter]::ToUInt32($bytes, $b + 16)))) {
+                return $raw + ($rva - $va)
+              }
+            }
+            return -1
+          }
+          $expOff = RvaToOff $expRVA
+          $nNames = [BitConverter]::ToInt32($bytes, $expOff + 24)
+          $namesRVA = [BitConverter]::ToInt32($bytes, $expOff + 32)
+          $namesOff = RvaToOff $namesRVA
+          $symbols = @()
+          for ($i = 0; $i -lt $nNames; $i++) {
+            $nameRVA = [BitConverter]::ToInt32($bytes, $namesOff + $i * 4)
+            $nameOff = RvaToOff $nameRVA
+            $end = $nameOff
+            while ($bytes[$end] -ne 0) { $end++ }
+            $symbols += [System.Text.Encoding]::ASCII.GetString($bytes, $nameOff, $end - $nameOff)
+          }
           Write-Host "Exported symbols ($($symbols.Count)):"
           $symbols | ForEach-Object { Write-Host "  $_" }
           $leaked = $symbols | Where-Object { $_ -notmatch '^audiocpp_' }

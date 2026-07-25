@@ -756,6 +756,7 @@ runtime::TaskResult MioTTSSession::run(const runtime::TaskRequest & request) {
     int64_t total_prompt_tokens = 0;
     int64_t total_generated_tokens = 0;
     std::vector<float> output_samples;
+    emit_progress("miotts", 0, static_cast<int64_t>(text_chunks.size()));
     for (size_t chunk_index = 0; chunk_index < text_chunks.size(); ++chunk_index) {
         const std::string chunk_prefix = "miotts.chunk_" + std::to_string(chunk_index);
         const std::string scoring_language = resolve_best_of_n_language(text_chunks[chunk_index], best_of_n.language);
@@ -862,6 +863,7 @@ runtime::TaskResult MioTTSSession::run(const runtime::TaskRequest & request) {
             static_cast<int64_t>(selected.generated.codec_tokens.size()));
         total_generated_tokens += static_cast<int64_t>(selected.generated.codec_tokens.size());
         output_samples.insert(output_samples.end(), selected.audio.begin(), selected.audio.end());
+        emit_progress("miotts", static_cast<int64_t>(chunk_index + 1), static_cast<int64_t>(text_chunks.size()));
     }
     engine::debug::timing_log_scalar("miotts.prompt_ms", prompt_ms);
     engine::debug::timing_log_scalar("miotts.lm_ms", lm_ms);

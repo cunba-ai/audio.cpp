@@ -93,7 +93,7 @@ println!("{}", text.text);
 
 ## API Reference
 
-The library exports **37 functions** across these categories:
+The library exports **41 functions** across these categories:
 
 ### 1. Backend & Device Selection
 
@@ -193,9 +193,101 @@ and must free it with the matching `audiocpp_free_*` function.
 `audiocpp_audio_transform` which only returns the first). Use this for
 source separation models (demucs, roformer) that emit multiple stems.
 
+**Batch TTS** — `audiocpp_tts_batch` synthesizes N texts in one session
+(reuses a single `prepare()`, far cheaper than N separate `audiocpp_tts`
+calls). Each text is synthesized independently; individual failures do not
+abort the batch. Two merge modes:
+
+```c
+const char *texts[] = {"第一段。", "第二段。", "第三段。"};
+int n = 3;
+
+// Mode 1: independent — N separate audio buffers
+audiocpp_audio_batch_t *b = audiocpp_tts_batch(
+    model, texts, n, "{\"voice_ref\":\"ref.wav\",\"reference_text\":\"...\"}",
+    AUDIOCPP_BATCH_MERGE_NONE, &err);
+for (int i = 0; i < b->n_items; ++i) {
+    // b->items[i].samples  → audio for texts[i] (or empty if that text failed)
+}
+audiocpp_free_audio_batch(b);
+
+// Mode 2: concat — one merged audio + per-text sample ranges
+b = audiocpp_tts_batch(model, texts, n, opts,
+                       AUDIOCPP_BATCH_MERGE_CONCAT, &err);
+// b->items[0].samples   → the full concatenation
+// b->chapter_starts[i], b->chapter_ends[i]  → [start,end) for texts[i]
+audiocpp_free_audio_batch(b);
+```
+
+Progress: with a callback installed, it fires at **request granularity**
+(stage `"batch_tts"`, `completed/total = (text_index)/n`) — one update per
+text, not per internal chunk. Free with `audiocpp_free_audio_batch`.
+
 ---
 
-### 5. Streaming (Chunk-Push Model)
+### 5. Progress Callback (Offline Run)
+
+Install a callback to observe progress during any offline inference function
+(`audiocpp_tts`, `audiocpp_asr`, `audiocpp_vad`, `audiocpp_diar`, ...). The
+callback fires synchronously on the calling thread from inside `run()` — at
+chunk boundaries for chunked models (TTS text-chunk / ASR audio-chunk), or once
+at start/end for single-shot models. Returning non-zero from the callback
+requests cancellation: the in-flight `run()` aborts and the triggering function
+returns NULL with `err->message = "canceled by progress callback"`
+(`err->code` stays 0 — cancellation is not a hard error).
+
+```c
+// Signature: return 0 to continue, non-zero to cancel
+typedef int (*audiocpp_progress_fn)(float progress,
+                                    const char *stage,
+                                    int64_t completed_units,
+                                    int64_t total_units,
+                                    void *user_data);
+
+// A simple progress printer
+int my_progress(float progress, const char *stage,
+                int64_t completed, int64_t total, void *user) {
+    printf("[%s] %d%% (%lld/%lld)\n",
+           stage, (int)(progress * 100),
+           (long long)completed, (long long)total);
+    return 0;  // 0 = continue, non-zero = cancel
+}
+
+// Install once after load_model; persists across runs until cleared/replaced
+audiocpp_set_progress_callback(model, my_progress, NULL);
+
+// Subsequent runs fire the callback:
+audiocpp_audio_t *audio = audiocpp_tts(model, "long text...", NULL, &err);
+// console during run:
+//   [qwen3_tts] 0% (0/7)
+//   [qwen3_tts] 14% (1/7)
+//   ...
+//   [qwen3_tts] 100% (7/7)
+
+// Cancel a long job by returning 1 from the callback:
+int cancel_after_3(float p, const char *s, int64_t c, int64_t t, void *u) {
+    return c >= 3 ? 1 : 0;  // abort once 3 chunks done
+}
+
+// Clear: pass fn = NULL
+audiocpp_set_progress_callback(model, NULL, NULL);
+```
+
+| Field | Meaning |
+|---|---|
+| `progress` | Completion fraction in `[0.0, 1.0]` |
+| `stage` | Model family name, e.g. `"qwen3_tts"` / `"qwen3_asr"`. Valid only during the callback. |
+| `completed_units` | Chunks completed so far (`0..total_units`) |
+| `total_units` | Total chunks (`1` for single-shot models) |
+
+**Coverage**: all 37 model families. The 21 chunk-loop models (16 TTS, 4 ASR,
+2 source-separation) report per-chunk progress; the 16 single-shot models
+report `0%` at start and `100%` at completion. Thread-safety: set the callback
+before calling a run function and do not change it mid-run.
+
+---
+
+### 6. Streaming (Chunk-Push Model)
 
 For real-time / low-latency processing (streaming VAD, streaming ASR):
 
@@ -255,9 +347,22 @@ audiocpp_stream_free(stream);
 voxtral_realtime (ASR), omnivoice/supertonic/voxcpm2 (TTS). Other models
 (vibevoice_asr, etc.) reject `stream_start` → caller should fall back to offline.
 
+**Notes on `stream_pull` and `stream_finish`:**
+
+- `stream_pull`'s `timeout_ms` is currently **synchronous-blocking**: the call
+  returns as soon as `next_stream_event()` produces an event or the stream is
+  exhausted. Pass `-1`. The values `0` (non-blocking try) and `>0` (wait N ms)
+  are accepted for forward compatibility but behave the same as `-1` today;
+  any other negative value is rejected.
+- For ASR models that decode only at finish time (nemotron_asr), `stream_finish`
+  recovers partial-text events emitted during `finalize()` and folds the last
+  one into `out_text` when the final `TaskResult` carries no text — so callers
+  no longer lose the transcript that was previously stranded in the internal
+  event sink.
+
 ---
 
-### 6. Model Inspection
+### 7. Model Inspection
 
 Query a loaded model's metadata and capabilities before running:
 
@@ -281,7 +386,7 @@ audiocpp_model_capabilities(model, &caps);
 
 ---
 
-### 7. WAV I/O Utilities
+### 8. WAV I/O Utilities
 
 ```c
 // Read WAV → mono f32 PCM
@@ -296,7 +401,7 @@ audiocpp_write_wav("output.wav", samples, n, rate);
 
 ---
 
-### 8. Artifacts (Reserved)
+### 9. Artifacts (Reserved)
 
 VoiceArtifact types for passing opaque data (embeddings, tokens) between
 models. **Currently no shipping model produces or consumes artifacts.**
@@ -318,7 +423,7 @@ audiocpp_artifact_free(art);
 
 ---
 
-### 9. Memory Management
+### 10. Memory Management
 
 All result handles are owned by the caller. Free with the matching function:
 

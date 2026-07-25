@@ -282,6 +282,7 @@ runtime::TaskResult StableAudioSession::run(const runtime::TaskRequest & request
         throw std::runtime_error("Stable Audio SAME runtime was not prepared");
     }
     const auto wall_start = Clock::now();
+    emit_progress("stable_audio", 0, 1);
     const StableAudioRequest parsed = clamp_request_to_model_limit(
         parse_stable_audio_request(request),
         assets_->config);
@@ -387,6 +388,7 @@ runtime::TaskResult StableAudioSession::run(const runtime::TaskRequest & request
             {},
         });
     }
+    emit_progress("stable_audio", 1, 1);
     return out;
 }
 

@@ -179,6 +179,70 @@ AUDIOCPP_API audiocpp_audio_t *audiocpp_tts_with_voice_ref(
     audiocpp_error_t *err
 );
 
+/* Batch output merge modes for audiocpp_tts_batch. */
+enum {
+    AUDIOCPP_BATCH_MERGE_NONE   = 0,  /**< Return N independent audio results */
+    AUDIOCPP_BATCH_MERGE_CONCAT = 1,  /**< Concatenate into a single audio result */
+};
+
+/**
+ * Batch of synthesized audio. Returned by audiocpp_tts_batch.
+ * - When merge_mode = AUDIOCPP_BATCH_MERGE_NONE: items[] holds N separate
+ *   audio buffers, one per input text (in order). items_failed marks which
+ *   texts produced no audio (their entry has samples=NULL, n_samples=0).
+ * - When merge_mode = AUDIOCPP_BATCH_MERGE_CONCAT: items[] holds a single
+ *   audio buffer (the concatenation); chapters[] gives [start,end) sample
+ *   ranges per input text so the client can locate each segment.
+ *
+ * Caller owns the result and MUST free with audiocpp_free_audio_batch.
+ */
+typedef struct {
+    audiocpp_audio_t *items;   /**< Array of n_items audio buffers */
+    int n_items;               /**< Number of items (== number of input texts) */
+    /** Per-text sample ranges (concat mode only). [start,end) in samples.
+     *  NULL in merge=NONE mode. Length n_items when present. */
+    int64_t *chapter_starts;   /**< start sample per text (NULL if not concat) */
+    int64_t *chapter_ends;     /**< end sample per text (NULL if not concat) */
+} audiocpp_audio_batch_t;
+
+/**
+ * Synthesize a batch of texts in one session (reuses a single prepare()).
+ *
+ * Reuses the loaded model's prepared session across all texts — far cheaper
+ * than calling audiocpp_tts N times when prepare() is expensive. Each text is
+ * synthesized independently (internal text-chunking still applies per item),
+ * then results are either returned separately or concatenated.
+ *
+ * Progress: if a callback is installed via audiocpp_set_progress_callback, it
+ * fires once PER INPUT TEXT at request granularity — stage="batch_tts",
+ * completed/total = (text index + 1)/(n_texts). Per-chunk progress from inside
+ * each run() is suppressed during the batch so the caller sees clean
+ * request-level progress only.
+ *
+ * @param model        Model handle (must be TTS).
+ * @param texts        Array of n_texts UTF-8 strings.
+ * @param n_texts      Number of input texts (>= 1).
+ * @param options_json Options applied to EVERY text (voice_ref, speed, ...).
+ *                     NULL or "{}" for defaults.
+ * @param merge_mode   AUDIOCPP_BATCH_MERGE_NONE or AUDIOCPP_BATCH_MERGE_CONCAT.
+ * @param err          Optional error output.
+ * @return Batch result, or NULL on failure (e.g. all texts failed).
+ *         Individual text failures do NOT fail the whole batch — they are
+ *         recorded per-item (samples=NULL). Caller MUST free with
+ *         audiocpp_free_audio_batch.
+ */
+AUDIOCPP_API audiocpp_audio_batch_t *audiocpp_tts_batch(
+    audiocpp_model_t *model,
+    const char *const *texts,
+    int n_texts,
+    const char *options_json,
+    int merge_mode,
+    audiocpp_error_t *err
+);
+
+/** Free a batch result. Safe to call with NULL. */
+AUDIOCPP_API void audiocpp_free_audio_batch(audiocpp_audio_batch_t *batch);
+
 /* ======================================================================== */
 /* ASR: audio → text                                                         */
 /* ======================================================================== */
@@ -684,9 +748,12 @@ AUDIOCPP_API void audiocpp_free_stream_event(audiocpp_stream_event_t *event);
  * options_json as {"text":"...","language":"zh"}.
  *
  * @param stream      Stream handle from audiocpp_stream_start.
- * @param timeout_ms  Max wait: -1 = block until an event is available;
- *                    0 = non-blocking try (return NULL immediately if empty);
- *                    >0 = wait at most N ms.
+ * @param timeout_ms  Reserved for future non-blocking support. The current
+ *                    implementation is fully synchronous: this call blocks on
+ *                    the calling thread until next_stream_event() returns.
+ *                    Pass -1. The values 0 (non-blocking try) and >0 (wait N
+ *                    ms) are accepted but currently behave the same as -1;
+ *                    they will be honored once a background-pump mode lands.
  * @param err         Optional error output.
  * @return Stream event (typically audio_samples for TTS), or NULL if the
  *         stream is exhausted (no more data) or on timeout with no event.
@@ -762,6 +829,50 @@ AUDIOCPP_API void audiocpp_free_string(char *str);
 
 /** Clear an error struct (frees message, resets code to 0). */
 AUDIOCPP_API void audiocpp_clear_error(audiocpp_error_t *err);
+
+/* ======================================================================== */
+/* Progress callback (offline run progress + cancellation)                  */
+/* ======================================================================== */
+
+/**
+ * Progress callback signature. Invoked synchronously on the calling thread
+ * from inside an offline run (audiocpp_tts / audiocpp_asr / ...) at chunk
+ * boundaries for chunked models, or once at start/end for single-shot models.
+ *
+ * @param progress       Completion fraction in [0.0, 1.0].
+ * @param stage          Model family name, e.g. "qwen3_tts" / "qwen3_asr".
+ *                       Valid for the duration of the callback only.
+ * @param completed_units Chunks completed so far (0..total_units).
+ * @param total_units    Total chunks (1 for single-shot models).
+ * @param user_data      Opaque pointer passed to audiocpp_set_progress_callback.
+ *
+ * @return 0 to continue running; non-zero to request cancellation. When
+ *         cancellation is requested, the in-flight run() aborts and the
+ *         triggering audiocpp_* function returns NULL with
+ *         err->message = "canceled by progress callback" (err->code stays 0;
+ *         cancellation is not a hard error).
+ */
+typedef int (*audiocpp_progress_fn)(float progress,
+                                    const char *stage,
+                                    int64_t completed_units,
+                                    int64_t total_units,
+                                    void *user_data);
+
+/**
+ * Install a progress callback on a model handle. The callback fires during
+ * subsequent offline runs (audiocpp_tts, audiocpp_asr, audiocpp_vad, ...).
+ *
+ * Pass fn=NULL to clear a previously installed callback.
+ *
+ * The callback is per-model-handle and persists across runs until cleared or
+ * replaced. It is invoked on the same thread that calls the run function.
+ *
+ * Thread safety: do not call set_progress_callback concurrently with a run on
+ * the same handle. Set it before invoking a run function.
+ */
+AUDIOCPP_API void audiocpp_set_progress_callback(audiocpp_model_t *model,
+                                                 audiocpp_progress_fn fn,
+                                                 void *user_data);
 
 #ifdef __cplusplus
 } /* extern "C" */

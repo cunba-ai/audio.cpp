@@ -274,6 +274,7 @@ runtime::TaskResult VibeVoiceSession::run(const runtime::TaskRequest & request) 
     require_prepared("VibeVoice run");
     const auto wall_start = Clock::now();
     auto vibevoice_request = make_request(request);
+    emit_progress("vibevoice", 0, 1);
     auto result = generate_vibevoice(
         vibevoice_request,
         text_tokenizer_,
@@ -286,6 +287,7 @@ runtime::TaskResult VibeVoiceSession::run(const runtime::TaskRequest & request) 
     runtime::TaskResult out;
     out.audio_output = std::move(result.audio);
     engine::debug::timing_log_scalar("session.wall_ms", engine::debug::elapsed_ms(wall_start));
+    emit_progress("vibevoice", 1, 1);
     return out;
 }
 

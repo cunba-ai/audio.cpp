@@ -167,6 +167,7 @@ runtime::TaskResult MioCodecSession::run(const runtime::TaskRequest & request) {
         !request.voice->speaker->audio.has_value()) {
         throw std::runtime_error("MioCodec run() requires voice speaker audio for the global reference");
     }
+    emit_progress("miocodec", 0, 1);
     auto timing_start = Clock::now();
     const auto source_audio = prepare_miocodec_mono_audio(*request.audio_input, assets_->config.sample_rate);
     engine::debug::timing_log_scalar("miocodec.audio.source_prepare_ms", engine::debug::elapsed_ms(timing_start));
@@ -217,6 +218,7 @@ runtime::TaskResult MioCodecSession::run(const runtime::TaskRequest & request) {
     };
     engine::debug::timing_log_scalar("miocodec.istft_ms", engine::debug::elapsed_ms(timing_start));
     engine::debug::timing_log_scalar("session.wall_ms", engine::debug::elapsed_ms(wall_start));
+    emit_progress("miocodec", 1, 1);
     return result;
 }
 

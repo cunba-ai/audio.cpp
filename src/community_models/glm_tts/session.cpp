@@ -405,6 +405,8 @@ runtime::TaskResult GlmTTSSession::run(
     const uint32_t seed = runtime::parse_u32_option(
         request.options, {"seed"}).value_or(0);
 
+    emit_progress("glm_tts", 0, 1);
+
     const auto frontend_start = Clock::now();
     const auto & reference = resolve_reference(*audio);
     debug::timing_log_scalar(
@@ -518,6 +520,7 @@ runtime::TaskResult GlmTTSSession::run(
     debug::trace_log_scalar("glm_tts.mel_frames", mel.frames);
     debug::timing_log_scalar(
         "session.wall_ms", debug::elapsed_ms(wall_start));
+    emit_progress("glm_tts", 1, 1);
     return result;
 }
 

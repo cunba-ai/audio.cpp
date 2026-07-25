@@ -191,6 +191,8 @@ runtime::TaskResult AceStepSession::run(const runtime::TaskRequest &request) {
     require_prepared("ACE-Step run()");
     const auto total_start = Clock::now();
 
+    emit_progress("ace_step", 0, 1);
+
     const auto parse_start = Clock::now();
     const AceStepRequest ace_request = ace_step_parse_request(request);
     const AceStepTaskRoute &route = ace_step_task_route(ace_request);
@@ -308,6 +310,7 @@ runtime::TaskResult AceStepSession::run(const runtime::TaskRequest &request) {
         pre_dit_.reset();
     }
 
+    emit_progress("ace_step", 1, 1);
     return result;
 }
 

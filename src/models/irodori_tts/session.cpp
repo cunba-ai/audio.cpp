@@ -466,6 +466,7 @@ IrodoriTTSSession::run(const runtime::TaskRequest &request) {
   double rf_step_cond_ms = 0.0;
   double decode_ms = 0.0;
   const int hop_length = static_cast<int>(assets_->codec.hop_length);
+  emit_progress("irodori_tts", 0, static_cast<int64_t>(chunk_requests.size()));
   for (size_t chunk_index = 0; chunk_index < chunk_requests.size();
        ++chunk_index) {
     const auto &chunk_request = chunk_requests[chunk_index];
@@ -654,6 +655,7 @@ IrodoriTTSSession::run(const runtime::TaskRequest &request) {
     if (mem_saver_) {
       codec_->release_graphs();
     }
+    emit_progress("irodori_tts", static_cast<int64_t>(chunk_index + 1), static_cast<int64_t>(chunk_requests.size()));
   }
   runtime::TaskResult result;
   result.audio_output = std::move(merged_audio);

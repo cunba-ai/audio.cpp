@@ -134,10 +134,12 @@ runtime::TaskResult CitrinetASRSession::run(const runtime::TaskRequest & request
         throw std::runtime_error("Citrinet ASR run() requires audio_input");
     }
     const auto wall_start = std::chrono::steady_clock::now();
+    emit_progress("citrinet_asr", 0, 1);
     const auto transcription = runtime_.transcribe_audio(*request.audio_input);
     runtime::TaskResult result;
     result.text_output = runtime::Transcript{transcription.text, request.text_input.has_value() ? request.text_input->language : ""};
     engine::debug::timing_log_scalar("session.wall_ms", engine::debug::elapsed_ms(wall_start));
+    emit_progress("citrinet_asr", 1, 1);
     return result;
 }
 

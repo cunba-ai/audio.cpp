@@ -160,7 +160,10 @@ runtime::TaskResult Qwen3ForcedAlignerSession::run(const runtime::TaskRequest & 
             "Qwen3 forced aligner does not support standalone audio chunking; "
             "chunk audio before ASR so each aligner request receives matching audio and transcript");
     }
-    return run_single(request);
+    emit_progress("qwen3_forced_aligner", 0, 1);
+    auto result = run_single(request);
+    emit_progress("qwen3_forced_aligner", 1, 1);
+    return result;
 }
 
 runtime::TaskResult Qwen3ForcedAlignerSession::run_single(const runtime::TaskRequest & request) {

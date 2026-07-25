@@ -716,6 +716,8 @@ if (AUDIOCPP_BUILD_CAPI)
             "    audiocpp_free_model\n"
             "    audiocpp_tts\n"
             "    audiocpp_tts_with_voice_ref\n"
+            "    audiocpp_tts_batch\n"
+            "    audiocpp_free_audio_batch\n"
             "    audiocpp_asr\n"
             "    audiocpp_audio_transform\n"
             "    audiocpp_audio_transform_with_voice_ref\n"
@@ -750,6 +752,7 @@ if (AUDIOCPP_BUILD_CAPI)
             "    audiocpp_device_count\n"
             "    audiocpp_device_info\n"
             "    audiocpp_list_devices\n"
+            "    audiocpp_set_progress_callback\n"
         )
         if (MSVC OR CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
             # MSVC link.exe and icx (which drives link.exe on Windows) both
@@ -991,6 +994,13 @@ if (ENGINE_BUILD_TESTS)
     add_test(
         NAME audio_dsp_test
         COMMAND audio_dsp_test
+    )
+
+    add_engine_unittest(progress_callback_test tests/unittests/test_progress_callback.cpp)
+
+    add_test(
+        NAME progress_callback_test
+        COMMAND progress_callback_test
     )
 
     add_engine_unittest(wav_reader_test tests/unittests/test_wav_reader.cpp)

@@ -236,7 +236,9 @@ runtime::TaskResult HiggsTTSSession::run(const runtime::TaskRequest & request) {
     debug::trace_log_scalar("higgs_audio_tts.text_chunk_count", static_cast<int64_t>(chunk_requests.size()));
 
     runtime::AudioBuffer merged_audio;
-    for (const auto & chunk_request : chunk_requests) {
+    emit_progress("higgs_audio_tts", 0, static_cast<int64_t>(chunk_requests.size()));
+    for (size_t i = 0; i < chunk_requests.size(); ++i) {
+        const auto & chunk_request = chunk_requests[i];
         const auto generation_request = make_generation_request(chunk_request, reference_codes);
         auto result = generator_->generate(generation_request);
         runtime::append_audio_buffer(merged_audio, runtime::AudioBuffer{
@@ -244,6 +246,7 @@ runtime::TaskResult HiggsTTSSession::run(const runtime::TaskRequest & request) {
             result.audio.channels,
             std::move(result.audio.values),
         });
+        emit_progress("higgs_audio_tts", static_cast<int64_t>(i + 1), static_cast<int64_t>(chunk_requests.size()));
     }
 
     runtime::TaskResult out;

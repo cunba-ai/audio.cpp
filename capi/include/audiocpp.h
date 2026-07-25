@@ -74,10 +74,10 @@ typedef struct {
 /* ======================================================================== */
 
 enum {
-    AUDIOCPP_BACKEND_CPU    = 0,
-    AUDIOCPP_BACKEND_CUDA   = 1,  /**< NVIDIA CUDA / AMD ROCm (HIP) */
-    AUDIOCPP_BACKEND_VULKAN = 2,
-    AUDIOCPP_BACKEND_METAL  = 3,
+    AUDIOCPP_BACKEND_CPU    = 0,  /**< CPU (always available) */
+    AUDIOCPP_BACKEND_CUDA   = 1,  /**< NVIDIA CUDA (also matches AMD ROCm/HIP and MUSA builds) */
+    AUDIOCPP_BACKEND_VULKAN = 2,  /**< Vulkan (NVIDIA / AMD / Intel / Apple-over-MoltenVK) */
+    AUDIOCPP_BACKEND_METAL  = 3,  /**< Apple Metal (macOS/iOS only) */
     AUDIOCPP_BACKEND_SYCL   = 4,  /**< Intel oneAPI SYCL */
     AUDIOCPP_BACKEND_BEST   = 5,  /**< auto-select best available */
 };
@@ -444,7 +444,7 @@ AUDIOCPP_API audiocpp_vad_t *audiocpp_vad_energy(
  * @param model_path   Model directory (or file for rnnoise). NULL = use the
  *                     embedded asset (requires AUDIOCPP_EMBED_AUDIO_UTILITIES=ON).
  * @param options_json Options JSON. Recognized keys:
- *                       "backend": "cpu" | "cuda" | "vulkan" (default cpu)
+ *                       "backend": "cpu" | "cuda" | "vulkan" | "metal" | "sycl" (default cpu)
  *                       "device":  device index (default 0)
  * @param err          Optional error output.
  * @return Denoised audio (mono f32), or NULL on failure. The output sample rate
@@ -864,9 +864,11 @@ AUDIOCPP_API void audiocpp_stream_free(audiocpp_stream_t *stream);
 
 /** Device type (mirrors ggml_backend_dev_type). */
 enum {
-    AUDIOCPP_DEVICE_CPU  = 0,  /**< CPU */
-    AUDIOCPP_DEVICE_GPU  = 1,  /**< Discrete GPU */
-    AUDIOCPP_DEVICE_IGPU = 2,  /**< Integrated GPU */
+    AUDIOCPP_DEVICE_CPU   = 0,  /**< CPU */
+    AUDIOCPP_DEVICE_GPU   = 1,  /**< Discrete GPU */
+    AUDIOCPP_DEVICE_IGPU  = 2,  /**< Integrated GPU */
+    AUDIOCPP_DEVICE_ACCEL = 3,  /**< Hardware accelerator (e.g. Apple Metal) */
+    AUDIOCPP_DEVICE_META  = 4,  /**< Meta device (ggml internal, rare) */
 };
 
 /** Information about a compute device.

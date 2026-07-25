@@ -45,6 +45,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <initializer_list>
 #include <memory>
 #include <optional>
 #include <string>
@@ -1761,27 +1762,34 @@ namespace {
 
 // Map a ggml backend registration to our AUDIOCPP_BACKEND_* enum.
 int backend_reg_to_id(ggml_backend_reg_t reg) {
+    // Match by registry name (not the deprecated direct ggml_backend_*_reg()
+    // pointer compare). This works with dynamically-loaded backends and the
+    // CUDA alias names used under HIP ("ROCm") and MUSA builds — mirroring the
+    // engine's own reg_name_matches() logic in backend.cpp.
     if (!reg) return AUDIOCPP_BACKEND_CPU;
-#ifdef GGML_USE_CUDA
-    if (reg == ggml_backend_cuda_reg()) return AUDIOCPP_BACKEND_CUDA;
-#endif
-#ifdef GGML_USE_SYCL
-    if (reg == ggml_backend_sycl_reg()) return AUDIOCPP_BACKEND_SYCL;
-#endif
-#ifdef GGML_USE_VULKAN
-    if (reg == ggml_backend_vk_reg()) return AUDIOCPP_BACKEND_VULKAN;
-#endif
-#ifdef GGML_USE_METAL
-    if (reg == ggml_backend_metal_reg()) return AUDIOCPP_BACKEND_METAL;
-#endif
+    const char * name = ggml_backend_reg_name(reg);
+    if (name == nullptr) return AUDIOCPP_BACKEND_CPU;
+    const auto matches = [&](std::initializer_list<const char *> aliases) {
+        for (const char * a : aliases) {
+            if (std::strcmp(name, a) == 0) return true;
+        }
+        return false;
+    };
+    if (matches({"CUDA", "ROCm", "MUSA"})) return AUDIOCPP_BACKEND_CUDA;
+    if (std::strcmp(name, "Vulkan") == 0)  return AUDIOCPP_BACKEND_VULKAN;
+    if (std::strcmp(name, "MTL") == 0)     return AUDIOCPP_BACKEND_METAL;
+    if (std::strcmp(name, "SYCL") == 0)    return AUDIOCPP_BACKEND_SYCL;
     // CPU and any unknown backend
     return AUDIOCPP_BACKEND_CPU;
 }
 
 int dev_type_to_id(enum ggml_backend_dev_type type) {
     switch (type) {
-        case GGML_BACKEND_DEVICE_TYPE_GPU:  return AUDIOCPP_DEVICE_GPU;
-        case GGML_BACKEND_DEVICE_TYPE_IGPU: return AUDIOCPP_DEVICE_IGPU;
+        case GGML_BACKEND_DEVICE_TYPE_GPU:   return AUDIOCPP_DEVICE_GPU;
+        case GGML_BACKEND_DEVICE_TYPE_IGPU:  return AUDIOCPP_DEVICE_IGPU;
+        case GGML_BACKEND_DEVICE_TYPE_ACCEL: return AUDIOCPP_DEVICE_ACCEL;
+        case GGML_BACKEND_DEVICE_TYPE_META:  return AUDIOCPP_DEVICE_META;
+        case GGML_BACKEND_DEVICE_TYPE_CPU:
         default:                             return AUDIOCPP_DEVICE_CPU;
     }
 }

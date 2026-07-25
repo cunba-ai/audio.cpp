@@ -9,16 +9,18 @@ ctypes, Go cgo, etc.).
 ### Build
 
 The C ABI shared library is built when `AUDIOCPP_BUILD_CAPI=ON` (default).
-CI produces prebuilt binaries for 6 platform/backend combinations:
+CI produces prebuilt binaries for 8 platform/backend combinations:
 
 | Artifact | Platform | Backend |
 |---|---|---|
 | `audiocpp-windows-cuda-cpu.zip` | Windows | CUDA + CPU fallback |
 | `audiocpp-windows-rocm-cpu.zip` | Windows | ROCm (HIP) |
 | `audiocpp-windows-sycl-cpu.zip` | Windows | Intel SYCL |
+| `audiocpp-windows-vulkan-cpu.zip` | Windows | Vulkan + CPU fallback |
 | `audiocpp-linux-cuda-cpu.zip` | Linux | CUDA + CPU fallback |
 | `audiocpp-linux-rocm-cpu.zip` | Linux | ROCm (HIP) |
 | `audiocpp-linux-sycl-cpu.zip` | Linux | Intel SYCL |
+| `audiocpp-linux-vulkan-cpu.zip` | Linux | Vulkan + CPU fallback |
 
 Each zip contains:
 - `audiocpp.dll` / `libaudiocpp.so` — the shared library

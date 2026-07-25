@@ -3,11 +3,12 @@ name: C ABI Build
 # Builds the C ABI shared library (libaudiocpp.so / audiocpp.dll) for each GPU
 # backend, borrowing the proven toolchain-install patterns from llama.cpp's
 # build-combined-backends.yml (cached CUDA/HIP SDK, the real AMD HIP SDK .exe,
-# the offline oneAPI installer + Level Zero SDK, ccache). Unlike the llama.cpp
-# reference, this produces single-backend shared libraries (no Vulkan co-build,
-# no GGML_BACKEND_DL) and ships them via a GitHub draft release (no OSS).
+# the offline oneAPI installer + Level Zero SDK, the Vulkan SDK, ccache). Each
+# matrix entry produces a single-backend shared library (no GGML_BACKEND_DL)
+# and ships the zips to Alibaba Cloud OSS.
 #
-# Linux jobs run in vendor containers (CUDA/ROCm/SYCL) and are the reliable
+# Linux jobs run in vendor containers (CUDA/ROCm/SYCL) or plain Ubuntu
+# (Vulkan); the vendor-container jobs are the reliable signal.
 # signal. Windows CUDA must pass; Windows ROCm and SYCL are best-effort
 # (continue-on-error): hosted runners have no AMD/Intel GPU, so they only
 # prove MSVC configure/compile, and the vendor toolchains are large/flaky.
@@ -72,6 +73,14 @@ jobs:
             container: intel/oneapi-basekit:2025.3.1-0-devel-ubuntu24.04
             cmake_extra: '-DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DGGML_SYCL=ON -DGGML_SYCL_TARGET=INTEL'
             artifact_suffix: linux-sycl-cpu
+          - name: Vulkan-CPU
+            # Plain Ubuntu (no vendor container) — Vulkan SDK installed via apt
+            # in the deps step. Compiles the Vulkan backend against any GPU
+            # vendor's drivers at runtime.
+            container: ubuntu:22.04
+            cmake_extra: '-DENGINE_ENABLE_VULKAN=ON'
+            artifact_suffix: linux-vulkan-cpu
+            install_vulkan: 'true'
 
     steps:
       - name: Checkout
@@ -84,7 +93,25 @@ jobs:
           # from inside GitHub Actions containers (transient connection drops).
           # python3 is needed by the embedded-asset generator (AUDIOCPP_EMBED_*,
           # on by default) which runs as a CMake custom_command.
-          apt-get -o Acquire::Retries=5 install -y cmake git build-essential python3
+          DEPS="cmake git build-essential python3"
+          # Vulkan backend needs the loader + headers; the compiler/shader
+          # toolchain comes from the Vulkan SDK tarball below.
+          if [ "${{ matrix.config.install_vulkan }}" = "true" ]; then
+            DEPS="$DEPS libvulkan-dev wget tar"
+          fi
+          apt-get -o Acquire::Retries=5 install -y $DEPS
+
+      - name: Install Vulkan SDK (Linux Vulkan job only)
+        if: matrix.config.install_vulkan == 'true'
+        run: |
+          # Pull the portable Vulkan SDK tarball (no apt repo needed). Pinned to
+          # a known-good 1.3.x release; bump when stale.
+          VK_VERSION=1.3.296.0
+          wget -q "https://packages.lunarg.com/lunarg-signing-key-pub.asc"
+          wget -q "https://sdk.lunarg.com/sdk/download/${VK_VERSION}/linux/vulkansdk-linux-x86_64-${VK_VERSION}.tar.xz"
+          tar xf "vulkansdk-linux-x86_64-${VK_VERSION}.tar.xz"
+          echo "VULKAN_SDK=$PWD/${VK_VERSION}/x86_64" >> $GITHUB_ENV
+          echo "$PWD/${VK_VERSION}/x86_64/bin" >> $GITHUB_PATH
 
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.21
@@ -170,6 +197,9 @@ jobs:
           - name: SYCL-CPU
             setup: sycl
             artifact_suffix: windows-sycl-cpu
+          - name: Vulkan-CPU
+            setup: vulkan
+            artifact_suffix: windows-vulkan-cpu
 
     steps:
       - name: Checkout
@@ -264,6 +294,15 @@ jobs:
             exit 1
           }
 
+      # ── Vulkan: LunarG SDK (provides glslang/glslc for shader compilation) ──
+      - name: Setup Vulkan SDK
+        if: matrix.config.setup == 'vulkan'
+        uses: humbletim/install-vulkan-sdk@v1.2
+        with:
+          version: 1.3.296.0
+          cache: true
+
+
       - name: Configure (CUDA)
         if: matrix.config.setup == 'cuda'
         shell: cmd
@@ -320,6 +359,21 @@ jobs:
             -DGGML_SYCL_F16=OFF ^
             -DGGML_SYCL_TARGET=INTEL
 
+      - name: Configure (Vulkan)
+        if: matrix.config.setup == 'vulkan'
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cmake -S . -B build -G "Ninja" ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache ^
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache ^
+            -DBUILD_SHARED_LIBS=ON ^
+            -DAUDIOCPP_BUILD_CAPI=ON ^
+            -DENGINE_BUILD_EXAMPLES=OFF ^
+            -DENGINE_ENABLE_OPENMP=OFF ^
+            -DENGINE_ENABLE_VULKAN=ON
+
       - name: Build audiocpp shared library (CUDA)
         if: matrix.config.setup == 'cuda'
         shell: cmd
@@ -344,6 +398,15 @@ jobs:
         shell: cmd
         run: |
           call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 --force
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cmake --build build --parallel %NUMBER_OF_PROCESSORS% --target audiocpp
+
+      # Vulkan builds with MSVC; the LunarG SDK (on PATH via setup-vulkan-sdk)
+      # provides glslang for shader compilation.
+      - name: Build audiocpp shared library (Vulkan)
+        if: matrix.config.setup == 'vulkan'
+        shell: cmd
+        run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
           cmake --build build --parallel %NUMBER_OF_PROCESSORS% --target audiocpp
 

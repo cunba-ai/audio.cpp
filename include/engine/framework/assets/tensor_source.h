@@ -155,6 +155,10 @@ std::shared_ptr<const TensorSource> open_tensor_source(const std::filesystem::pa
 std::shared_ptr<const TensorSource> open_tensor_source(
     const std::filesystem::path & path,
     std::string_view tensor_prefix);
+// Build a safetensors TensorSource from an in-memory byte buffer (the full
+// file bytes). Used by the embedded-asset path so models load with no file I/O.
+std::shared_ptr<const TensorSource> open_tensor_source_from_bytes(
+    const std::byte * data, size_t size);
 std::shared_ptr<const TensorSource> make_prefixed_tensor_source(
     std::shared_ptr<const TensorSource> source,
     std::string_view tensor_prefix);

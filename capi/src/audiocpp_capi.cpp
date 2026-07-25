@@ -7,6 +7,8 @@
 
 #include "audiocpp.h"
 
+#include "engine/framework/assets/embedded.h"
+#include "engine/framework/audio/chunking.h"
 #include "engine/framework/audio/wav_reader.h"
 #include "engine/framework/core/backend.h"
 #include "engine/framework/runtime/model.h"
@@ -150,14 +152,23 @@ audiocpp_model_t *audiocpp_load_model(
 ) {
     audiocpp_model_t *result = nullptr;
     AUDIOCPP_CATCH(err, {
-        if (!model_path || model_path[0] == '\0') {
-            throw std::runtime_error("model_path is null or empty");
+        const std::string hint = (family_hint && family_hint[0] != '\0') ? std::string(family_hint) : std::string{};
+        const bool empty_path = (model_path == nullptr || model_path[0] == '\0');
+        // Empty model_path is allowed ONLY for VAD families when the binary
+        // was built with AUDIOCPP_EMBED_VAD_ASSETS (silero_vad/marblenet_vad
+        // load from baked-in weights). Otherwise require a real path.
+        const bool embedded_ok = (hint == "silero_vad" || hint == "marblenet_vad")
+            && engine::assets::embedded::has_embedded_asset(hint);
+        if (empty_path && !embedded_ok) {
+            throw std::runtime_error(
+                "model_path is null or empty (only allowed for silero_vad/"
+                "marblenet_vad when built with AUDIOCPP_EMBED_VAD_ASSETS=ON)");
         }
         auto registry = engine::runtime::make_default_registry();
         engine::runtime::ModelLoadRequest req;
-        req.model_path = model_path;
-        if (family_hint && family_hint[0] != '\0') {
-            req.family_hint = family_hint;
+        req.model_path = empty_path ? std::filesystem::path{} : std::filesystem::path(model_path);
+        if (!hint.empty()) {
+            req.family_hint = hint;
         }
         auto loaded = registry.load(req);
         if (!loaded) {
@@ -872,6 +883,78 @@ void audiocpp_free_vad(audiocpp_vad_t *vad) {
     if (!vad) return;
     free(vad->segments);
     delete vad;
+}
+
+audiocpp_vad_t *audiocpp_vad_energy(
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    const char *options_json,
+    audiocpp_error_t *err
+) {
+    audiocpp_vad_t *result = nullptr;
+    AUDIOCPP_CATCH(err, {
+        if (!pcm) {
+            throw std::runtime_error("pcm is null");
+        }
+        if (sample_rate <= 0) {
+            throw std::runtime_error("sample_rate must be > 0");
+        }
+
+        // Defaults mirror plan_quiet_energy_audio_chunks' typical use (ASR
+        // chunking at ~30s with a 2s boundary search and 0.1s energy window).
+        double chunk_seconds = 30.0;
+        double boundary_seconds = 2.0;
+        double min_energy_seconds = 0.1;
+        if (options_json && options_json[0] != '\0') {
+            cJSON * root = cJSON_Parse(options_json);
+            if (root != nullptr) {
+                const cJSON * v = cJSON_GetObjectItem(root, "chunk_seconds");
+                if (cJSON_IsNumber(v)) chunk_seconds = v->valuedouble;
+                v = cJSON_GetObjectItem(root, "boundary_seconds");
+                if (cJSON_IsNumber(v)) boundary_seconds = v->valuedouble;
+                v = cJSON_GetObjectItem(root, "min_energy_seconds");
+                if (cJSON_IsNumber(v)) min_energy_seconds = v->valuedouble;
+                cJSON_Delete(root);
+            }
+        }
+        if (chunk_seconds <= 0.0) {
+            throw std::runtime_error("chunk_seconds must be > 0");
+        }
+        if (boundary_seconds < 0.0) {
+            throw std::runtime_error("boundary_seconds must be >= 0");
+        }
+        if (min_energy_seconds <= 0.0) {
+            throw std::runtime_error("min_energy_seconds must be > 0");
+        }
+
+        engine::audio::QuietEnergyAudioChunkOptions opts;
+        opts.chunk_samples = static_cast<int64_t>(chunk_seconds * sample_rate);
+        opts.boundary_context_samples = static_cast<int64_t>(boundary_seconds * sample_rate);
+        opts.min_energy_window_samples = static_cast<int64_t>(min_energy_seconds * sample_rate);
+        if (opts.chunk_samples <= 0) opts.chunk_samples = sample_rate;  // >= 1s fallback
+
+        std::vector<float> mono(pcm, pcm + static_cast<size_t>(n_samples));
+        const auto spans = engine::audio::plan_quiet_energy_audio_chunks(mono, opts);
+
+        result = new audiocpp_vad_t{};
+        result->n_segments = static_cast<int64_t>(spans.size());
+        if (!spans.empty()) {
+            result->segments = static_cast<audiocpp_vad_segment_t *>(
+                calloc(spans.size(), sizeof(audiocpp_vad_segment_t)));
+            if (!result->segments) {
+                delete result;
+                result = nullptr;
+                throw std::runtime_error("out of memory allocating VAD segments");
+            }
+            for (size_t i = 0; i < spans.size(); ++i) {
+                result->segments[i].start_sample = spans[i].start_sample;
+                result->segments[i].end_sample = spans[i].end_sample;
+                result->segments[i].confidence = 1.0f;  // heuristic, no probability
+            }
+        }
+    });
+    return result;
 }
 
 /* ======================================================================== */

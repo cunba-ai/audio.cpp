@@ -25,6 +25,13 @@ Each zip contains:
 - `audiocpp.lib` — Windows import library (not needed for runtime loading)
 - `audiocpp.h` — the C header
 
+**Build options** (CMake):
+- `AUDIOCPP_BUILD_CAPI=ON` — build the shared library (default ON).
+- `AUDIOCPP_EMBED_VAD_ASSETS=ON` — bake silero_vad + marblenet_vad weights into
+  the binary (+~2 MB) so VAD works with no external asset files. With this on,
+  `audiocpp_load_model(NULL, "silero_vad", ...)` loads from the embedded bytes.
+  Off by default — without it, ship `assets/framework/models/{silero,marblenet}_vad/`.
+
 ### Local Build
 
 #### Windows (CUDA, local GPU)
@@ -93,7 +100,7 @@ println!("{}", text.text);
 
 ## API Reference
 
-The library exports **41 functions** across these categories:
+The library exports **42 functions** across these categories:
 
 ### 1. Backend & Device Selection
 
@@ -184,6 +191,7 @@ and must free it with the matching `audiocpp_free_*` function.
 | `audiocpp_asr` | ASR | audio PCM | text + language | `free_text` |
 | `audiocpp_diar` | Diar | audio PCM | speaker turns | `free_diar` |
 | `audiocpp_vad` | VAD | audio PCM | speech segments | `free_vad` |
+| `audiocpp_vad_energy` | VAD (model-free) | audio PCM | speech segments | `free_vad` |
 | `audiocpp_align` | Align | audio PCM + text + language | word timestamps | `free_align` |
 | `audiocpp_audio_transform` | SEP/VC | audio PCM | single audio output | `free_audio` |
 | `audiocpp_audio_transform_with_voice_ref` | VC | audio PCM + inline voice ref | audio | `free_audio` |
@@ -192,6 +200,28 @@ and must free it with the matching `audiocpp_free_*` function.
 **`audiocpp_transform_stems`** returns all named audio outputs (unlike
 `audiocpp_audio_transform` which only returns the first). Use this for
 source separation models (demucs, roformer) that emit multiple stems.
+
+**Energy VAD (model-free)** — `audiocpp_vad_energy(pcm, n, rate, options, err)`
+segments audio by signal energy only (no model load, no weights). It splits the
+audio into ~`chunk_seconds`-length pieces, snapping each boundary to the
+lowest-RMS window near the nominal split point (so cuts land in silences, not
+mid-word). Faster than `audiocpp_vad` and needs no files, but less accurate on
+noisy input. Options JSON keys: `chunk_seconds` (default 30), `boundary_seconds`
+(default 2), `min_energy_seconds` (default 0.1). Returns the same
+`audiocpp_vad_t` shape as the model VAD (free with `audiocpp_free_vad`).
+
+**Embedded VAD weights** — when the library is built with
+`-DAUDIOCPP_EMBED_VAD_ASSETS=ON`, silero_vad and marblenet_vad weights are
+compiled into the binary and you can load them with `model_path = NULL`:
+```c
+// No file needed — uses baked-in weights
+audiocpp_model_t *vad = audiocpp_load_model(
+    NULL, "silero_vad", AUDIOCPP_TASK_VAD, AUDIOCPP_BACKEND_CPU, 0, 4, &err);
+```
+Adds ~2 MB to the binary. Without the flag, VAD still works but you must ship
+the `assets/framework/models/{silero_vad,marblenet_vad}/` files alongside the
+library and pass their path. `audiocpp_vad_energy` needs neither (it's pure
+signal energy).
 
 **Batch TTS** — `audiocpp_tts_batch` synthesizes N texts in one session
 (reuses a single `prepare()`, far cheaper than N separate `audiocpp_tts`

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -255,29 +256,13 @@ std::string shape_to_json(const std::vector<int64_t> & shape) {
 
 }  // namespace
 
-SafeTensorIndex load_safetensors_index(const std::filesystem::path & path) {
-    std::ifstream input(path, std::ios::binary);
-    if (!input) {
-        throw std::runtime_error(
-            "failed to open safetensors file: " + path.string() +
-            "; the file may be missing, malformed, or placed in the wrong location");
-    }
+namespace {
 
-    uint64_t header_len = 0;
-    input.read(reinterpret_cast<char *>(&header_len), sizeof(header_len));
-    if (!input) {
-        throw std::runtime_error("failed to read safetensors header length: " + path.string());
-    }
-    std::string header(static_cast<size_t>(header_len), '\0');
-    input.read(header.data(), static_cast<std::streamsize>(header.size()));
-    if (!input) {
-        throw std::runtime_error("failed to read safetensors header: " + path.string());
-    }
-
-    SafeTensorIndex index;
-    index.source_path = std::filesystem::weakly_canonical(path);
-    index.header_bytes = sizeof(header_len) + header.size();
-
+// Shared header-JSON parser: fills `index.tensors`/`index.metadata` from the
+// already-extracted header string. `header_bytes` is the byte offset where
+// tensor data begins (8-byte length prefix + header.size()).
+void parse_safetensors_header(const std::string & header, size_t header_bytes, SafeTensorIndex & index) {
+    index.header_bytes = header_bytes;
     size_t pos = 0;
     expect_char(header, pos, '{');
     while (true) {
@@ -354,7 +339,51 @@ SafeTensorIndex load_safetensors_index(const std::filesystem::path & path) {
             break;
         }
     }
+}
 
+}  // namespace
+
+SafeTensorIndex load_safetensors_index(const std::filesystem::path & path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error(
+            "failed to open safetensors file: " + path.string() +
+            "; the file may be missing, malformed, or placed in the wrong location");
+    }
+
+    uint64_t header_len = 0;
+    input.read(reinterpret_cast<char *>(&header_len), sizeof(header_len));
+    if (!input) {
+        throw std::runtime_error("failed to read safetensors header length: " + path.string());
+    }
+    std::string header(static_cast<size_t>(header_len), '\0');
+    input.read(header.data(), static_cast<std::streamsize>(header.size()));
+    if (!input) {
+        throw std::runtime_error("failed to read safetensors header: " + path.string());
+    }
+
+    SafeTensorIndex index;
+    index.source_path = std::filesystem::weakly_canonical(path);
+    parse_safetensors_header(header, sizeof(header_len) + header.size(), index);
+    return index;
+}
+
+SafeTensorIndex load_safetensors_index_from_bytes(const std::byte * data, size_t size) {
+    if (data == nullptr || size < sizeof(uint64_t)) {
+        throw std::runtime_error("embedded safetensors buffer is too small or null");
+    }
+    uint64_t header_len = 0;
+    std::memcpy(&header_len, data, sizeof(header_len));
+    const size_t header_total = sizeof(header_len) + static_cast<size_t>(header_len);
+    if (header_total > size) {
+        throw std::runtime_error("embedded safetensors header extends past buffer end");
+    }
+    std::string header(static_cast<size_t>(header_len), '\0');
+    std::memcpy(header.data(), data + sizeof(header_len), static_cast<size_t>(header_len));
+
+    SafeTensorIndex index;
+    index.source_path = "<embedded>";
+    parse_safetensors_header(header, header_total, index);
     return index;
 }
 

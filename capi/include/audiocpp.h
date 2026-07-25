@@ -394,6 +394,39 @@ AUDIOCPP_API audiocpp_vad_t *audiocpp_vad(
     audiocpp_error_t *err
 );
 
+/**
+ * Energy-based speech segmentation — NO model required.
+ *
+ * Splits the audio into roughly chunk_seconds-length segments, snapping each
+ * boundary to the lowest-RMS window near the nominal split point (so cuts land
+ * in silences, not mid-word). This is a pure signal-energy heuristic; it is
+ * faster than model VAD and needs no weights, but is less accurate on noisy
+ * input or quiet speech. Use it for quick pre-segmentation, or when you cannot
+ * ship a VAD model.
+ *
+ * Recognized options_json keys (all optional):
+ *   chunk_seconds        Target segment length in seconds (default 30.0).
+ *   boundary_seconds     How far before/after the nominal boundary to search
+ *                        for the lowest-energy split (default 2.0).
+ *   min_energy_seconds   RMS window length for the energy minimum search
+ *                        (default 0.1).
+ *
+ * @param pcm          PCM samples (mono f32, [-1.0, 1.0]).
+ * @param n_samples    Number of PCM samples.
+ * @param sample_rate  Sample rate (e.g. 16000).
+ * @param options_json Options (NULL = defaults).
+ * @param err          Optional error output.
+ * @return VAD result (segments with confidence=1.0; no model used), or NULL on
+ *         failure. Caller MUST free with audiocpp_free_vad.
+ */
+AUDIOCPP_API audiocpp_vad_t *audiocpp_vad_energy(
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    const char *options_json,
+    audiocpp_error_t *err
+);
+
 /* ======================================================================== */
 /* Forced Alignment: audio + text → word timestamps                         */
 /* ======================================================================== */

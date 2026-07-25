@@ -1,5 +1,6 @@
 #include "engine/models/silero_vad/session.h"
 
+#include "engine/framework/assets/embedded.h"
 #include "engine/framework/assets/tensor_source.h"
 #include "engine/framework/debug/profiler.h"
 #include "engine/framework/debug/trace.h"
@@ -229,20 +230,36 @@ std::unique_ptr<SileroVADLoadedModel> load_silero_vad_model(const runtime::Model
     if (request.config_id.has_value()) {
         throw std::runtime_error("Silero VAD does not expose selectable config assets");
     }
-    const auto weights = discover_weight_assets(request);
-    const auto * selected_weight = runtime::select_named_asset(weights, request.weight_id, "weight");
-    const auto weight_path = selected_weight != nullptr ? selected_weight->path : resolve_weight_path(request.model_path);
-    const auto assets = resolve_silero_assets(weight_path);
+
     runtime::ModelMetadata metadata;
     metadata.family = "silero_vad";
     metadata.variant = "16k";
-    metadata.description = "Silero VAD loaded from safetensors weights.";
     metadata.weight_candidates = {"silero_vad_16k.safetensors"};
     runtime::CapabilitySet capabilities;
     capabilities.supported_tasks = {
         {runtime::VoiceTaskKind::Vad, {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
     };
     capabilities.supports_timestamps = true;
+
+    // Empty model_path => prefer the embedded asset (AUDIOCPP_EMBED_VAD_ASSETS).
+    // This lets callers omit the model path entirely when VAD weights are baked
+    // into the binary.
+    if (request.model_path.empty() && assets::embedded::has_embedded_asset("silero_vad")) {
+        auto weights = load_silero_weights_embedded();
+        if (weights != nullptr) {
+            metadata.description = "Silero VAD loaded from embedded weights.";
+            return std::make_unique<SileroVADLoadedModel>(
+                std::move(metadata),
+                std::move(capabilities),
+                std::move(weights));
+        }
+    }
+
+    const auto weights = discover_weight_assets(request);
+    const auto * selected_weight = runtime::select_named_asset(weights, request.weight_id, "weight");
+    const auto weight_path = selected_weight != nullptr ? selected_weight->path : resolve_weight_path(request.model_path);
+    const auto assets = resolve_silero_assets(weight_path);
+    metadata.description = "Silero VAD loaded from safetensors weights.";
     return std::make_unique<SileroVADLoadedModel>(
         std::move(metadata),
         std::move(capabilities),

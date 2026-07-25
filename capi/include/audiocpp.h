@@ -109,7 +109,10 @@ enum {
 /**
  * Load a model and create a task session.
  *
- * @param model_path   Path to model directory or GGUF file.
+ * @param model_path   Path to model directory or GGUF file. Pass NULL for
+ *                     silero_vad / marblenet_vad when built with
+ *                     AUDIOCPP_EMBED_VAD_ASSETS=ON (uses baked-in weights,
+ *                     no external file needed).
  * @param family_hint  Model family hint (e.g. "qwen3_asr", "qwen3_tts"); NULL = auto-detect.
  * @param task         One of AUDIOCPP_TASK_* (TTS, ASR, VAD, etc.).
  * @param backend      One of AUDIOCPP_BACKEND_*.

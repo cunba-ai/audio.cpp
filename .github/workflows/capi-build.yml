@@ -486,7 +486,10 @@ jobs:
     name: Publish to OSS
     runs-on: ubuntu-22.04
     needs: [linux, windows]
-    if: always()
+    # Only upload to OSS on main-branch pushes (release artifacts). PRs and
+    # other branches run the full build matrix for compile verification but
+    # skip the upload.
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
 
     steps:
       - name: Clone

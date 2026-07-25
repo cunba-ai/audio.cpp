@@ -240,10 +240,10 @@ load directly. With `AUDIOCPP_EMBED_AUDIO_UTILITIES=ON` (~28 MB: deepfilternet2 
 model's native rate internally). `options_json` keys: `backend` ("cpu"|"cuda"|
 "vulkan"), `device` (index).
 
-> **Length limit**: these models build a per-frame compute graph with a fixed
-> node capacity. Inputs longer than ~1 s (48 kHz) can overflow the graph and
-> abort. For longer audio, **chunk it first** (e.g. via `audiocpp_vad_energy` or
-> fixed windows) and denoise each chunk, then concatenate.
+> **Arbitrary-length input is safe**: each model handles long audio internally
+> via built-in overlap-add (deepfilternet2/zipenhancer/flashsr) or per-frame
+> processing (rnnoise). No need to chunk on the caller side — pass the whole
+> recording.
 
 **Batch TTS** — `audiocpp_tts_batch` synthesizes N texts in one session
 (reuses a single `prepare()`, far cheaper than N separate `audiocpp_tts`

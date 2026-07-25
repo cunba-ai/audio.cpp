@@ -13,13 +13,13 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-/* Build ~0.5s of 16kHz audio: a 220Hz tone + white-ish noise (deterministic).
-   Kept short because these models build per-frame graphs with a fixed node
-   capacity; very long inputs overflow the graph (production callers should
-   chunk the audio first). */
+/* Build 3s of 16kHz audio: a 220Hz tone + white-ish noise (deterministic).
+   3s @ 16k = 48000 samples -> resampled to 48k = 144000, which exceeds the
+   deepfilternet2 segment_threshold (96000) and exercises the model's built-in
+   overlap-add chunking path. Verifies callers can pass arbitrary-length audio. */
 static float *make_noisy(int64_t *n_out, int *rate_out) {
     const int rate = 16000;
-    const int64_t total = rate / 2;  /* 8000 samples (0.5s) — within graph budget */
+    const int64_t total = rate * 3;  /* 48000 samples (3s) — exercises auto-chunk */
     float *pcm = (float *)malloc(sizeof(float) * (size_t)total);
     if (!pcm) return NULL;
     unsigned int rng = 12345u;

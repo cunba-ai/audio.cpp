@@ -716,6 +716,8 @@ if (AUDIOCPP_BUILD_CAPI)
             "    audiocpp_free_model\n"
             "    audiocpp_tts\n"
             "    audiocpp_tts_with_voice_ref\n"
+            "    audiocpp_tts_batch\n"
+            "    audiocpp_free_audio_batch\n"
             "    audiocpp_asr\n"
             "    audiocpp_audio_transform\n"
             "    audiocpp_audio_transform_with_voice_ref\n"

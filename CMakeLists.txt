@@ -16,7 +16,7 @@ option(AUDIOCPP_DEPLOYMENT_BUILD
     OFF)
 option(AUDIOCPP_EMBED_VAD_ASSETS
     "Embed silero_vad + marblenet_vad weights into the binary (no external files needed for VAD)"
-    OFF)
+    ON)
 
 # Package layouts remain editable runtime data in normal builds. The converter always
 # carries the source catalog so the conversion binary is portable. Deployment builds
@@ -681,7 +681,7 @@ endif()
 # bytes to a per-process temp dir on first use.
 option(AUDIOCPP_EMBED_AUDIO_UTILITIES
     "Embed deepfilternet2/rnnoise/zipenhancer/flashsr weights into the binary"
-    OFF)
+    ON)
 if (AUDIOCPP_EMBED_AUDIO_UTILITIES)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     set(EMBEDDED_AUD_CPP "${CMAKE_CURRENT_BINARY_DIR}/generated/embedded_audio_utilities.cpp")

@@ -82,7 +82,9 @@ jobs:
           apt-get update
           # Retry downloads: archive.ubuntu.com is intermittently unreachable
           # from inside GitHub Actions containers (transient connection drops).
-          apt-get -o Acquire::Retries=5 install -y cmake git build-essential
+          # python3 is needed by the embedded-asset generator (AUDIOCPP_EMBED_*,
+          # on by default) which runs as a CMake custom_command.
+          apt-get -o Acquire::Retries=5 install -y cmake git build-essential python3
 
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.21

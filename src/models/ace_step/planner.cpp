@@ -5,7 +5,7 @@
 #include "engine/framework/core/backend_weight_store.h"
 #include "engine/framework/debug/profiler.h"
 #include "engine/framework/modules/activation_modules.h"
-#include "engine/framework/modules/attention/qwen_decoder.h"
+#include "engine/framework/modules/transformers/qwen_decoder.h"
 #include "engine/framework/modules/linear_module.h"
 #include "engine/framework/modules/lookup_modules.h"
 #include "engine/framework/modules/norm_modules.h"
@@ -158,6 +158,7 @@ bool planner_prefill_uses_host_backend(core::BackendType backend_type) {
     case core::BackendType::Metal:
     case core::BackendType::Cpu:
     case core::BackendType::Cuda:
+    case core::BackendType::Sycl:
     case core::BackendType::BestAvailable:
         return false;
     }

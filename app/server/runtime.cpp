@@ -5,6 +5,7 @@
 #include "../cli/request.h"
 #include "../streaming/streaming.h"
 
+#include "engine/framework/debug/trace.h"
 #include "engine/framework/io/json.h"
 #include "engine/framework/runtime/registry.h"
 
@@ -549,40 +550,54 @@ ServerState::ServerState(ServerConfig config, std::filesystem::path request_base
 }
 
 HttpResponse ServerState::handle(const HttpRequest & request) {
+  HttpResponse response;
+  const std::string allowed_origin = get_allowed_origin(request);
   try {
-    if (request.method == "GET" && request.path == "/health") {
-        return json_response(
+    if (request.method == "OPTIONS" && !allowed_origin.empty()) {
+        response.status = 204;
+        response.content_type = "text/plain";
+        response.headers["Access-Control-Allow-Headers"] = "*";
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST";
+    }
+    else if (request.method == "GET" && request.path == "/health") {
+        response = json_response(
             "{\"status\":\"ok\",\"backend\":\"" +
             std::string(backend_name(config_.backend)) +
             "\",\"models\":" +
             std::to_string(models_.size()) +
             "}");
     }
-    if (request.method == "GET" && request.path == "/v1/models") {
-        return json_response(models_json());
+    else if (request.method == "GET" && request.path == "/v1/models") {
+        response = json_response(models_json());
     }
-    if (request.method == "GET" && request.path == "/v1/audio/voices") {
-        return handle_voices(request);
+    else if (request.method == "GET" && request.path == "/v1/audio/voices") {
+        response = handle_voices(request);
     }
-    if (request.method == "POST" && request.path == "/v1/audio/speech") {
-        return handle_speech(request.body);
+    else if (request.method == "POST" && request.path == "/v1/audio/speech") {
+        response = handle_speech(request.body);
     }
-    if (request.method == "POST" && request.path == "/v1/audio/transcriptions") {
-        return handle_transcription(request);
+    else if (request.method == "POST" && request.path == "/v1/audio/transcriptions") {
+        response = handle_transcription(request);
     }
-    if (request.method == "POST" && request.path == "/v1/tasks/run") {
-        return handle_generic_run(request.body);
+    else if (request.method == "POST" && request.path == "/v1/tasks/run") {
+        response = handle_generic_run(request.body);
     }
-    if (request.method == "POST" && request.path == "/v1/tasks/stream") {
-        return handle_generic_stream(request.body);
+    else if (request.method == "POST" && request.path == "/v1/tasks/stream") {
+        response = handle_generic_stream(request.body);
     }
-    return error_response(404, "unknown endpoint: " + request.path, "not_found");
+    else {
+        response = error_response(404, "unknown endpoint: " + request.path, "not_found");
+    }
   } catch (const ServerBusyError & ex) {
     // Non-streaming requests surface the busy state as 503 before any response is
     // sent. (Streaming requests acquire the lock inside the stream body, after
     // headers are sent, so there it becomes a stream error event instead.)
-    return error_response(503, ex.what(), "server_busy");
+    response = error_response(503, ex.what(), "server_busy");
   }
+  if (!allowed_origin.empty()) {
+      response.headers["Access-Control-Allow-Origin"] = allowed_origin;
+  }
+  return response;
 }
 
 void ServerState::load_models() {
@@ -658,6 +673,24 @@ void ServerState::ensure_model_loaded_locked(LoadedModel & model) {
     session_options.backend.device = config_.device;
     session_options.backend.threads = config_.threads;
     session_options.options = model.config.session_options;
+
+    engine::debug::trace_log_scalar("server.model.id", model.config.id);
+    engine::debug::trace_log_scalar("server.model.family", model.config.family);
+    engine::debug::trace_log_scalar(
+        "server.model.task",
+        std::string_view(engine::runtime::to_string(model.task.task)));
+    engine::debug::trace_log_scalar(
+        "server.model.mode",
+        std::string_view(engine::runtime::to_string(model.task.mode)));
+    engine::debug::trace_log_scalar("server.model.backend", std::string_view(backend_name(session_options.backend.type)));
+    engine::debug::trace_log_scalar("server.model.device", int64_t{session_options.backend.device});
+    engine::debug::trace_log_scalar("server.model.threads", int64_t{session_options.backend.threads});
+    engine::debug::trace_log_scalar(
+        "server.model.session_option_count",
+        static_cast<int64_t>(session_options.options.size()));
+    for (const auto & [key, value] : session_options.options) {
+        engine::debug::trace_log_scalar("server.model.session_options." + key, value);
+    }
 
     auto loaded_model = registry.load(load_request);
     auto session = loaded_model->create_task_session(model.task, session_options);
@@ -1192,6 +1225,16 @@ std::string ServerState::models_json() const {
     }
     out << "]}";
     return out.str();
+}
+
+std::string ServerState::get_allowed_origin(const HttpRequest & request) const {
+    // TODO: Handle lists of specific origins.
+    if (config_.cors_origins == "*") {
+        if (const auto it = request.headers.find("origin"); it != request.headers.end()) {
+            return it->second;
+        }
+    }
+    return "";
 }
 
 }  // namespace minitts::server

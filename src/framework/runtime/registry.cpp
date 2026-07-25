@@ -1,7 +1,7 @@
 #include "engine/framework/runtime/registry.h"
 
 #include "engine/framework/debug/trace.h"
-#include "engine/framework/assets/model_package.h"
+#include "engine/framework/model_spec/package.h"
 #include "engine/framework/io/config.h"
 #include "engine/framework/io/filesystem.h"
 #include "engine/models/ace_step/loader.h"
@@ -22,6 +22,7 @@
 #include "engine/models/moss/moss_tts_nano/loader.h"
 #include "engine/models/nemotron_asr/loader.h"
 #include "engine/models/omnivoice/loader.h"
+#include "engine/community_models/glm_tts/loader.h"
 #include "engine/community_models/outetts/loader.h"
 #include "engine/models/pocket_tts/loader.h"
 #include "engine/models/qwen3_asr/loader.h"
@@ -137,7 +138,7 @@ std::vector<LoaderAdvertisement> ModelRegistry::advertise_loaders() const {
 }
 
 ModelInspection ModelRegistry::inspect(const ModelLoadRequest & request) const {
-    engine::assets::ScopedModelPackageSpecOverride spec_override(request.model_spec_override, request.model_path);
+    engine::model_spec::ScopedSpecOverride spec_override(request.model_spec_override, request.model_path);
     validate_request(request);
     const auto * loader = find_loader(request);
     if (loader == nullptr) {
@@ -153,7 +154,7 @@ ModelInspection ModelRegistry::inspect(const std::filesystem::path & model_path)
 }
 
 std::unique_ptr<ILoadedVoiceModel> ModelRegistry::load(const ModelLoadRequest & request) const {
-    engine::assets::ScopedModelPackageSpecOverride spec_override(request.model_spec_override, request.model_path);
+    engine::model_spec::ScopedSpecOverride spec_override(request.model_spec_override, request.model_path);
     validate_request(request);
     const auto * loader = find_loader(request);
     if (loader == nullptr) {
@@ -185,7 +186,7 @@ void ModelRegistry::validate_request(const ModelLoadRequest & request) const {
     if (request.model_spec_override.has_value() &&
         !engine::io::is_existing_file(*request.model_spec_override) &&
         !engine::io::is_existing_directory(*request.model_spec_override)) {
-        throw std::runtime_error("model package spec override path does not exist: " + request.model_spec_override->string());
+        throw std::runtime_error("model spec override path does not exist: " + request.model_spec_override->string());
     }
 }
 
@@ -244,6 +245,7 @@ ModelRegistry make_default_registry(const std::optional<std::filesystem::path> &
         engine::models::demucs::make_htdemucs_loader(),
         engine::models::roformer::make_mel_band_roformer_loader(),
         engine::models::omnivoice::make_omnivoice_loader(),
+        engine::models::glm_tts::make_glm_tts_loader(),
         engine::models::outetts::make_outetts_loader(),
         engine::models::miocodec::make_miocodec_loader(),
         engine::models::miotts::make_miotts_loader(),

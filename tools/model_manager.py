@@ -938,6 +938,67 @@ CATALOG: tuple[ModelPackage, ...] = (
         description="Installs Irodori-TTS VoiceDesign plus the sibling llm-jp tokenizer and DACVAE codec dependencies required by the framework runtime.",
     ),
     ModelPackage(
+        id="glm_tts",
+        display_name="GLM-TTS",
+        target_directory="GLM-TTS",
+        source=CompositeSnapshotSource(
+            placements=(
+                SnapshotPlacement(
+                    source=SnapshotSource(repo_id="zai-org/GLM-TTS"),
+                    required_files=(
+                        "flow/config.yaml",
+                        "flow/flow.pt",
+                        "hift/hift.pt",
+                        "llm/config.json",
+                        "llm/generation_config.json",
+                        "llm/model-00001-of-00002.safetensors",
+                        "llm/model-00002-of-00002.safetensors",
+                        "llm/model.safetensors.index.json",
+                        "speech_tokenizer/config.json",
+                        "speech_tokenizer/model.safetensors",
+                        "speech_tokenizer/preprocessor_config.json",
+                        "vq32k-phoneme-tokenizer/tokenizer.model",
+                        "vq32k-phoneme-tokenizer/tokenizer_config.json",
+                    ),
+                ),
+                SnapshotPlacement(
+                    source=SnapshotSource(
+                        repo_id="mlx-community/index-tts2-mlx",
+                        include_prefixes=("campplus.safetensors",),
+                    ),
+                    target_subdir="frontend",
+                    required_files=("campplus.safetensors",),
+                ),
+            ),
+        ),
+        required_files=(
+            "audio_cpp_config.json",
+            "flow/config.yaml",
+            "flow/model.safetensors",
+            "frontend/campplus.safetensors",
+            "hift/model.safetensors",
+            "llm/config.json",
+            "llm/generation_config.json",
+            "llm/model-00001-of-00002.safetensors",
+            "llm/model-00002-of-00002.safetensors",
+            "llm/model.safetensors.index.json",
+            "speech_tokenizer/config.json",
+            "speech_tokenizer/model.safetensors",
+            "speech_tokenizer/preprocessor_config.json",
+            "vq32k-phoneme-tokenizer/tokenizer_config.json",
+            "vq32k-phoneme-tokenizer/tokenizer_merges.txt",
+            "vq32k-phoneme-tokenizer/tokenizer_vocab.json",
+        ),
+        family="glm_tts",
+        tasks=("tts", "clon"),
+        modes=("offline",),
+        standalone=True,
+        description=(
+            "Installs GLM-TTS and prepares its Flow, HiFT, ChatGLM tokenizer, "
+            "and CAMPPlus assets for zero-shot Chinese and English synthesis."
+        ),
+    ),
+    ModelPackage(
         id="outetts_1_0_1b",
         display_name="OuteTTS 1.0 1B",
         target_directory="Llama-OuteTTS-1.0-1B",
@@ -1229,23 +1290,6 @@ CATALOG: tuple[ModelPackage, ...] = (
             "citrinet_256_config.json",
             "citrinet_256_tokenizer.model",
             "citrinet_256_vocab.txt",
-        ),
-    ),
-    ModelPackage(
-        id="marblenet_vad",
-        display_name="MarbleNet VAD converted layout",
-        target_directory="marblenet_vad",
-        source=ConverterSource(
-            kind="nemo_archive",
-            description="Download and convert the official NeMo archive into framework-friendly safetensors and sidecars.",
-            url="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/vad_multilingual_frame_marblenet/versions/1.20.0/files/vad_multilingual_frame_marblenet.nemo",
-            output_weights_file="marblenet_vad.safetensors",
-            config_kind="marblenet",
-        ),
-        required_files=(
-            "marblenet_vad.safetensors",
-            "marblenet_vad_config.json",
-            "marblenet_vad_labels.txt",
         ),
     ),
     ModelPackage(
@@ -1880,6 +1924,17 @@ def install_composite_snapshot(
             dacvae_root = staged_package_root.parent / "Semantic-DACVAE-Japanese-32dim"
             if dacvae_root.exists():
                 convert_irodori_dacvae_weights(dacvae_root)
+        elif package.id == "glm_tts":
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "tools" / "convert_glm_tts.py"),
+                    "--model-dir",
+                    str(staged_package_root),
+                    "--overwrite",
+                ],
+                check=True,
+            )
         elif package.id == "outetts_1_0_1b":
             dac_root = staged_package_root.parent / "DAC.speech.v1.0"
             if dac_root.exists():
@@ -2385,38 +2440,6 @@ def write_citrinet_sidecars(root: dict[str, Any], archive: tarfile.TarFile, outp
     write_json(output_dir / "citrinet_256_config.json", config)
 
 
-def write_marblenet_sidecars(root: dict[str, Any], output_dir: Path) -> None:
-    labels_name = "marblenet_vad_labels.txt"
-    labels = string_list(root.get("labels"), "labels")
-    (output_dir / labels_name).write_text("\n".join(labels) + "\n", encoding="utf-8")
-    preprocessor = map_at(root, "preprocessor")
-    encoder = map_at(root, "encoder")
-    decoder = map_at(root, "decoder")
-    config = {
-        "jasper": jasper_blocks(
-            list_at(encoder, "jasper"),
-            flatten_triples=True,
-            include_dropout=False,
-            include_residual_mode=False,
-            se_metadata="none",
-        ),
-        "label_count": len(labels),
-        "labels": labels,
-        "labels_file": labels_name,
-        "n_fft": int_at(preprocessor, "n_fft"),
-        "n_mels": int_at(preprocessor, "features"),
-        "normalize": string_at(preprocessor, "normalize"),
-        "num_classes": int_at(decoder, "num_classes"),
-        "pad_to": int_at(preprocessor, "pad_to"),
-        "sample_rate": int_at(preprocessor, "sample_rate"),
-        "target": str(root.get("target", "")),
-        "window": string_at(preprocessor, "window"),
-        "window_size": number_at(preprocessor, "window_size"),
-        "window_stride": number_at(preprocessor, "window_stride"),
-    }
-    write_json(output_dir / "marblenet_vad_config.json", config)
-
-
 def write_nemo_sidecars(config_kind: str, yaml_text: str, archive: tarfile.TarFile, output_dir: Path) -> None:
     root = yaml_to_json(yaml.safe_load(yaml_text))
     if not isinstance(root, dict):
@@ -2424,9 +2447,6 @@ def write_nemo_sidecars(config_kind: str, yaml_text: str, archive: tarfile.TarFi
     output_dir.mkdir(parents=True, exist_ok=True)
     if config_kind == "citrinet":
         write_citrinet_sidecars(root, archive, output_dir)
-        return
-    if config_kind == "marblenet":
-        write_marblenet_sidecars(root, output_dir)
         return
     raise RuntimeError(f"unsupported NeMo config kind: {config_kind}")
 

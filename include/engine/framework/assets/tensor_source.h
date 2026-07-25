@@ -155,6 +155,9 @@ std::shared_ptr<const TensorSource> open_tensor_source(const std::filesystem::pa
 std::shared_ptr<const TensorSource> open_tensor_source(
     const std::filesystem::path & path,
     std::string_view tensor_prefix);
+std::shared_ptr<const TensorSource> make_prefixed_tensor_source(
+    std::shared_ptr<const TensorSource> source,
+    std::string_view tensor_prefix);
 struct TensorSourceInput {
     std::filesystem::path path;
     std::string tensor_prefix;
@@ -167,12 +170,17 @@ struct GgufEmbeddedModelSpec {
     std::string family;
     std::string json;
 };
+struct GgufTensorTypeOverride {
+    std::string pattern;
+    TensorStorageType storage_type = TensorStorageType::Native;
+};
 void convert_tensor_sources_to_gguf(const std::vector<TensorSourceInput> & inputs,
                                     const std::filesystem::path & output_path, TensorStorageType weight_type,
                                     bool overwrite = false, bool embed_sidecars = true,
     const std::filesystem::path & sidecar_root = {},
                                     const std::vector<GgufEmbeddedFile> & extra_sidecars = {},
-                                    const std::optional<GgufEmbeddedModelSpec> & model_spec = std::nullopt);
+                                    const std::optional<GgufEmbeddedModelSpec> & model_spec = std::nullopt,
+                                    const std::vector<GgufTensorTypeOverride> & type_overrides = {});
 void convert_tensor_source_to_gguf(const std::filesystem::path & input_path, const std::filesystem::path & output_path,
                                    TensorStorageType weight_type, bool overwrite = false, bool embed_sidecars = true);
 [[nodiscard]] bool gguf_has_embedded_sidecars(const std::filesystem::path & path);

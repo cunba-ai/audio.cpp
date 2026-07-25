@@ -398,7 +398,9 @@ runtime::TaskResult MossTTSLocalSession::run(const runtime::TaskRequest & reques
     int64_t last_prefix_audio_nonpad = 0;
     int64_t total_generated_frames = 0;
     const int64_t num_codebooks = assets_->config.num_codebooks;
-    for (const auto & text_chunk : text_chunks) {
+    emit_progress("moss_tts_local", 0, static_cast<int64_t>(text_chunks.size()));
+    for (size_t i = 0; i < text_chunks.size(); ++i) {
+        const auto & text_chunk = text_chunks[i];
         MossGenerationPrefix prefix;
         time_once(prefix_ms, [&]() {
             if (has_reference) {
@@ -468,6 +470,7 @@ runtime::TaskResult MossTTSLocalSession::run(const runtime::TaskRequest & reques
         });
         total_generated_frames += static_cast<int64_t>(frames.size());
         runtime::append_audio_buffer(merged_audio, chunk_audio);
+        emit_progress("moss_tts_local", static_cast<int64_t>(i + 1), static_cast<int64_t>(text_chunks.size()));
     }
 
     engine::debug::trace_log_scalar("moss_tts_local.prefix_len", last_prefix_len);

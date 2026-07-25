@@ -201,7 +201,11 @@ runtime::TaskResult RoformerSession::run(const runtime::TaskRequest & request) {
         chunk_size_ / 2 + 2,
     };
     const auto chunk_loop_start = Clock::now();
-    for (const auto & chunk : engine::audio::plan_audio_chunks(total_length, chunk_spec)) {
+    const auto planned_chunks = engine::audio::plan_audio_chunks(total_length, chunk_spec);
+    const int64_t progress_total = planned_chunks.size() <= 1 ? 1 : static_cast<int64_t>(planned_chunks.size());
+    emit_progress("roformer", 0, progress_total);
+    for (size_t chunk_index = 0; chunk_index < planned_chunks.size(); ++chunk_index) {
+        const auto & chunk = planned_chunks[chunk_index];
         engine::audio::copy_planar_chunk(
             chunk_planar_work_,
             planar,
@@ -226,6 +230,10 @@ runtime::TaskResult RoformerSession::run(const runtime::TaskRequest & request) {
             chunk,
             chunk_window,
             engine::audio::AudioChunkCounterMode::PerLane);
+        emit_progress("roformer", static_cast<int64_t>(chunk_index + 1), progress_total);
+    }
+    if (planned_chunks.empty()) {
+        emit_progress("roformer", 1, 1);
     }
     engine::debug::timing_log_scalar("mel_band_roformer.session.chunk_loop_ms", engine::debug::elapsed_ms(chunk_loop_start));
 

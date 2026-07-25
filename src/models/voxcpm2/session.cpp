@@ -278,7 +278,9 @@ runtime::TaskResult VoxCPM2SessionBase::run_offline_request(const runtime::TaskR
   double generator_ms = 0.0;
   double decoder_ms = 0.0;
   runtime::AudioBuffer merged_audio;
-  for (const auto & chunk_request : chunk_requests) {
+  emit_progress("voxcpm2", 0, static_cast<int64_t>(chunk_requests.size()));
+  for (size_t i = 0; i < chunk_requests.size(); ++i) {
+    const auto & chunk_request = chunk_requests[i];
     const auto generator_start = Clock::now();
     const auto generated = generator_->generate(
         chunk_request.text_input->text, prompt, generation_options);
@@ -301,6 +303,7 @@ runtime::TaskResult VoxCPM2SessionBase::run_offline_request(const runtime::TaskR
     }
     decoder_ms += engine::debug::elapsed_ms(decoder_start, Clock::now());
     runtime::append_audio_buffer(merged_audio, audio);
+    emit_progress("voxcpm2", static_cast<int64_t>(i + 1), static_cast<int64_t>(chunk_requests.size()));
   }
   result.audio_output = std::move(merged_audio);
 

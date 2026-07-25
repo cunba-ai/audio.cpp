@@ -189,7 +189,11 @@ runtime::TaskResult HTDemucsSession::run(const runtime::TaskRequest & request) {
         0,
     };
     std::vector<float> merge_window(static_cast<size_t>(chunk_size_), 0.0F);
-    for (const auto & chunk : engine::audio::plan_audio_chunks(total_frames, chunk_spec)) {
+    const auto planned_chunks = engine::audio::plan_audio_chunks(total_frames, chunk_spec);
+    const int64_t progress_total = planned_chunks.size() <= 1 ? 1 : static_cast<int64_t>(planned_chunks.size());
+    emit_progress("demucs", 0, progress_total);
+    for (size_t chunk_index = 0; chunk_index < planned_chunks.size(); ++chunk_index) {
+        const auto & chunk = planned_chunks[chunk_index];
         const auto copy_start = std::chrono::steady_clock::now();
         engine::audio::copy_interleaved_chunk_to_planar(
             chunk_planar_work_,
@@ -222,6 +226,10 @@ runtime::TaskResult HTDemucsSession::run(const runtime::TaskRequest & request) {
             merge_window,
             engine::audio::AudioChunkCounterMode::SharedAcrossLanes);
         merge_ms += debug::elapsed_ms(merge_start);
+        emit_progress("demucs", static_cast<int64_t>(chunk_index + 1), progress_total);
+    }
+    if (planned_chunks.empty()) {
+        emit_progress("demucs", 1, 1);
     }
 
     runtime::TaskResult result;

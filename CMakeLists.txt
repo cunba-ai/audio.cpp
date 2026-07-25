@@ -750,6 +750,7 @@ if (AUDIOCPP_BUILD_CAPI)
             "    audiocpp_device_count\n"
             "    audiocpp_device_info\n"
             "    audiocpp_list_devices\n"
+            "    audiocpp_set_progress_callback\n"
         )
         if (MSVC OR CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
             # MSVC link.exe and icx (which drives link.exe on Windows) both
@@ -991,6 +992,13 @@ if (ENGINE_BUILD_TESTS)
     add_test(
         NAME audio_dsp_test
         COMMAND audio_dsp_test
+    )
+
+    add_engine_unittest(progress_callback_test tests/unittests/test_progress_callback.cpp)
+
+    add_test(
+        NAME progress_callback_test
+        COMMAND progress_callback_test
     )
 
     add_engine_unittest(wav_reader_test tests/unittests/test_wav_reader.cpp)

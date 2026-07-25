@@ -149,12 +149,14 @@ runtime::TaskResult MarbleNetVADSession::run(const runtime::TaskRequest & reques
         throw std::runtime_error("MarbleNet VAD run() requires audio_input");
     }
     const auto wall_start = std::chrono::steady_clock::now();
+    emit_progress("marblenet_vad", 0, 1);
     const float threshold = runtime::parse_float_option(
         request.options,
         {"marblenet_vad.threshold", "threshold"}).value_or(0.5f);
     runtime::TaskResult result;
     result.speech_segments = runtime_.detect_speech(*request.audio_input, threshold);
     engine::debug::timing_log_scalar("session.wall_ms", engine::debug::elapsed_ms(wall_start));
+    emit_progress("marblenet_vad", 1, 1);
     return result;
 }
 

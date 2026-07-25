@@ -209,6 +209,7 @@ runtime::TaskResult SortformerDiarSession::run(const runtime::TaskRequest & requ
     if (!request.audio_input.has_value()) {
         throw std::runtime_error("Sortformer diar offline run requires audio_input");
     }
+    emit_progress("sortformer_diar", 0, 1);
     auto config = default_postprocess_;
     if (!request.options.empty()) {
         runtime::SessionOptions merged = options();
@@ -216,9 +217,13 @@ runtime::TaskResult SortformerDiarSession::run(const runtime::TaskRequest & requ
             merged.options[key] = value;
         }
         config = parse_sortformer_postprocess_config(merged);
-        return run_offline_diarization(*request.audio_input, config);
+        auto result = run_offline_diarization(*request.audio_input, config);
+        emit_progress("sortformer_diar", 1, 1);
+        return result;
     }
-    return run_offline_diarization(*request.audio_input, config);
+    auto result = run_offline_diarization(*request.audio_input, config);
+    emit_progress("sortformer_diar", 1, 1);
+    return result;
 }
 
 runtime::TaskResult SortformerDiarSession::run_offline_diarization(

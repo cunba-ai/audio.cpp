@@ -199,17 +199,25 @@ runtime::TaskResult HiggsAudioSTTSession::run(const runtime::TaskRequest & reque
     }
     const auto chunks = audio_chunk_plan(request);
     if (chunks.empty()) {
-        return run_single(make_request(request));
+        emit_progress("higgs_audio_stt", 0, 1);
+        auto single = run_single(make_request(request));
+        emit_progress("higgs_audio_stt", 1, 1);
+        return single;
     }
     const auto & audio = *request.audio_input;
     if (chunks.size() == 1) {
+        emit_progress("higgs_audio_stt", 0, 1);
         auto item_request = request;
         item_request.audio_input = engine::audio::slice_audio_buffer(audio, chunks.front().source_span);
-        return run_single(make_request(item_request));
+        auto item = run_single(make_request(item_request));
+        emit_progress("higgs_audio_stt", 1, 1);
+        return item;
     }
     runtime::TaskResult merged;
     std::ostringstream text;
-    for (const auto & chunk : chunks) {
+    emit_progress("higgs_audio_stt", 0, static_cast<int64_t>(chunks.size()));
+    for (size_t chunk_index = 0; chunk_index < chunks.size(); ++chunk_index) {
+        const auto & chunk = chunks[chunk_index];
         auto item_request = request;
         item_request.audio_input = engine::audio::slice_audio_buffer(audio, chunk.source_span);
         const auto item = run_single(make_request(item_request));
@@ -224,6 +232,7 @@ runtime::TaskResult HiggsAudioSTTSession::run(const runtime::TaskRequest & reque
                 merged.text_output->language = item.text_output->language;
             }
         }
+        emit_progress("higgs_audio_stt", static_cast<int64_t>(chunk_index + 1), static_cast<int64_t>(chunks.size()));
     }
     if (merged.text_output.has_value()) {
         merged.text_output->text = text.str();

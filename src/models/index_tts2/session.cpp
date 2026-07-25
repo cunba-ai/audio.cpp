@@ -725,6 +725,7 @@ runtime::TaskResult IndexTTS2Session::run(const runtime::TaskRequest & request) 
     }
 
     runtime::AudioBuffer merged;
+    emit_progress("index_tts2", 0, static_cast<int64_t>(segment_token_ids.size()));
     for (size_t i = 0; i < segment_token_ids.size(); ++i) {
         if (i > 0) {
             append_silence(merged, parsed.interval_silence_ms);
@@ -737,6 +738,7 @@ runtime::TaskResult IndexTTS2Session::run(const runtime::TaskRequest & request) 
             parsed.generation,
             parsed.generation.seed + static_cast<uint32_t>(i));
         runtime::append_audio_buffer(merged, segment_audio);
+        emit_progress("index_tts2", static_cast<int64_t>(i + 1), static_cast<int64_t>(segment_token_ids.size()));
     }
 
     runtime::TaskResult result;

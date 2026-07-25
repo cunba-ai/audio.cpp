@@ -217,7 +217,10 @@ runtime::TaskResult VoxtralRealtimeSession::run(const runtime::TaskRequest & req
     if (task_.mode != runtime::RunMode::Offline) {
         throw std::runtime_error("VoxTral realtime run() is only available for offline sessions");
     }
-    return run_single(make_request(request, false), true);
+    emit_progress("voxtral_realtime", 0, 1);
+    auto result = run_single(make_request(request, false), true);
+    emit_progress("voxtral_realtime", 1, 1);
+    return result;
 }
 
 runtime::StreamingPolicy VoxtralRealtimeSession::streaming_policy() const {

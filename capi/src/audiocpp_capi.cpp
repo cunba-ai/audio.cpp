@@ -50,6 +50,9 @@ struct audiocpp_model {
     std::unique_ptr<engine::runtime::ILoadedVoiceModel> loaded_model;
     std::unique_ptr<engine::runtime::IVoiceTaskSession> session;
     engine::runtime::IOfflineVoiceTaskSession *offline = nullptr;
+    // Progress callback (installed once, persists across runs until replaced/cleared)
+    audiocpp_progress_fn progress_fn = nullptr;
+    void *progress_user = nullptr;
 };
 
 struct audiocpp_stream {
@@ -81,10 +84,14 @@ static void set_error(audiocpp_error_t *err, int code, const char *msg) {
 }
 
 // Catches all C++ exceptions in a lambda; returns false on exception.
+// ProgressCanceled is reported with code 0 (cancellation is not a hard error)
+// so callers can distinguish "user cancelled" from real failures.
 #define AUDIOCPP_CATCH(err, body)                                  \
     do {                                                            \
         try {                                                       \
             body;                                                   \
+        } catch (const engine::runtime::ProgressCanceled &e) {     \
+            set_error((err), 0, e.what());                         \
         } catch (const std::exception &e) {                        \
             set_error((err), -1, e.what());                        \
         } catch (...) {                                             \
@@ -179,6 +186,39 @@ audiocpp_model_t *audiocpp_load_model(
 
 void audiocpp_free_model(audiocpp_model_t *model) {
     delete model;
+}
+
+/* ======================================================================== */
+/* Progress callback                                                         */
+/* ======================================================================== */
+
+// Install (or clear) the progress callback. The C function pointer + user data
+// are stored on the model handle, and a C++ adapter std::function is registered
+// on the session so it persists across runs until replaced.
+void audiocpp_set_progress_callback(audiocpp_model_t *model,
+                                    audiocpp_progress_fn fn,
+                                    void *user_data) {
+    if (!model) return;
+    model->progress_fn = fn;
+    model->progress_user = user_data;
+    if (!model->session) return;
+    if (fn == nullptr) {
+        model->session->set_progress_callback(nullptr);
+        return;
+    }
+    // Adapter: bridge C++ ProgressInfo -> C callback. Return false from C side
+    // (non-zero) to request cancellation; the std::function returning false
+    // makes emit_progress() throw ProgressCanceled inside run().
+    audiocpp_model *m = static_cast<audiocpp_model *>(model);
+    model->session->set_progress_callback(
+        [m](const engine::runtime::ProgressInfo & info) -> bool {
+            if (!m->progress_fn) return true;  // cleared mid-flight: continue
+            const char *stage = info.stage.empty() ? "" : info.stage.c_str();
+            int cont = m->progress_fn(info.progress, stage,
+                                      info.completed_units, info.total_units,
+                                      m->progress_user);
+            return cont == 0;  // 0 == continue
+        });
 }
 
 /* ======================================================================== */
@@ -1115,7 +1155,29 @@ int audiocpp_stream_finish(
         }
         auto task_result = stream->streaming->finish_stream();
 
-        // Clear the sink
+        // Some streaming ASR models (e.g. Nemotron) emit partial-text events to
+        // the sink only inside finalize(), which runs as part of finish_stream()
+        // ABOVE — after the caller's last stream_pull(). Those events would be
+        // stranded. Recover them: if the final TaskResult has no text but sink
+        // collected partial_text events, use the last partial as the result.
+        if ((!task_result.text_output || task_result.text_output->text.empty())
+            && out_text) {
+            for (const auto &ev : stream->sink_events) {
+                if (ev.partial_text.has_value() && !ev.partial_text->text.empty()) {
+                    if (!task_result.text_output) {
+                        task_result.text_output = engine::runtime::Transcript{};
+                    }
+                    task_result.text_output->text = ev.partial_text->text;
+                    if (task_result.text_output->language.empty()) {
+                        task_result.text_output->language = ev.partial_text->language;
+                    }
+                }
+            }
+        }
+
+        // Clear the sink (events are now folded into task_result or were already
+        // returned via stream_pull during the session).
+        stream->sink_events.clear();
         stream->streaming->set_stream_event_sink(nullptr);
 
         // Extract final text (for ASR)
@@ -1154,7 +1216,14 @@ audiocpp_stream_event_t *audiocpp_stream_pull(
         // For streaming TTS (supertonic/omnivoice/voxcpm2) this returns audio
         // chunks; for input=None models process_audio_chunk would throw, so
         // callers MUST use stream_pull (not stream_push) for TTS.
-        (void)timeout_ms;  // current impl: next_stream_event is synchronous/blocking internally
+        //
+        // timeout_ms is accepted for forward compatibility but the current
+        // implementation is synchronous: -1 / 0 / >0 all block until an event
+        // is available or the stream is exhausted. Reject any other (invalid)
+        // value explicitly so callers don't get silent wrong behavior.
+        if (timeout_ms != -1 && timeout_ms < 0) {
+            throw std::runtime_error("timeout_ms must be -1 or >= 0");
+        }
         auto maybe_ev = stream->streaming->next_stream_event();
         if (!maybe_ev) {
             // Stream exhausted (no more data) — result stays nullptr, not an error

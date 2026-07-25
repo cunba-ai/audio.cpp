@@ -293,6 +293,7 @@ runtime::TaskResult HeartMuLaSession::run(const runtime::TaskRequest & request) 
         double ar_ms = 0.0;
         double codec_ms = 0.0;
         int64_t total_frames = 0;
+        emit_progress("heartmula", 0, static_cast<int64_t>(chunks.size()));
         for (size_t index = 0; index < chunks.size(); ++index) {
             const int64_t remaining_ms =
                 static_cast<int64_t>(heartmula_request.options.duration_seconds * 1000.0F) -
@@ -348,6 +349,7 @@ runtime::TaskResult HeartMuLaSession::run(const runtime::TaskRequest & request) 
             if (mem_saver_) {
                 codec_.clear_graph_cache();
             }
+            emit_progress("heartmula", static_cast<int64_t>(index + 1), static_cast<int64_t>(chunks.size()));
         }
 
         runtime::TaskResult result;
@@ -361,6 +363,7 @@ runtime::TaskResult HeartMuLaSession::run(const runtime::TaskRequest & request) 
     }
 
     const auto ar_start = Clock::now();
+    emit_progress("heartmula", 0, 1);
     const auto frames = generate_heartmula_frames(heartmula_request, text_tokenizer_, mula_, seed);
     const auto ar_end = Clock::now();
     if (mem_saver_) {
@@ -401,6 +404,7 @@ runtime::TaskResult HeartMuLaSession::run(const runtime::TaskRequest & request) 
     engine::debug::timing_log_scalar("heartmula.codec_ms", engine::debug::elapsed_ms(codec_start, codec_end));
     engine::debug::timing_log_scalar("heartmula.audio_frames", frames.frames);
     engine::debug::timing_log_scalar("session.wall_ms", engine::debug::elapsed_ms(wall_start, wall_end));
+    emit_progress("heartmula", 1, 1);
     return result;
 }
 

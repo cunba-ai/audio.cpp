@@ -451,6 +451,7 @@ runtime::TaskResult OmniVoiceSession::run(const runtime::TaskRequest & request) 
                 : 0;
             audio.samples.reserve(estimated_audio_samples + chunk_gap_samples);
         }
+        emit_progress("omnivoice", 0, static_cast<int64_t>(text_chunks.size()));
         for (size_t chunk_index = 0; chunk_index < text_chunks.size(); ++chunk_index) {
             chunk_request.text = text_chunks[chunk_index];
             if (!has_reference_audio && chunk_index > 0) {
@@ -504,6 +505,7 @@ runtime::TaskResult OmniVoiceSession::run(const runtime::TaskRequest & request) 
             }
             chunk_decode_ms += engine::debug::elapsed_ms(chunk_decode_start, chunk_decode_end);
             append_cross_faded_chunk(audio, chunk_audio);
+            emit_progress("omnivoice", static_cast<int64_t>(chunk_index + 1), static_cast<int64_t>(text_chunks.size()));
         }
         measured_generate_ms = chunk_generate_ms;
         measured_decode_ms = chunk_decode_ms;

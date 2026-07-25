@@ -1403,14 +1403,17 @@ runtime::TaskResult SeedVcSession::run(const runtime::TaskRequest & request) {
             "Seed-VC session was prepared for route " + prepared_route +
             " but request route is " + plan.path);
     }
+    emit_progress("seed_vc", 0, 1);
     if (plan.path == "v2_vc") {
         auto result = run_v2_voice_conversion(request, plan, *route_runtime_, *assets_, static_cast<size_t>(options().backend.threads));
         engine::debug::timing_log_scalar("session.wall_ms", engine::debug::elapsed_ms(wall_start));
+        emit_progress("seed_vc", 1, 1);
         return result;
     }
     if (is_v1_path(plan.path)) {
         auto result = run_v1_singing_voice_conversion(request, plan, *route_runtime_, *assets_, static_cast<size_t>(options().backend.threads));
         engine::debug::timing_log_scalar("session.wall_ms", engine::debug::elapsed_ms(wall_start));
+        emit_progress("seed_vc", 1, 1);
         return result;
     }
     throw std::runtime_error("Seed-VC " + plan.path + " graph execution is not implemented yet");

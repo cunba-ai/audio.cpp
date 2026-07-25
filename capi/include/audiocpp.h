@@ -428,6 +428,63 @@ AUDIOCPP_API audiocpp_vad_t *audiocpp_vad_energy(
 );
 
 /* ======================================================================== */
+/* Audio enhancement: denoise / super-resolve (no model registry)            */
+/* ======================================================================== */
+
+/**
+ * Denoise / enhance audio with one of three models. NOT a model-registry task
+ * — these are standalone audio-utility models loaded directly.
+ *
+ * @param pcm          Input PCM (mono f32, [-1.0, 1.0]).
+ * @param n_samples    Number of input samples.
+ * @param sample_rate  Input sample rate (any; resampled to the model's expected
+ *                     rate internally: 48000 for deepfilternet2/rnnoise, 16000
+ *                     for zipenhancer).
+ * @param model_name   One of "deepfilternet2", "rnnoise", "zipenhancer".
+ * @param model_path   Model directory (or file for rnnoise). NULL = use the
+ *                     embedded asset (requires AUDIOCPP_EMBED_AUDIO_UTILITIES=ON).
+ * @param options_json Options JSON. Recognized keys:
+ *                       "backend": "cpu" | "cuda" | "vulkan" (default cpu)
+ *                       "device":  device index (default 0)
+ * @param err          Optional error output.
+ * @return Denoised audio (mono f32), or NULL on failure. The output sample rate
+ *         matches the model's native rate (48k for deepfilternet2/rnnoise,
+ *         16k for zipenhancer) — check result->sample_rate. Caller MUST free
+ *         with audiocpp_free_audio.
+ */
+AUDIOCPP_API audiocpp_audio_t *audiocpp_denoise(
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    const char *model_name,
+    const char *model_path,
+    const char *options_json,
+    audiocpp_error_t *err
+);
+
+/**
+ * Super-resolve (bandwidth-expand) narrowband audio to wideband with flashsr.
+ *
+ * @param pcm          Input PCM (mono f32, [-1.0, 1.0]).
+ * @param n_samples    Number of input samples.
+ * @param sample_rate  Input sample rate (any; resampled to 16000 internally).
+ * @param model_path   flashsr model directory. NULL = use the embedded asset
+ *                     (requires AUDIOCPP_EMBED_AUDIO_UTILITIES=ON).
+ * @param options_json Options JSON (backend/device, same as audiocpp_denoise).
+ * @param err          Optional error output.
+ * @return Upsampled audio (mono f32 @ 48000 Hz), or NULL on failure.
+ *         Caller MUST free with audiocpp_free_audio.
+ */
+AUDIOCPP_API audiocpp_audio_t *audiocpp_super_resolve(
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    const char *model_path,
+    const char *options_json,
+    audiocpp_error_t *err
+);
+
+/* ======================================================================== */
 /* Forced Alignment: audio + text → word timestamps                         */
 /* ======================================================================== */
 

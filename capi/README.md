@@ -31,6 +31,10 @@ Each zip contains:
   the binary (+~2 MB) so VAD works with no external asset files. With this on,
   `audiocpp_load_model(NULL, "silero_vad", ...)` loads from the embedded bytes.
   Off by default — without it, ship `assets/framework/models/{silero,marblenet}_vad/`.
+- `AUDIOCPP_EMBED_AUDIO_UTILITIES=ON` — bake deepfilternet2/rnnoise/zipenhancer/
+  flashsr weights into the binary (+~40 MB) so `audiocpp_denoise`/
+  `audiocpp_super_resolve` work with `model_path = NULL`. Off by default —
+  without it, ship `assets/framework/audio_utilities/` and pass the model dir.
 
 ### Local Build
 
@@ -100,7 +104,7 @@ println!("{}", text.text);
 
 ## API Reference
 
-The library exports **42 functions** across these categories:
+The library exports **44 functions** across these categories:
 
 ### 1. Backend & Device Selection
 
@@ -192,6 +196,8 @@ and must free it with the matching `audiocpp_free_*` function.
 | `audiocpp_diar` | Diar | audio PCM | speaker turns | `free_diar` |
 | `audiocpp_vad` | VAD | audio PCM | speech segments | `free_vad` |
 | `audiocpp_vad_energy` | VAD (model-free) | audio PCM | speech segments | `free_vad` |
+| `audiocpp_denoise` | Denoise | audio PCM | denoised audio | `free_audio` |
+| `audiocpp_super_resolve` | Super-resolve | audio PCM | upsampled audio | `free_audio` |
 | `audiocpp_align` | Align | audio PCM + text + language | word timestamps | `free_align` |
 | `audiocpp_audio_transform` | SEP/VC | audio PCM | single audio output | `free_audio` |
 | `audiocpp_audio_transform_with_voice_ref` | VC | audio PCM + inline voice ref | audio | `free_audio` |
@@ -222,6 +228,22 @@ Adds ~2 MB to the binary. Without the flag, VAD still works but you must ship
 the `assets/framework/models/{silero_vad,marblenet_vad}/` files alongside the
 library and pass their path. `audiocpp_vad_energy` needs neither (it's pure
 signal energy).
+
+**Denoise / super-resolve** — `audiocpp_denoise(pcm, n, rate, model_name,
+model_path, options, err)` runs one of three standalone audio-enhancement models
+(`deepfilternet2` / `rnnoise` / `zipenhancer`) to reduce noise. `audiocpp_super_
+resolve(pcm, n, rate, model_path, options, err)` upsamples narrowband audio to
+wideband via `flashsr` (16k → 48k). These are NOT model-registry tasks — they
+load directly. With `AUDIOCPP_EMBED_AUDIO_UTILITIES=ON` (~40 MB), pass
+`model_path = NULL` to use baked-in weights; otherwise pass the model directory
+(rnnoise takes a file path). The input sample rate is arbitrary (resampled to the
+model's native rate internally). `options_json` keys: `backend` ("cpu"|"cuda"|
+"vulkan"), `device` (index).
+
+> **Length limit**: these models build a per-frame compute graph with a fixed
+> node capacity. Inputs longer than ~1 s (48 kHz) can overflow the graph and
+> abort. For longer audio, **chunk it first** (e.g. via `audiocpp_vad_energy` or
+> fixed windows) and denoise each chunk, then concatenate.
 
 **Batch TTS** — `audiocpp_tts_batch` synthesizes N texts in one session
 (reuses a single `prepare()`, far cheaper than N separate `audiocpp_tts`

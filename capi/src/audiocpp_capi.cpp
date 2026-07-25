@@ -9,6 +9,11 @@
 
 #include "engine/framework/assets/embedded.h"
 #include "engine/framework/audio/chunking.h"
+#include "engine/framework/audio/deepfilternet2.h"
+#include "engine/framework/audio/flashsr.h"
+#include "engine/framework/audio/resampling.h"
+#include "engine/framework/audio/rnnoise.h"
+#include "engine/framework/audio/zipenhancer.h"
 #include "engine/framework/audio/wav_reader.h"
 #include "engine/framework/core/backend.h"
 #include "engine/framework/runtime/model.h"
@@ -953,6 +958,172 @@ audiocpp_vad_t *audiocpp_vad_energy(
                 result->segments[i].confidence = 1.0f;  // heuristic, no probability
             }
         }
+    });
+    return result;
+}
+
+/* ======================================================================== */
+/* Audio enhancement (denoise / super-resolve)                               */
+/* ======================================================================== */
+namespace {
+
+// Pack a mono PCM vector + sample rate into an owned audiocpp_audio_t (or
+// nullptr on OOM). Throws on allocation failure so AUDIOCPP_CATCH reports it.
+audiocpp_audio_t *pack_audio_output(const std::vector<float> & samples, int sample_rate) {
+    auto * out = new audiocpp_audio_t{};
+    out->n_samples = static_cast<int64_t>(samples.size());
+    out->sample_rate = sample_rate;
+    if (samples.empty()) {
+        return out;
+    }
+    out->samples = static_cast<float *>(malloc(samples.size() * sizeof(float)));
+    if (!out->samples) {
+        delete out;
+        throw std::runtime_error("out of memory allocating enhanced audio output");
+    }
+    std::memcpy(out->samples, samples.data(), samples.size() * sizeof(float));
+    return out;
+}
+
+// Parse backend/device from options_json (defaults CPU/device 0).
+engine::core::BackendConfig parse_utility_backend(const char * options_json) {
+    engine::core::BackendConfig cfg;
+    cfg.type = engine::core::BackendType::Cpu;
+    cfg.device = 0;
+    cfg.threads = 1;
+    if (options_json == nullptr || options_json[0] == '\0') {
+        return cfg;
+    }
+    cJSON * root = cJSON_Parse(options_json);
+    if (root == nullptr) {
+        return cfg;
+    }
+    const cJSON * be = cJSON_GetObjectItem(root, "backend");
+    if (cJSON_IsString(be)) {
+        const std::string s = be->valuestring;
+        if (s == "cuda" || s == "CUDA") cfg.type = engine::core::BackendType::Cuda;
+        else if (s == "vulkan" || s == "Vulkan") cfg.type = engine::core::BackendType::Vulkan;
+        else if (s == "metal" || s == "Metal") cfg.type = engine::core::BackendType::Metal;
+        else if (s == "sycl" || s == "SYCL") cfg.type = engine::core::BackendType::Sycl;
+    }
+    const cJSON * dev = cJSON_GetObjectItem(root, "device");
+    if (cJSON_IsNumber(dev)) cfg.device = dev->valueint;
+    cJSON_Delete(root);
+    return cfg;
+}
+
+// Resolve a model directory/file path. If model_path is NULL/empty, materialize
+// the embedded asset (id) to a per-process temp file; for rnnoise (single-file
+// loader) return the file path, for directory loaders return the parent dir.
+// Returns empty path if no embedded asset is available (caller throws).
+std::filesystem::path resolve_utility_model_path(
+    const char * model_path, const char * embedded_id, const char * dest_filename,
+    bool want_directory) {
+    if (model_path != nullptr && model_path[0] != '\0') {
+        return std::filesystem::path(model_path);
+    }
+    // Embedded path: materialize to temp, return dir or file as the loader wants.
+    const auto file = engine::assets::embedded::embedded_asset_file(embedded_id, dest_filename);
+    if (file.empty()) {
+        return {};
+    }
+    return want_directory ? file.parent_path() : file;
+}
+
+}  // namespace
+
+audiocpp_audio_t *audiocpp_denoise(
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    const char *model_name,
+    const char *model_path,
+    const char *options_json,
+    audiocpp_error_t *err
+) {
+    audiocpp_audio_t *result = nullptr;
+    AUDIOCPP_CATCH(err, {
+        if (!pcm) {
+            throw std::runtime_error("pcm is null");
+        }
+        if (sample_rate <= 0) {
+            throw std::runtime_error("sample_rate must be > 0");
+        }
+        if (model_name == nullptr || model_name[0] == '\0') {
+            throw std::runtime_error("model_name is required (deepfilternet2|rnnoise|zipenhancer)");
+        }
+        const std::string name = model_name;
+        const auto backend = parse_utility_backend(options_json);
+        std::vector<float> input(pcm, pcm + static_cast<size_t>(n_samples));
+
+        if (name == "deepfilternet2") {
+            const auto dir = resolve_utility_model_path(
+                model_path, "deepfilternet2", "deepfilternet2.safetensors", /*want_directory=*/true);
+            if (dir.empty()) {
+                throw std::runtime_error("deepfilternet2: no model path and no embedded asset");
+            }
+            auto model = engine::audio::DeepFilterNet2Model::load_from_directory(dir, backend);
+            auto in48 = engine::audio::resample_mono_linear(input, sample_rate, 48000);
+            auto out = model.run_mono_48k(in48);
+            result = pack_audio_output(out.samples, out.sample_rate);
+        } else if (name == "rnnoise") {
+            // rnnoise loads a single safetensors FILE (not a dir). utility_api
+            // hardcodes rnnoise10Gb_15.safetensors; we replicate that.
+            const auto file = resolve_utility_model_path(
+                model_path, "rnnoise", "rnnoise10Gb_15.safetensors", /*want_directory=*/false);
+            if (file.empty()) {
+                throw std::runtime_error("rnnoise: no model path and no embedded asset");
+            }
+            auto model = engine::audio::RnnoiseModel::load_from_safetensors(file, backend);
+            auto in48 = engine::audio::resample_mono_linear(input, sample_rate, 48000);
+            auto out = model.process_mono_48k(in48);
+            result = pack_audio_output(out.samples, out.sample_rate);
+        } else if (name == "zipenhancer") {
+            const auto dir = resolve_utility_model_path(
+                model_path, "zipenhancer", "zipenhancer.safetensors", /*want_directory=*/true);
+            if (dir.empty()) {
+                throw std::runtime_error("zipenhancer: no model path and no embedded asset");
+            }
+            auto model = engine::audio::ZipEnhancerModel::load_from_directory(dir, backend);
+            auto in16 = engine::audio::resample_mono_linear(input, sample_rate, 16000);
+            auto out = model.denoise_mono_16k(in16);
+            result = pack_audio_output(out.samples, out.sample_rate);
+        } else {
+            throw std::runtime_error(
+                "unsupported denoise model: " + name +
+                " (expected deepfilternet2|rnnoise|zipenhancer)");
+        }
+    });
+    return result;
+}
+
+audiocpp_audio_t *audiocpp_super_resolve(
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    const char *model_path,
+    const char *options_json,
+    audiocpp_error_t *err
+) {
+    audiocpp_audio_t *result = nullptr;
+    AUDIOCPP_CATCH(err, {
+        if (!pcm) {
+            throw std::runtime_error("pcm is null");
+        }
+        if (sample_rate <= 0) {
+            throw std::runtime_error("sample_rate must be > 0");
+        }
+        const auto backend = parse_utility_backend(options_json);
+        const auto dir = resolve_utility_model_path(
+            model_path, "flashsr", "flashsr.safetensors", /*want_directory=*/true);
+        if (dir.empty()) {
+            throw std::runtime_error("flashsr: no model path and no embedded asset");
+        }
+        std::vector<float> input(pcm, pcm + static_cast<size_t>(n_samples));
+        auto in16 = engine::audio::resample_mono_linear(input, sample_rate, 16000);
+        auto model = engine::audio::FlashSrModel::load_from_directory(dir, backend);
+        auto out = model.super_resolve_mono_16k(in16);
+        result = pack_audio_output(out.samples, out.sample_rate);
     });
     return result;
 }

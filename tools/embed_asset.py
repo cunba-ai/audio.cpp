@@ -56,7 +56,9 @@ def main() -> int:
         out.write("    const unsigned char * data;\n")
         out.write("    unsigned long long size;\n")
         out.write("};\n\n")
-        out.write(f"const EmbeddedAssetEntry * embedded_asset_table(unsigned long long * count) {{\n")
+        # The table function is named per-prefix so multiple generated files
+        # (VAD + audio-utilities) can link together without a duplicate symbol.
+        out.write(f"const EmbeddedAssetEntry * {prefix}_embedded_asset_table(unsigned long long * count) {{\n")
         out.write(f"    static const EmbeddedAssetEntry table[] = {{\n")
         for asset_id, symbol in index_entries:
             out.write(f'        {{"{asset_id}", {symbol}_data, {symbol}_size}},\n')

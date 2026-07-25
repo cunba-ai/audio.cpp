@@ -22,4 +22,9 @@ struct SileroAssetPaths {
 SileroAssetPaths resolve_silero_assets(const std::filesystem::path & model_path);
 std::shared_ptr<const SileroWeights> load_silero_weights_cached(const std::filesystem::path & checkpoint_path);
 
+// Load silero weights from the embedded asset bytes (requires
+// AUDIOCPP_EMBED_VAD_ASSETS=ON at build time). Returns nullptr if no embedded
+// silero asset is present in this build.
+std::shared_ptr<const SileroWeights> load_silero_weights_embedded();
+
 }  // namespace engine::models::silero_vad

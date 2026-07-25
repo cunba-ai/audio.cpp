@@ -7,13 +7,18 @@
 
 #include "audiocpp.h"
 
+#include "engine/framework/assets/embedded.h"
+#include "engine/framework/audio/chunking.h"
+#include "engine/framework/audio/deepfilternet2.h"
+#include "engine/framework/audio/flashsr.h"
+#include "engine/framework/audio/resampling.h"
+#include "engine/framework/audio/rnnoise.h"
+#include "engine/framework/audio/zipenhancer.h"
 #include "engine/framework/audio/wav_reader.h"
 #include "engine/framework/core/backend.h"
 #include "engine/framework/runtime/model.h"
 #include "engine/framework/runtime/registry.h"
 #include "engine/framework/runtime/session.h"
-#include "engine/framework/runtime/model.h"
-#include "engine/framework/audio/wav_reader.h"
 #include "engine/framework/audio/wav_writer.h"
 
 #include "ggml-backend.h"
@@ -38,9 +43,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <functional>
+#include <initializer_list>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <filesystem>
 
@@ -52,6 +61,9 @@ struct audiocpp_model {
     std::unique_ptr<engine::runtime::ILoadedVoiceModel> loaded_model;
     std::unique_ptr<engine::runtime::IVoiceTaskSession> session;
     engine::runtime::IOfflineVoiceTaskSession *offline = nullptr;
+    // Backend config the model was loaded with — reused when creating streaming
+    // sessions so they run on the same device the caller selected at load time.
+    engine::core::BackendConfig backend_config;
     // Progress callback (installed once, persists across runs until replaced/cleared)
     audiocpp_progress_fn progress_fn = nullptr;
     void *progress_user = nullptr;
@@ -150,14 +162,23 @@ audiocpp_model_t *audiocpp_load_model(
 ) {
     audiocpp_model_t *result = nullptr;
     AUDIOCPP_CATCH(err, {
-        if (!model_path || model_path[0] == '\0') {
-            throw std::runtime_error("model_path is null or empty");
+        const std::string hint = (family_hint && family_hint[0] != '\0') ? std::string(family_hint) : std::string{};
+        const bool empty_path = (model_path == nullptr || model_path[0] == '\0');
+        // Empty model_path is allowed ONLY for VAD families when the binary
+        // was built with AUDIOCPP_EMBED_VAD_ASSETS (silero_vad/marblenet_vad
+        // load from baked-in weights). Otherwise require a real path.
+        const bool embedded_ok = (hint == "silero_vad" || hint == "marblenet_vad")
+            && engine::assets::embedded::has_embedded_asset(hint);
+        if (empty_path && !embedded_ok) {
+            throw std::runtime_error(
+                "model_path is null or empty (only allowed for silero_vad/"
+                "marblenet_vad when built with AUDIOCPP_EMBED_VAD_ASSETS=ON)");
         }
         auto registry = engine::runtime::make_default_registry();
         engine::runtime::ModelLoadRequest req;
-        req.model_path = model_path;
-        if (family_hint && family_hint[0] != '\0') {
-            req.family_hint = family_hint;
+        req.model_path = empty_path ? std::filesystem::path{} : std::filesystem::path(model_path);
+        if (!hint.empty()) {
+            req.family_hint = hint;
         }
         auto loaded = registry.load(req);
         if (!loaded) {
@@ -177,6 +198,7 @@ audiocpp_model_t *audiocpp_load_model(
         result = new audiocpp_model{};
         result->loaded_model = std::move(loaded);
         result->session = std::move(session);
+        result->backend_config = opts.backend;
         result->offline = dynamic_cast<engine::runtime::IOfflineVoiceTaskSession *>(
             result->session.get());
         if (!result->offline) {
@@ -874,6 +896,289 @@ void audiocpp_free_vad(audiocpp_vad_t *vad) {
     delete vad;
 }
 
+audiocpp_vad_t *audiocpp_vad_energy(
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    const char *options_json,
+    audiocpp_error_t *err
+) {
+    audiocpp_vad_t *result = nullptr;
+    AUDIOCPP_CATCH(err, {
+        if (!pcm) {
+            throw std::runtime_error("pcm is null");
+        }
+        if (sample_rate <= 0) {
+            throw std::runtime_error("sample_rate must be > 0");
+        }
+
+        // Defaults mirror plan_quiet_energy_audio_chunks' typical use (ASR
+        // chunking at ~30s with a 2s boundary search and 0.1s energy window).
+        double chunk_seconds = 30.0;
+        double boundary_seconds = 2.0;
+        double min_energy_seconds = 0.1;
+        if (options_json && options_json[0] != '\0') {
+            cJSON * root = cJSON_Parse(options_json);
+            if (root != nullptr) {
+                const cJSON * v = cJSON_GetObjectItem(root, "chunk_seconds");
+                if (cJSON_IsNumber(v)) chunk_seconds = v->valuedouble;
+                v = cJSON_GetObjectItem(root, "boundary_seconds");
+                if (cJSON_IsNumber(v)) boundary_seconds = v->valuedouble;
+                v = cJSON_GetObjectItem(root, "min_energy_seconds");
+                if (cJSON_IsNumber(v)) min_energy_seconds = v->valuedouble;
+                cJSON_Delete(root);
+            }
+        }
+        if (chunk_seconds <= 0.0) {
+            throw std::runtime_error("chunk_seconds must be > 0");
+        }
+        if (boundary_seconds < 0.0) {
+            throw std::runtime_error("boundary_seconds must be >= 0");
+        }
+        if (min_energy_seconds <= 0.0) {
+            throw std::runtime_error("min_energy_seconds must be > 0");
+        }
+
+        engine::audio::QuietEnergyAudioChunkOptions opts;
+        opts.chunk_samples = static_cast<int64_t>(chunk_seconds * sample_rate);
+        opts.boundary_context_samples = static_cast<int64_t>(boundary_seconds * sample_rate);
+        opts.min_energy_window_samples = static_cast<int64_t>(min_energy_seconds * sample_rate);
+        if (opts.chunk_samples <= 0) opts.chunk_samples = sample_rate;  // >= 1s fallback
+
+        std::vector<float> mono(pcm, pcm + static_cast<size_t>(n_samples));
+        const auto spans = engine::audio::plan_quiet_energy_audio_chunks(mono, opts);
+
+        result = new audiocpp_vad_t{};
+        result->n_segments = static_cast<int64_t>(spans.size());
+        if (!spans.empty()) {
+            result->segments = static_cast<audiocpp_vad_segment_t *>(
+                calloc(spans.size(), sizeof(audiocpp_vad_segment_t)));
+            if (!result->segments) {
+                delete result;
+                result = nullptr;
+                throw std::runtime_error("out of memory allocating VAD segments");
+            }
+            for (size_t i = 0; i < spans.size(); ++i) {
+                result->segments[i].start_sample = spans[i].start_sample;
+                result->segments[i].end_sample = spans[i].end_sample;
+                result->segments[i].confidence = 1.0f;  // heuristic, no probability
+            }
+        }
+    });
+    return result;
+}
+
+/* ======================================================================== */
+/* Audio enhancement (denoise / super-resolve)                               */
+/* ======================================================================== */
+namespace {
+
+// Process-level cache for loaded audio-utility models. Without this, every
+// audiocpp_denoise / audiocpp_super_resolve call reloads + re-uploads the full
+// model (8–11 MB weights + graph build), which dominates latency for repeated
+// calls. Keyed by (resolved path, backend type, device) so different configs
+// get distinct entries. Entries are shared_ptr so the model stays alive as long
+// as any caller holds it; the cache itself holds a weak_ptr so unloaded models
+// are reclaimed when the last reference drops.
+template <typename ModelType>
+std::shared_ptr<const ModelType> get_or_load_utility_model(
+    const std::string & cache_key,
+    std::function<std::shared_ptr<const ModelType>()> loader) {
+    static std::mutex mtx;
+    static std::unordered_map<std::string, std::weak_ptr<const ModelType>> cache;
+    std::lock_guard<std::mutex> lock(mtx);
+    if (auto it = cache.find(cache_key); it != cache.end()) {
+        if (auto existing = it->second.lock()) {
+            return existing;
+        }
+    }
+    auto loaded = loader();
+    cache[cache_key] = loaded;
+    return loaded;
+}
+
+// Build a cache key from the resolved model path + backend config.
+std::string utility_model_cache_key(
+    const std::filesystem::path & model_path,
+    const engine::core::BackendConfig & backend) {
+    return model_path.string() + "|" +
+           std::to_string(static_cast<int>(backend.type)) + ":" +
+           std::to_string(backend.device);
+}
+
+// Pack a mono PCM vector + sample rate into an owned audiocpp_audio_t (or
+// nullptr on OOM). Throws on allocation failure so AUDIOCPP_CATCH reports it.
+audiocpp_audio_t *pack_audio_output(const std::vector<float> & samples, int sample_rate) {
+    auto * out = new audiocpp_audio_t{};
+    out->n_samples = static_cast<int64_t>(samples.size());
+    out->sample_rate = sample_rate;
+    if (samples.empty()) {
+        return out;
+    }
+    out->samples = static_cast<float *>(malloc(samples.size() * sizeof(float)));
+    if (!out->samples) {
+        delete out;
+        throw std::runtime_error("out of memory allocating enhanced audio output");
+    }
+    std::memcpy(out->samples, samples.data(), samples.size() * sizeof(float));
+    return out;
+}
+
+// Parse backend/device from options_json (defaults CPU/device 0).
+engine::core::BackendConfig parse_utility_backend(const char * options_json) {
+    engine::core::BackendConfig cfg;
+    cfg.type = engine::core::BackendType::Cpu;
+    cfg.device = 0;
+    cfg.threads = 1;
+    if (options_json == nullptr || options_json[0] == '\0') {
+        return cfg;
+    }
+    cJSON * root = cJSON_Parse(options_json);
+    if (root == nullptr) {
+        return cfg;
+    }
+    const cJSON * be = cJSON_GetObjectItem(root, "backend");
+    if (cJSON_IsString(be)) {
+        const std::string s = be->valuestring;
+        if (s == "cuda" || s == "CUDA") cfg.type = engine::core::BackendType::Cuda;
+        else if (s == "vulkan" || s == "Vulkan") cfg.type = engine::core::BackendType::Vulkan;
+        else if (s == "metal" || s == "Metal") cfg.type = engine::core::BackendType::Metal;
+        else if (s == "sycl" || s == "SYCL") cfg.type = engine::core::BackendType::Sycl;
+    }
+    const cJSON * dev = cJSON_GetObjectItem(root, "device");
+    if (cJSON_IsNumber(dev)) cfg.device = dev->valueint;
+    cJSON_Delete(root);
+    return cfg;
+}
+
+// Resolve a model directory/file path. If model_path is NULL/empty, materialize
+// the embedded asset (id) to a per-process temp file; for rnnoise (single-file
+// loader) return the file path, for directory loaders return the parent dir.
+// Returns empty path if no embedded asset is available (caller throws).
+std::filesystem::path resolve_utility_model_path(
+    const char * model_path, const char * embedded_id, const char * dest_filename,
+    bool want_directory) {
+    if (model_path != nullptr && model_path[0] != '\0') {
+        return std::filesystem::path(model_path);
+    }
+    // Embedded path: materialize to temp, return dir or file as the loader wants.
+    const auto file = engine::assets::embedded::embedded_asset_file(embedded_id, dest_filename);
+    if (file.empty()) {
+        return {};
+    }
+    return want_directory ? file.parent_path() : file;
+}
+
+}  // namespace
+
+audiocpp_audio_t *audiocpp_denoise(
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    const char *model_name,
+    const char *model_path,
+    const char *options_json,
+    audiocpp_error_t *err
+) {
+    audiocpp_audio_t *result = nullptr;
+    AUDIOCPP_CATCH(err, {
+        if (!pcm) {
+            throw std::runtime_error("pcm is null");
+        }
+        if (sample_rate <= 0) {
+            throw std::runtime_error("sample_rate must be > 0");
+        }
+        if (model_name == nullptr || model_name[0] == '\0') {
+            throw std::runtime_error("model_name is required (deepfilternet2|rnnoise|zipenhancer)");
+        }
+        const std::string name = model_name;
+        const auto backend = parse_utility_backend(options_json);
+        std::vector<float> input(pcm, pcm + static_cast<size_t>(n_samples));
+
+        if (name == "deepfilternet2") {
+            const auto dir = resolve_utility_model_path(
+                model_path, "deepfilternet2", "deepfilternet2.safetensors", /*want_directory=*/true);
+            if (dir.empty()) {
+                throw std::runtime_error("deepfilternet2: no model path and no embedded asset");
+            }
+            auto model = get_or_load_utility_model<engine::audio::DeepFilterNet2Model>(
+                utility_model_cache_key(dir, backend),
+                [&]() { return std::make_shared<engine::audio::DeepFilterNet2Model>(
+                    engine::audio::DeepFilterNet2Model::load_from_directory(dir, backend)); });
+            auto in48 = engine::audio::resample_mono_linear(input, sample_rate, 48000);
+            auto out = model->run_mono_48k(in48);
+            result = pack_audio_output(out.samples, out.sample_rate);
+        } else if (name == "rnnoise") {
+            // rnnoise loads a single safetensors FILE (not a dir). utility_api
+            // hardcodes rnnoise10Gb_15.safetensors; we replicate that.
+            const auto file = resolve_utility_model_path(
+                model_path, "rnnoise", "rnnoise10Gb_15.safetensors", /*want_directory=*/false);
+            if (file.empty()) {
+                throw std::runtime_error("rnnoise: no model path and no embedded asset");
+            }
+            auto model = get_or_load_utility_model<engine::audio::RnnoiseModel>(
+                utility_model_cache_key(file, backend),
+                [&]() { return std::make_shared<engine::audio::RnnoiseModel>(
+                    engine::audio::RnnoiseModel::load_from_safetensors(file, backend)); });
+            auto in48 = engine::audio::resample_mono_linear(input, sample_rate, 48000);
+            auto out = model->process_mono_48k(in48);
+            result = pack_audio_output(out.samples, out.sample_rate);
+        } else if (name == "zipenhancer") {
+            const auto dir = resolve_utility_model_path(
+                model_path, "zipenhancer", "zipenhancer.safetensors", /*want_directory=*/true);
+            if (dir.empty()) {
+                throw std::runtime_error("zipenhancer: no model path and no embedded asset");
+            }
+            auto model = get_or_load_utility_model<engine::audio::ZipEnhancerModel>(
+                utility_model_cache_key(dir, backend),
+                [&]() { return std::make_shared<engine::audio::ZipEnhancerModel>(
+                    engine::audio::ZipEnhancerModel::load_from_directory(dir, backend)); });
+            auto in16 = engine::audio::resample_mono_linear(input, sample_rate, 16000);
+            auto out = model->denoise_mono_16k(in16);
+            result = pack_audio_output(out.samples, out.sample_rate);
+        } else {
+            throw std::runtime_error(
+                "unsupported denoise model: " + name +
+                " (expected deepfilternet2|rnnoise|zipenhancer)");
+        }
+    });
+    return result;
+}
+
+audiocpp_audio_t *audiocpp_super_resolve(
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    const char *model_path,
+    const char *options_json,
+    audiocpp_error_t *err
+) {
+    audiocpp_audio_t *result = nullptr;
+    AUDIOCPP_CATCH(err, {
+        if (!pcm) {
+            throw std::runtime_error("pcm is null");
+        }
+        if (sample_rate <= 0) {
+            throw std::runtime_error("sample_rate must be > 0");
+        }
+        const auto backend = parse_utility_backend(options_json);
+        const auto dir = resolve_utility_model_path(
+            model_path, "flashsr", "flashsr.safetensors", /*want_directory=*/true);
+        if (dir.empty()) {
+            throw std::runtime_error("flashsr: no model path and no embedded asset");
+        }
+        std::vector<float> input(pcm, pcm + static_cast<size_t>(n_samples));
+        auto in16 = engine::audio::resample_mono_linear(input, sample_rate, 16000);
+        auto model = get_or_load_utility_model<engine::audio::FlashSrModel>(
+            utility_model_cache_key(dir, backend),
+            [&]() { return std::make_shared<engine::audio::FlashSrModel>(
+                engine::audio::FlashSrModel::load_from_directory(dir, backend)); });
+        auto out = model->super_resolve_mono_16k(in16);
+        result = pack_audio_output(out.samples, out.sample_rate);
+    });
+    return result;
+}
+
 /* ======================================================================== */
 /* Forced Alignment                                                          */
 /* ======================================================================== */
@@ -1238,15 +1543,19 @@ audiocpp_stream_t *audiocpp_stream_start(
         if (!model || !model->loaded_model) {
             throw std::runtime_error("invalid model handle");
         }
-        // Create a new streaming session
+        // preferred_chunk_samples is accepted for forward compatibility — the
+        // engine currently uses each model's own StreamingPolicy value. When a
+        // caller override path lands in the engine, plumb this through
+        // TaskRequest::options["preferred_audio_chunk_samples"].
+        (void)preferred_chunk_samples;
+        // Create a new streaming session on the same backend the model was
+        // loaded with (so streaming runs on the caller's chosen GPU, not CPU).
         engine::runtime::TaskSpec task_spec;
         task_spec.task = map_task(task);
         task_spec.mode = engine::runtime::RunMode::Streaming;
 
-        // Reuse the model's backend options
         engine::runtime::SessionOptions opts;
-        opts.backend.type = model->session->run_mode() == engine::runtime::RunMode::Streaming
-            ? opts.backend.type : opts.backend.type;  // just keep default
+        opts.backend = model->backend_config;
 
         auto session = model->loaded_model->create_task_session(task_spec, opts);
         if (!session) {
@@ -1507,27 +1816,34 @@ namespace {
 
 // Map a ggml backend registration to our AUDIOCPP_BACKEND_* enum.
 int backend_reg_to_id(ggml_backend_reg_t reg) {
+    // Match by registry name (not the deprecated direct ggml_backend_*_reg()
+    // pointer compare). This works with dynamically-loaded backends and the
+    // CUDA alias names used under HIP ("ROCm") and MUSA builds — mirroring the
+    // engine's own reg_name_matches() logic in backend.cpp.
     if (!reg) return AUDIOCPP_BACKEND_CPU;
-#ifdef GGML_USE_CUDA
-    if (reg == ggml_backend_cuda_reg()) return AUDIOCPP_BACKEND_CUDA;
-#endif
-#ifdef GGML_USE_SYCL
-    if (reg == ggml_backend_sycl_reg()) return AUDIOCPP_BACKEND_SYCL;
-#endif
-#ifdef GGML_USE_VULKAN
-    if (reg == ggml_backend_vk_reg()) return AUDIOCPP_BACKEND_VULKAN;
-#endif
-#ifdef GGML_USE_METAL
-    if (reg == ggml_backend_metal_reg()) return AUDIOCPP_BACKEND_METAL;
-#endif
+    const char * name = ggml_backend_reg_name(reg);
+    if (name == nullptr) return AUDIOCPP_BACKEND_CPU;
+    const auto matches = [&](std::initializer_list<const char *> aliases) {
+        for (const char * a : aliases) {
+            if (std::strcmp(name, a) == 0) return true;
+        }
+        return false;
+    };
+    if (matches({"CUDA", "ROCm", "MUSA"})) return AUDIOCPP_BACKEND_CUDA;
+    if (std::strcmp(name, "Vulkan") == 0)  return AUDIOCPP_BACKEND_VULKAN;
+    if (std::strcmp(name, "MTL") == 0)     return AUDIOCPP_BACKEND_METAL;
+    if (std::strcmp(name, "SYCL") == 0)    return AUDIOCPP_BACKEND_SYCL;
     // CPU and any unknown backend
     return AUDIOCPP_BACKEND_CPU;
 }
 
 int dev_type_to_id(enum ggml_backend_dev_type type) {
     switch (type) {
-        case GGML_BACKEND_DEVICE_TYPE_GPU:  return AUDIOCPP_DEVICE_GPU;
-        case GGML_BACKEND_DEVICE_TYPE_IGPU: return AUDIOCPP_DEVICE_IGPU;
+        case GGML_BACKEND_DEVICE_TYPE_GPU:   return AUDIOCPP_DEVICE_GPU;
+        case GGML_BACKEND_DEVICE_TYPE_IGPU:  return AUDIOCPP_DEVICE_IGPU;
+        case GGML_BACKEND_DEVICE_TYPE_ACCEL: return AUDIOCPP_DEVICE_ACCEL;
+        case GGML_BACKEND_DEVICE_TYPE_META:  return AUDIOCPP_DEVICE_META;
+        case GGML_BACKEND_DEVICE_TYPE_CPU:
         default:                             return AUDIOCPP_DEVICE_CPU;
     }
 }

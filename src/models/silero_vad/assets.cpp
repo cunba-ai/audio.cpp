@@ -1,6 +1,8 @@
 #include "engine/models/silero_vad/assets.h"
 
+#include "engine/framework/assets/embedded.h"
 #include "engine/framework/assets/resource_bundle.h"
+#include "engine/framework/assets/tensor_source.h"
 #include "engine/framework/io/filesystem.h"
 
 #include <mutex>
@@ -27,6 +29,19 @@ std::string checkpoint_cache_key(const std::filesystem::path & checkpoint_path) 
     std::error_code ec;
     const auto canonical = std::filesystem::weakly_canonical(checkpoint_path, ec);
     return ec ? checkpoint_path.lexically_normal().string() : canonical.string();
+}
+
+// Load silero weights from the embedded asset bytes (requires
+// AUDIOCPP_EMBED_VAD_ASSETS=ON). Used by load_silero_weights_embedded().
+std::shared_ptr<const SileroWeights> load_silero_weights_from_embedded() {
+    std::size_t size = 0;
+    const auto * data = assets::embedded::embedded_asset_data("silero_vad", &size);
+    if (data == nullptr) {
+        return nullptr;
+    }
+    SileroWeights weights;
+    weights.source = assets::open_tensor_source_from_bytes(data, size);
+    return std::make_shared<const SileroWeights>(std::move(weights));
 }
 
 }  // namespace
@@ -69,6 +84,18 @@ std::shared_ptr<const SileroWeights> load_silero_weights_cached(const std::files
         std::lock_guard<std::mutex> lock(cache_mutex);
         cache[key] = loaded;
     }
+    return loaded;
+}
+
+std::shared_ptr<const SileroWeights> load_silero_weights_embedded() {
+    static std::mutex cache_mutex;
+    static std::weak_ptr<const SileroWeights> cached;
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    if (auto existing = cached.lock()) {
+        return existing;
+    }
+    auto loaded = load_silero_weights_from_embedded();
+    cached = loaded;
     return loaded;
 }
 

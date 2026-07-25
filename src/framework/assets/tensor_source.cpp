@@ -354,6 +354,15 @@ public:
         : index_(engine::io::load_safetensors_index(path)),
           bytes_(engine::io::read_binary_blob(path)) {}
 
+    // Construct from an in-memory byte buffer (e.g. an embedded asset). The
+    // bytes are COPIED into an owned vector so release_storage()/discard_range
+    // stay safe regardless of where the source buffer lives (embedded .rodata
+    // is read-only on some platforms; copying 1-2 MB of VAD weights is cheap).
+    explicit SafeTensorSource(const std::byte * data, size_t size)
+        : index_(engine::io::load_safetensors_index_from_bytes(data, size)),
+          bytes_(engine::io::BinaryBlob::from_owned(
+              std::vector<std::byte>(data, data + size))) {}
+
     const std::filesystem::path & source_path() const noexcept override {
         return index_.source_path;
     }
@@ -1344,6 +1353,13 @@ std::shared_ptr<const TensorSource> open_tensor_source(
     std::string_view tensor_prefix) {
     auto source = open_tensor_source(path);
     return make_prefixed_tensor_source(std::move(source), tensor_prefix);
+}
+
+std::shared_ptr<const TensorSource> open_tensor_source_from_bytes(
+    const std::byte * data, size_t size) {
+    // Embedded assets are always safetensors (that is the format the VAD models
+    // ship in). GGUF/torch-bin embedded variants are not needed today.
+    return std::make_shared<SafeTensorSource>(data, size);
 }
 
 std::shared_ptr<const TensorSource> make_prefixed_tensor_source(

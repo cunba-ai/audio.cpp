@@ -14,6 +14,9 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 option(AUDIOCPP_DEPLOYMENT_BUILD
     "Compile model specs into the runtime for self-contained deployments"
     OFF)
+option(AUDIOCPP_EMBED_VAD_ASSETS
+    "Embed silero_vad + marblenet_vad weights into the binary (no external files needed for VAD)"
+    ON)
 
 # Package layouts remain editable runtime data in normal builds. The converter always
 # carries the source catalog so the conversion binary is portable. Deployment builds
@@ -164,6 +167,7 @@ add_compile_options(
 
 add_library(engine_runtime STATIC
     src/framework/assets/resource_bundle.cpp
+    src/framework/assets/embedded.cpp
     src/framework/model_spec/package.cpp
     src/framework/model_spec/schema.cpp
     src/framework/assets/tensor_source.cpp
@@ -639,6 +643,69 @@ target_include_directories(engine_runtime PRIVATE
 
 target_link_libraries(engine_runtime PUBLIC ggml)
 target_link_libraries(engine_runtime PRIVATE sentencepiece cjson_vendor yaml_vendor)
+
+# Embed silero_vad + marblenet_vad weights directly into engine_runtime so VAD
+# works with no external asset files. Generates a .cpp byte-array table from the
+# safetensors files in assets/framework/models/. Off by default (adds ~2MB to the
+# binary); enable for self-contained deployments.
+if (AUDIOCPP_EMBED_VAD_ASSETS)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    set(EMBEDDED_VAD_CPP "${CMAKE_CURRENT_BINARY_DIR}/generated/embedded_vad_assets.cpp")
+    add_custom_command(
+        OUTPUT "${EMBEDDED_VAD_CPP}"
+        COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_asset.py"
+                "${EMBEDDED_VAD_CPP}"
+                "vad"
+                "silero_vad:${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/models/silero_vad/silero_vad_16k.safetensors"
+                "marblenet_vad:${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/models/marblenet_vad/marblenet_vad.safetensors"
+                "marblenet_vad_config:${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/models/marblenet_vad/marblenet_vad_config.json"
+                "marblenet_vad_labels:${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/models/marblenet_vad/marblenet_vad_labels.txt"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_asset.py"
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/models/silero_vad/silero_vad_16k.safetensors"
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/models/marblenet_vad/marblenet_vad.safetensors"
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/models/marblenet_vad/marblenet_vad_config.json"
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/models/marblenet_vad/marblenet_vad_labels.txt"
+        COMMENT "Generating embedded VAD asset byte arrays"
+        VERBATIM
+    )
+    target_sources(engine_runtime PRIVATE "${EMBEDDED_VAD_CPP}")
+    target_compile_definitions(engine_runtime PUBLIC AUDIOCPP_EMBED_VAD_ASSETS=1)
+endif()
+
+# Embed the audio-enhancement models (deepfilternet2/rnnoise/zipenhancer/flashsr)
+# into the binary so denoise/super-resolve work with no external files. These are
+# larger than VAD weights (~28MB total: deepfilternet2 8.9 + rnnoise 11.0 +
+# zipenhancer 7.9 + flashsr 0.3), so this is a separate option from VAD.
+# The loaders expect files on disk, so the C wrapper materializes the embedded
+# bytes to a per-process temp dir on first use.
+option(AUDIOCPP_EMBED_AUDIO_UTILITIES
+    "Embed deepfilternet2/rnnoise/zipenhancer/flashsr weights into the binary"
+    ON)
+if (AUDIOCPP_EMBED_AUDIO_UTILITIES)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    set(EMBEDDED_AUD_CPP "${CMAKE_CURRENT_BINARY_DIR}/generated/embedded_audio_utilities.cpp")
+    add_custom_command(
+        OUTPUT "${EMBEDDED_AUD_CPP}"
+        COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_asset.py"
+                "${EMBEDDED_AUD_CPP}"
+                "aud"
+                "deepfilternet2:${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/audio_utilities/deepfilternet2/deepfilternet2.safetensors"
+                "rnnoise:${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/audio_utilities/rnnoise/rnnoise10Gb_15.safetensors"
+                "zipenhancer:${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/audio_utilities/zipenhancer/zipenhancer.safetensors"
+                "flashsr:${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/audio_utilities/flashsr/flashsr.safetensors"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_asset.py"
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/audio_utilities/deepfilternet2/deepfilternet2.safetensors"
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/audio_utilities/rnnoise/rnnoise10Gb_15.safetensors"
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/audio_utilities/zipenhancer/zipenhancer.safetensors"
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/audio_utilities/flashsr/flashsr.safetensors"
+        COMMENT "Generating embedded audio-utility asset byte arrays"
+        VERBATIM
+    )
+    target_sources(engine_runtime PRIVATE "${EMBEDDED_AUD_CPP}")
+    target_compile_definitions(engine_runtime PUBLIC AUDIOCPP_EMBED_AUDIO_UTILITIES=1)
+endif()
 if (ENGINE_ENABLE_OPENMP)
     target_link_libraries(engine_runtime PRIVATE OpenMP::OpenMP_CXX)
     if (MSVC)
@@ -723,6 +790,7 @@ if (AUDIOCPP_BUILD_CAPI)
             "    audiocpp_audio_transform_with_voice_ref\n"
             "    audiocpp_diar\n"
             "    audiocpp_vad\n"
+            "    audiocpp_vad_energy\n"
             "    audiocpp_version\n"
             "    audiocpp_free_audio\n"
             "    audiocpp_free_text\n"
@@ -730,6 +798,8 @@ if (AUDIOCPP_BUILD_CAPI)
             "    audiocpp_free_vad\n"
             "    audiocpp_align\n"
             "    audiocpp_free_align\n"
+            "    audiocpp_denoise\n"
+            "    audiocpp_super_resolve\n"
             "    audiocpp_transform_stems\n"
             "    audiocpp_free_stems\n"
             "    audiocpp_model_info\n"

@@ -9,21 +9,34 @@ ctypes, Go cgo, etc.).
 ### Build
 
 The C ABI shared library is built when `AUDIOCPP_BUILD_CAPI=ON` (default).
-CI produces prebuilt binaries for 6 platform/backend combinations:
+CI produces prebuilt binaries for 8 platform/backend combinations:
 
 | Artifact | Platform | Backend |
 |---|---|---|
 | `audiocpp-windows-cuda-cpu.zip` | Windows | CUDA + CPU fallback |
 | `audiocpp-windows-rocm-cpu.zip` | Windows | ROCm (HIP) |
 | `audiocpp-windows-sycl-cpu.zip` | Windows | Intel SYCL |
+| `audiocpp-windows-vulkan-cpu.zip` | Windows | Vulkan + CPU fallback |
 | `audiocpp-linux-cuda-cpu.zip` | Linux | CUDA + CPU fallback |
 | `audiocpp-linux-rocm-cpu.zip` | Linux | ROCm (HIP) |
 | `audiocpp-linux-sycl-cpu.zip` | Linux | Intel SYCL |
+| `audiocpp-linux-vulkan-cpu.zip` | Linux | Vulkan + CPU fallback |
 
 Each zip contains:
 - `audiocpp.dll` / `libaudiocpp.so` — the shared library
 - `audiocpp.lib` — Windows import library (not needed for runtime loading)
 - `audiocpp.h` — the C header
+
+**Build options** (CMake):
+- `AUDIOCPP_BUILD_CAPI=ON` — build the shared library (default ON).
+- `AUDIOCPP_EMBED_VAD_ASSETS=ON` — bake silero_vad + marblenet_vad weights into
+  the binary (+~2 MB) so VAD works with no external asset files. With this on,
+  `audiocpp_load_model(NULL, "silero_vad", ...)` loads from the embedded bytes.
+  Off by default — without it, ship `assets/framework/models/{silero,marblenet}_vad/`.
+- `AUDIOCPP_EMBED_AUDIO_UTILITIES=ON` — bake deepfilternet2/rnnoise/zipenhancer/
+  flashsr weights into the binary (+~28 MB) so `audiocpp_denoise`/
+  `audiocpp_super_resolve` work with `model_path = NULL`. Off by default —
+  without it, ship `assets/framework/audio_utilities/` and pass the model dir.
 
 ### Local Build
 
@@ -93,7 +106,7 @@ println!("{}", text.text);
 
 ## API Reference
 
-The library exports **41 functions** across these categories:
+The library exports **44 functions** across these categories:
 
 ### 1. Backend & Device Selection
 
@@ -184,6 +197,9 @@ and must free it with the matching `audiocpp_free_*` function.
 | `audiocpp_asr` | ASR | audio PCM | text + language | `free_text` |
 | `audiocpp_diar` | Diar | audio PCM | speaker turns | `free_diar` |
 | `audiocpp_vad` | VAD | audio PCM | speech segments | `free_vad` |
+| `audiocpp_vad_energy` | VAD (model-free) | audio PCM | speech segments | `free_vad` |
+| `audiocpp_denoise` | Denoise | audio PCM | denoised audio | `free_audio` |
+| `audiocpp_super_resolve` | Super-resolve | audio PCM | upsampled audio | `free_audio` |
 | `audiocpp_align` | Align | audio PCM + text + language | word timestamps | `free_align` |
 | `audiocpp_audio_transform` | SEP/VC | audio PCM | single audio output | `free_audio` |
 | `audiocpp_audio_transform_with_voice_ref` | VC | audio PCM + inline voice ref | audio | `free_audio` |
@@ -192,6 +208,44 @@ and must free it with the matching `audiocpp_free_*` function.
 **`audiocpp_transform_stems`** returns all named audio outputs (unlike
 `audiocpp_audio_transform` which only returns the first). Use this for
 source separation models (demucs, roformer) that emit multiple stems.
+
+**Energy VAD (model-free)** — `audiocpp_vad_energy(pcm, n, rate, options, err)`
+segments audio by signal energy only (no model load, no weights). It splits the
+audio into ~`chunk_seconds`-length pieces, snapping each boundary to the
+lowest-RMS window near the nominal split point (so cuts land in silences, not
+mid-word). Faster than `audiocpp_vad` and needs no files, but less accurate on
+noisy input. Options JSON keys: `chunk_seconds` (default 30), `boundary_seconds`
+(default 2), `min_energy_seconds` (default 0.1). Returns the same
+`audiocpp_vad_t` shape as the model VAD (free with `audiocpp_free_vad`).
+
+**Embedded VAD weights** — when the library is built with
+`-DAUDIOCPP_EMBED_VAD_ASSETS=ON`, silero_vad and marblenet_vad weights are
+compiled into the binary and you can load them with `model_path = NULL`:
+```c
+// No file needed — uses baked-in weights
+audiocpp_model_t *vad = audiocpp_load_model(
+    NULL, "silero_vad", AUDIOCPP_TASK_VAD, AUDIOCPP_BACKEND_CPU, 0, 4, &err);
+```
+Adds ~2 MB to the binary. Without the flag, VAD still works but you must ship
+the `assets/framework/models/{silero_vad,marblenet_vad}/` files alongside the
+library and pass their path. `audiocpp_vad_energy` needs neither (it's pure
+signal energy).
+
+**Denoise / super-resolve** — `audiocpp_denoise(pcm, n, rate, model_name,
+model_path, options, err)` runs one of three standalone audio-enhancement models
+(`deepfilternet2` / `rnnoise` / `zipenhancer`) to reduce noise. `audiocpp_super_
+resolve(pcm, n, rate, model_path, options, err)` upsamples narrowband audio to
+wideband via `flashsr` (16k → 48k). These are NOT model-registry tasks — they
+load directly. With `AUDIOCPP_EMBED_AUDIO_UTILITIES=ON` (~28 MB: deepfilternet2 8.9 + rnnoise 11.0 + zipenhancer 7.9 + flashsr 0.3), pass
+`model_path = NULL` to use baked-in weights; otherwise pass the model directory
+(rnnoise takes a file path). The input sample rate is arbitrary (resampled to the
+model's native rate internally). `options_json` keys: `backend` ("cpu"|"cuda"|
+"vulkan"), `device` (index).
+
+> **Arbitrary-length input is safe**: each model handles long audio internally
+> via built-in overlap-add (deepfilternet2/zipenhancer/flashsr) or per-frame
+> processing (rnnoise). No need to chunk on the caller side — pass the whole
+> recording.
 
 **Batch TTS** — `audiocpp_tts_batch` synthesizes N texts in one session
 (reuses a single `prepare()`, far cheaper than N separate `audiocpp_tts`

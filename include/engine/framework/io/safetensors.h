@@ -32,6 +32,13 @@ struct SafeTensorWriteEntry {
 };
 
 SafeTensorIndex load_safetensors_index(const std::filesystem::path & path);
+
+// Parse a safetensors index directly from an in-memory byte buffer (the full
+// file bytes: 8-byte header-length prefix + header JSON + tensor data). Used by
+// the embedded-asset path so a SafeTensorSource can be built without a file on
+// disk. source_path is set to "<embedded>" since there is no backing file.
+SafeTensorIndex load_safetensors_index_from_bytes(const std::byte * data, size_t size);
+
 void write_safetensors_file(
     const std::filesystem::path & path,
     const std::vector<SafeTensorWriteEntry> & entries);

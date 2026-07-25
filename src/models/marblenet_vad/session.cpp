@@ -1,5 +1,6 @@
 #include "engine/models/marblenet_vad/session.h"
 
+#include "engine/framework/assets/embedded.h"
 #include "engine/framework/assets/tensor_source.h"
 #include "engine/framework/debug/profiler.h"
 #include "engine/framework/debug/trace.h"
@@ -186,20 +187,37 @@ std::unique_ptr<MarbleNetVADLoadedModel> load_marblenet_vad_model(const runtime:
     if (request.config_id.has_value()) {
         throw std::runtime_error("MarbleNet VAD does not expose selectable config assets");
     }
-    const auto weights = discover_weight_assets(request);
-    const auto * selected_weight = runtime::select_named_asset(weights, request.weight_id, "weight");
-    const auto weight_path = selected_weight != nullptr ? selected_weight->path : resolve_weight_path(request.model_path);
-    const auto assets = resolve_marblenet_assets(weight_path);
+
     runtime::ModelMetadata metadata;
     metadata.family = "marblenet_vad";
-    metadata.variant = weight_path.stem().string();
-    metadata.description = "MarbleNet VAD loaded from safetensors weights.";
     metadata.weight_candidates = {"marblenet_vad.safetensors"};
     runtime::CapabilitySet capabilities;
     capabilities.supported_tasks = {
         {runtime::VoiceTaskKind::Vad, {runtime::RunMode::Offline}},
     };
     capabilities.supports_timestamps = true;
+
+    // Empty model_path => use the embedded assets (AUDIOCPP_EMBED_VAD_ASSETS).
+    // MarbleNet needs the safetensors + config json + labels txt together, so
+    // materialize all three into a per-process temp dir and load from there.
+    std::filesystem::path weight_path;
+    if (request.model_path.empty() && assets::embedded::has_embedded_asset("marblenet_vad")) {
+        const auto ckpt = assets::embedded::embedded_asset_file("marblenet_vad", "marblenet_vad.safetensors");
+        const auto cfg = assets::embedded::embedded_asset_file("marblenet_vad_config", "marblenet_vad_config.json");
+        const auto lbl = assets::embedded::embedded_asset_file("marblenet_vad_labels", "marblenet_vad_labels.txt");
+        if (ckpt.empty() || cfg.empty() || lbl.empty()) {
+            throw std::runtime_error("marblenet VAD: failed to materialize embedded assets");
+        }
+        weight_path = ckpt;
+        metadata.description = "MarbleNet VAD loaded from embedded weights.";
+    } else {
+        const auto weights = discover_weight_assets(request);
+        const auto * selected_weight = runtime::select_named_asset(weights, request.weight_id, "weight");
+        weight_path = selected_weight != nullptr ? selected_weight->path : resolve_weight_path(request.model_path);
+        metadata.description = "MarbleNet VAD loaded from safetensors weights.";
+    }
+    metadata.variant = weight_path.stem().string();
+    const auto assets = resolve_marblenet_assets(weight_path);
     return std::make_unique<MarbleNetVADLoadedModel>(
         std::move(metadata),
         std::move(capabilities),

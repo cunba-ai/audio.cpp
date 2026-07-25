@@ -1,5 +1,6 @@
 #include "engine/framework/runtime/registry.h"
 
+#include "engine/framework/assets/embedded.h"
 #include "engine/framework/debug/trace.h"
 #include "engine/framework/model_spec/package.h"
 #include "engine/framework/io/config.h"
@@ -177,7 +178,15 @@ std::unique_ptr<ILoadedVoiceModel> ModelRegistry::load(const std::filesystem::pa
 }
 
 void ModelRegistry::validate_request(const ModelLoadRequest & request) const {
-    if (!engine::io::is_existing_file(request.model_path) && !engine::io::is_existing_directory(request.model_path)) {
+    // Empty model_path is allowed for VAD families when their weights are
+    // embedded in the binary (AUDIOCPP_EMBED_VAD_ASSETS); the loader fetches
+    // the baked-in bytes. Skip the on-disk existence check in that case.
+    const bool embedded_path = request.model_path.empty()
+        && request.family_hint.has_value()
+        && assets::embedded::has_embedded_asset(*request.family_hint);
+    if (!embedded_path &&
+        !engine::io::is_existing_file(request.model_path) &&
+        !engine::io::is_existing_directory(request.model_path)) {
         throw std::runtime_error("model path does not exist: " + request.model_path.string());
     }
     if (request.family_hint.has_value() && !supports_family(*request.family_hint)) {

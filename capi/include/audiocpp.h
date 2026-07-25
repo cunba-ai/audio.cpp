@@ -74,10 +74,10 @@ typedef struct {
 /* ======================================================================== */
 
 enum {
-    AUDIOCPP_BACKEND_CPU    = 0,
-    AUDIOCPP_BACKEND_CUDA   = 1,  /**< NVIDIA CUDA / AMD ROCm (HIP) */
-    AUDIOCPP_BACKEND_VULKAN = 2,
-    AUDIOCPP_BACKEND_METAL  = 3,
+    AUDIOCPP_BACKEND_CPU    = 0,  /**< CPU (always available) */
+    AUDIOCPP_BACKEND_CUDA   = 1,  /**< NVIDIA CUDA (also matches AMD ROCm/HIP and MUSA builds) */
+    AUDIOCPP_BACKEND_VULKAN = 2,  /**< Vulkan (NVIDIA / AMD / Intel / Apple-over-MoltenVK) */
+    AUDIOCPP_BACKEND_METAL  = 3,  /**< Apple Metal (macOS/iOS only) */
     AUDIOCPP_BACKEND_SYCL   = 4,  /**< Intel oneAPI SYCL */
     AUDIOCPP_BACKEND_BEST   = 5,  /**< auto-select best available */
 };
@@ -390,6 +390,96 @@ AUDIOCPP_API audiocpp_vad_t *audiocpp_vad(
     const float *pcm,
     int64_t n_samples,
     int sample_rate,
+    const char *options_json,
+    audiocpp_error_t *err
+);
+
+/**
+ * Energy-based speech segmentation — NO model required.
+ *
+ * Splits the audio into roughly chunk_seconds-length segments, snapping each
+ * boundary to the lowest-RMS window near the nominal split point (so cuts land
+ * in silences, not mid-word). This is a pure signal-energy heuristic; it is
+ * faster than model VAD and needs no weights, but is less accurate on noisy
+ * input or quiet speech. Use it for quick pre-segmentation, or when you cannot
+ * ship a VAD model.
+ *
+ * Recognized options_json keys (all optional):
+ *   chunk_seconds        Target segment length in seconds (default 30.0).
+ *   boundary_seconds     How far before/after the nominal boundary to search
+ *                        for the lowest-energy split (default 2.0).
+ *   min_energy_seconds   RMS window length for the energy minimum search
+ *                        (default 0.1).
+ *
+ * @param pcm          PCM samples (mono f32, [-1.0, 1.0]).
+ * @param n_samples    Number of PCM samples.
+ * @param sample_rate  Sample rate (e.g. 16000).
+ * @param options_json Options (NULL = defaults).
+ * @param err          Optional error output.
+ * @return VAD result (segments with confidence=1.0; no model used), or NULL on
+ *         failure. Caller MUST free with audiocpp_free_vad.
+ */
+AUDIOCPP_API audiocpp_vad_t *audiocpp_vad_energy(
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    const char *options_json,
+    audiocpp_error_t *err
+);
+
+/* ======================================================================== */
+/* Audio enhancement: denoise / super-resolve (no model registry)            */
+/* ======================================================================== */
+
+/**
+ * Denoise / enhance audio with one of three models. NOT a model-registry task
+ * — these are standalone audio-utility models loaded directly.
+ *
+ * @param pcm          Input PCM (mono f32, [-1.0, 1.0]).
+ * @param n_samples    Number of input samples.
+ * @param sample_rate  Input sample rate (any; resampled to the model's expected
+ *                     rate internally: 48000 for deepfilternet2/rnnoise, 16000
+ *                     for zipenhancer).
+ * @param model_name   One of "deepfilternet2", "rnnoise", "zipenhancer".
+ * @param model_path   Model directory (or file for rnnoise). NULL = use the
+ *                     embedded asset (requires AUDIOCPP_EMBED_AUDIO_UTILITIES=ON).
+ * @param options_json Options JSON. Recognized keys:
+ *                       "backend": "cpu" | "cuda" | "vulkan" | "metal" | "sycl" (default cpu)
+ *                       "device":  device index (default 0)
+ * @param err          Optional error output.
+ * @return Denoised audio (mono f32), or NULL on failure. The output sample rate
+ *         matches the model's native rate (48k for deepfilternet2/rnnoise,
+ *         16k for zipenhancer) — check result->sample_rate. Caller MUST free
+ *         with audiocpp_free_audio.
+ */
+AUDIOCPP_API audiocpp_audio_t *audiocpp_denoise(
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    const char *model_name,
+    const char *model_path,
+    const char *options_json,
+    audiocpp_error_t *err
+);
+
+/**
+ * Super-resolve (bandwidth-expand) narrowband audio to wideband with flashsr.
+ *
+ * @param pcm          Input PCM (mono f32, [-1.0, 1.0]).
+ * @param n_samples    Number of input samples.
+ * @param sample_rate  Input sample rate (any; resampled to 16000 internally).
+ * @param model_path   flashsr model directory. NULL = use the embedded asset
+ *                     (requires AUDIOCPP_EMBED_AUDIO_UTILITIES=ON).
+ * @param options_json Options JSON (backend/device, same as audiocpp_denoise).
+ * @param err          Optional error output.
+ * @return Upsampled audio (mono f32 @ 48000 Hz), or NULL on failure.
+ *         Caller MUST free with audiocpp_free_audio.
+ */
+AUDIOCPP_API audiocpp_audio_t *audiocpp_super_resolve(
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    const char *model_path,
     const char *options_json,
     audiocpp_error_t *err
 );
@@ -774,9 +864,11 @@ AUDIOCPP_API void audiocpp_stream_free(audiocpp_stream_t *stream);
 
 /** Device type (mirrors ggml_backend_dev_type). */
 enum {
-    AUDIOCPP_DEVICE_CPU  = 0,  /**< CPU */
-    AUDIOCPP_DEVICE_GPU  = 1,  /**< Discrete GPU */
-    AUDIOCPP_DEVICE_IGPU = 2,  /**< Integrated GPU */
+    AUDIOCPP_DEVICE_CPU   = 0,  /**< CPU */
+    AUDIOCPP_DEVICE_GPU   = 1,  /**< Discrete GPU */
+    AUDIOCPP_DEVICE_IGPU  = 2,  /**< Integrated GPU */
+    AUDIOCPP_DEVICE_ACCEL = 3,  /**< Hardware accelerator (e.g. Apple Metal) */
+    AUDIOCPP_DEVICE_META  = 4,  /**< Meta device (ggml internal, rare) */
 };
 
 /** Information about a compute device.

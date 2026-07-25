@@ -23,6 +23,12 @@ public:
     [[nodiscard]] bool empty() const noexcept;
     void discard_range(size_t offset, size_t size) const noexcept;
 
+    // Build a blob that owns a copy of the given bytes (used by the embedded-
+    // asset path, where the source buffer may live in read-only .rodata).
+    [[nodiscard]] static BinaryBlob from_owned(std::vector<std::byte> owned) noexcept {
+        return BinaryBlob(std::move(owned));
+    }
+
 private:
     friend BinaryBlob read_binary_blob(const std::filesystem::path & path);
 

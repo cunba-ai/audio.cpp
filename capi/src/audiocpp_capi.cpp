@@ -43,10 +43,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <functional>
 #include <initializer_list>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <filesystem>
 
@@ -58,6 +61,9 @@ struct audiocpp_model {
     std::unique_ptr<engine::runtime::ILoadedVoiceModel> loaded_model;
     std::unique_ptr<engine::runtime::IVoiceTaskSession> session;
     engine::runtime::IOfflineVoiceTaskSession *offline = nullptr;
+    // Backend config the model was loaded with — reused when creating streaming
+    // sessions so they run on the same device the caller selected at load time.
+    engine::core::BackendConfig backend_config;
     // Progress callback (installed once, persists across runs until replaced/cleared)
     audiocpp_progress_fn progress_fn = nullptr;
     void *progress_user = nullptr;
@@ -192,6 +198,7 @@ audiocpp_model_t *audiocpp_load_model(
         result = new audiocpp_model{};
         result->loaded_model = std::move(loaded);
         result->session = std::move(session);
+        result->backend_config = opts.backend;
         result->offline = dynamic_cast<engine::runtime::IOfflineVoiceTaskSession *>(
             result->session.get());
         if (!result->offline) {
@@ -966,6 +973,39 @@ audiocpp_vad_t *audiocpp_vad_energy(
 /* ======================================================================== */
 namespace {
 
+// Process-level cache for loaded audio-utility models. Without this, every
+// audiocpp_denoise / audiocpp_super_resolve call reloads + re-uploads the full
+// model (8–11 MB weights + graph build), which dominates latency for repeated
+// calls. Keyed by (resolved path, backend type, device) so different configs
+// get distinct entries. Entries are shared_ptr so the model stays alive as long
+// as any caller holds it; the cache itself holds a weak_ptr so unloaded models
+// are reclaimed when the last reference drops.
+template <typename ModelType>
+std::shared_ptr<const ModelType> get_or_load_utility_model(
+    const std::string & cache_key,
+    std::function<std::shared_ptr<const ModelType>()> loader) {
+    static std::mutex mtx;
+    static std::unordered_map<std::string, std::weak_ptr<const ModelType>> cache;
+    std::lock_guard<std::mutex> lock(mtx);
+    if (auto it = cache.find(cache_key); it != cache.end()) {
+        if (auto existing = it->second.lock()) {
+            return existing;
+        }
+    }
+    auto loaded = loader();
+    cache[cache_key] = loaded;
+    return loaded;
+}
+
+// Build a cache key from the resolved model path + backend config.
+std::string utility_model_cache_key(
+    const std::filesystem::path & model_path,
+    const engine::core::BackendConfig & backend) {
+    return model_path.string() + "|" +
+           std::to_string(static_cast<int>(backend.type)) + ":" +
+           std::to_string(backend.device);
+}
+
 // Pack a mono PCM vector + sample rate into an owned audiocpp_audio_t (or
 // nullptr on OOM). Throws on allocation failure so AUDIOCPP_CATCH reports it.
 audiocpp_audio_t *pack_audio_output(const std::vector<float> & samples, int sample_rate) {
@@ -1061,9 +1101,12 @@ audiocpp_audio_t *audiocpp_denoise(
             if (dir.empty()) {
                 throw std::runtime_error("deepfilternet2: no model path and no embedded asset");
             }
-            auto model = engine::audio::DeepFilterNet2Model::load_from_directory(dir, backend);
+            auto model = get_or_load_utility_model<engine::audio::DeepFilterNet2Model>(
+                utility_model_cache_key(dir, backend),
+                [&]() { return std::make_shared<engine::audio::DeepFilterNet2Model>(
+                    engine::audio::DeepFilterNet2Model::load_from_directory(dir, backend)); });
             auto in48 = engine::audio::resample_mono_linear(input, sample_rate, 48000);
-            auto out = model.run_mono_48k(in48);
+            auto out = model->run_mono_48k(in48);
             result = pack_audio_output(out.samples, out.sample_rate);
         } else if (name == "rnnoise") {
             // rnnoise loads a single safetensors FILE (not a dir). utility_api
@@ -1073,9 +1116,12 @@ audiocpp_audio_t *audiocpp_denoise(
             if (file.empty()) {
                 throw std::runtime_error("rnnoise: no model path and no embedded asset");
             }
-            auto model = engine::audio::RnnoiseModel::load_from_safetensors(file, backend);
+            auto model = get_or_load_utility_model<engine::audio::RnnoiseModel>(
+                utility_model_cache_key(file, backend),
+                [&]() { return std::make_shared<engine::audio::RnnoiseModel>(
+                    engine::audio::RnnoiseModel::load_from_safetensors(file, backend)); });
             auto in48 = engine::audio::resample_mono_linear(input, sample_rate, 48000);
-            auto out = model.process_mono_48k(in48);
+            auto out = model->process_mono_48k(in48);
             result = pack_audio_output(out.samples, out.sample_rate);
         } else if (name == "zipenhancer") {
             const auto dir = resolve_utility_model_path(
@@ -1083,9 +1129,12 @@ audiocpp_audio_t *audiocpp_denoise(
             if (dir.empty()) {
                 throw std::runtime_error("zipenhancer: no model path and no embedded asset");
             }
-            auto model = engine::audio::ZipEnhancerModel::load_from_directory(dir, backend);
+            auto model = get_or_load_utility_model<engine::audio::ZipEnhancerModel>(
+                utility_model_cache_key(dir, backend),
+                [&]() { return std::make_shared<engine::audio::ZipEnhancerModel>(
+                    engine::audio::ZipEnhancerModel::load_from_directory(dir, backend)); });
             auto in16 = engine::audio::resample_mono_linear(input, sample_rate, 16000);
-            auto out = model.denoise_mono_16k(in16);
+            auto out = model->denoise_mono_16k(in16);
             result = pack_audio_output(out.samples, out.sample_rate);
         } else {
             throw std::runtime_error(
@@ -1120,8 +1169,11 @@ audiocpp_audio_t *audiocpp_super_resolve(
         }
         std::vector<float> input(pcm, pcm + static_cast<size_t>(n_samples));
         auto in16 = engine::audio::resample_mono_linear(input, sample_rate, 16000);
-        auto model = engine::audio::FlashSrModel::load_from_directory(dir, backend);
-        auto out = model.super_resolve_mono_16k(in16);
+        auto model = get_or_load_utility_model<engine::audio::FlashSrModel>(
+            utility_model_cache_key(dir, backend),
+            [&]() { return std::make_shared<engine::audio::FlashSrModel>(
+                engine::audio::FlashSrModel::load_from_directory(dir, backend)); });
+        auto out = model->super_resolve_mono_16k(in16);
         result = pack_audio_output(out.samples, out.sample_rate);
     });
     return result;
@@ -1491,15 +1543,19 @@ audiocpp_stream_t *audiocpp_stream_start(
         if (!model || !model->loaded_model) {
             throw std::runtime_error("invalid model handle");
         }
-        // Create a new streaming session
+        // preferred_chunk_samples is accepted for forward compatibility — the
+        // engine currently uses each model's own StreamingPolicy value. When a
+        // caller override path lands in the engine, plumb this through
+        // TaskRequest::options["preferred_audio_chunk_samples"].
+        (void)preferred_chunk_samples;
+        // Create a new streaming session on the same backend the model was
+        // loaded with (so streaming runs on the caller's chosen GPU, not CPU).
         engine::runtime::TaskSpec task_spec;
         task_spec.task = map_task(task);
         task_spec.mode = engine::runtime::RunMode::Streaming;
 
-        // Reuse the model's backend options
         engine::runtime::SessionOptions opts;
-        opts.backend.type = model->session->run_mode() == engine::runtime::RunMode::Streaming
-            ? opts.backend.type : opts.backend.type;  // just keep default
+        opts.backend = model->backend_config;
 
         auto session = model->loaded_model->create_task_session(task_spec, opts);
         if (!session) {

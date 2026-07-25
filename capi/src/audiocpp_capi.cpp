@@ -19,8 +19,6 @@
 #include "engine/framework/runtime/model.h"
 #include "engine/framework/runtime/registry.h"
 #include "engine/framework/runtime/session.h"
-#include "engine/framework/runtime/model.h"
-#include "engine/framework/audio/wav_reader.h"
 #include "engine/framework/audio/wav_writer.h"
 
 #include "ggml-backend.h"

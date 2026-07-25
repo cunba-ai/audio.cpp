@@ -31,10 +31,8 @@ std::string checkpoint_cache_key(const std::filesystem::path & checkpoint_path) 
     return ec ? checkpoint_path.lexically_normal().string() : canonical.string();
 }
 
-// Cache + loader for the embedded path. The cache key is a fixed sentinel so
-// repeated embedded loads reuse one SileroWeights instance.
-constexpr const char * kEmbeddedCacheKey = "<embedded:silero_vad>";
-
+// Load silero weights from the embedded asset bytes (requires
+// AUDIOCPP_EMBED_VAD_ASSETS=ON). Used by load_silero_weights_embedded().
 std::shared_ptr<const SileroWeights> load_silero_weights_from_embedded() {
     std::size_t size = 0;
     const auto * data = assets::embedded::embedded_asset_data("silero_vad", &size);
@@ -72,11 +70,7 @@ SileroAssetPaths resolve_silero_assets(const std::filesystem::path & model_path)
 std::shared_ptr<const SileroWeights> load_silero_weights_cached(const std::filesystem::path & checkpoint_path) {
     static std::mutex cache_mutex;
     static std::unordered_map<std::string, std::weak_ptr<const SileroWeights>> cache;
-
-    // Empty path => prefer the embedded asset (AUDIOCPP_EMBED_VAD_ASSETS). This
-    // lets callers pass an empty model_path to use the built-in VAD weights.
-    const bool use_embedded = checkpoint_path.empty();
-    const auto key = use_embedded ? std::string(kEmbeddedCacheKey) : checkpoint_cache_key(checkpoint_path);
+    const auto key = checkpoint_cache_key(checkpoint_path);
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (const auto it = cache.find(key); it != cache.end()) {
@@ -85,17 +79,7 @@ std::shared_ptr<const SileroWeights> load_silero_weights_cached(const std::files
             }
         }
     }
-    std::shared_ptr<const SileroWeights> loaded;
-    if (use_embedded) {
-        loaded = load_silero_weights_from_embedded();
-        if (loaded == nullptr) {
-            throw std::runtime_error(
-                "silero VAD: empty model path and no embedded asset available "
-                "(rebuild with -DAUDIOCPP_EMBED_VAD_ASSETS=ON or pass a model path)");
-        }
-    } else {
-        loaded = std::make_shared<const SileroWeights>(load_silero_weights(checkpoint_path));
-    }
+    auto loaded = std::make_shared<const SileroWeights>(load_silero_weights(checkpoint_path));
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         cache[key] = loaded;

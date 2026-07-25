@@ -1,5 +1,6 @@
 #include "engine/framework/assets/embedded.h"
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -128,9 +129,17 @@ const std::filesystem::path embedded_asset_file(std::string_view id, std::string
     }
     const auto dir = ensure_cache_dir();
     auto path = dir / std::string(dest_filename);
-    // Write atomically via a .tmp then rename to avoid partial reads.
+    // Write to a unique temp name (pid + counter) so concurrent first-loads of
+    // the same asset don't collide on the same .tmp file, then atomically rename.
+    static std::atomic<unsigned long long> counter{0};
     auto tmp = path;
-    tmp += ".tmp";
+    tmp += "." + std::to_string(
+#ifdef _WIN32
+        static_cast<long long>(GetCurrentProcessId())
+#else
+        static_cast<long long>(getpid())
+#endif
+    ) + "." + std::to_string(counter.fetch_add(1));
     {
         std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
         if (!out) {

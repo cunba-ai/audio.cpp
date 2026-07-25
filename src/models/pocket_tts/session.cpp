@@ -847,7 +847,9 @@ GenerationResult PocketTTSSession::generate(const GenerationRequest & request) {
     double acoustic_generate_ms = 0.0;
     double audio_decode_ms = 0.0;
 
-    for (const auto & chunk : chunks) {
+    emit_progress("pocket_tts", 0, static_cast<int64_t>(chunks.size()));
+    for (size_t i = 0; i < chunks.size(); ++i) {
+        const auto & chunk = chunks[i];
         TextConditioningResult text_state;
         text_conditioner_ms += engine::debug::measure_ms([&]() {
             text_state = text_conditioner_.prepare(manifest, weights_->host, chunk);
@@ -904,6 +906,7 @@ GenerationResult PocketTTSSession::generate(const GenerationRequest & request) {
                 graph_capacity_.mimi_use_full_sequence_path);
         });
         audio.insert(audio.end(), chunk_audio.begin(), chunk_audio.end());
+        emit_progress("pocket_tts", static_cast<int64_t>(i + 1), static_cast<int64_t>(chunks.size()));
     }
 
     const auto ended_inference = std::chrono::steady_clock::now();

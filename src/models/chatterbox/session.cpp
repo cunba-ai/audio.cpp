@@ -512,7 +512,9 @@ runtime::TaskResult ChatterboxSession::run_voice_cloning(const runtime::TaskRequ
     const auto chunk_requests = runtime::chunk_text_request(request, text_chunk_size);
     engine::debug::trace_log_scalar("chatterbox.text_chunk_size", text_chunk_size);
     engine::debug::trace_log_scalar("chatterbox.text_chunk_count", static_cast<int64_t>(chunk_requests.size()));
-    for (const auto & chunk_request : chunk_requests) {
+    emit_progress("chatterbox", 0, static_cast<int64_t>(chunk_requests.size()));
+    for (size_t i = 0; i < chunk_requests.size(); ++i) {
+        const auto & chunk_request = chunk_requests[i];
         auto outputs = component_->synthesize_voice_clone_with_conditionals(
             chunk_request.text_input->text,
             *cached_conditionals_,
@@ -523,6 +525,7 @@ runtime::TaskResult ChatterboxSession::run_voice_cloning(const runtime::TaskRequ
             1,
             std::move(outputs.waveform),
         });
+        emit_progress("chatterbox", static_cast<int64_t>(i + 1), static_cast<int64_t>(chunk_requests.size()));
     }
     result.audio_output = std::move(merged_audio);
     engine::debug::timing_log_scalar("session.wall_ms", engine::debug::elapsed_ms(wall_start));

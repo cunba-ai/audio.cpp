@@ -365,7 +365,10 @@ runtime::TaskResult HviskeASRSession::run(const runtime::TaskRequest & request) 
 
     std::vector<std::string> texts;
     texts.reserve(segments.size());
-    for (const auto & segment : segments) {
+    const int64_t progress_total = segments.size() <= 1 ? 1 : static_cast<int64_t>(segments.size());
+    emit_progress("hviske_asr", 0, progress_total);
+    for (size_t segment_index = 0; segment_index < segments.size(); ++segment_index) {
+        const auto & segment = segments[segment_index];
         const auto frontend_start = Clock::now();
         const auto features = frontend_.extract(segment.audio);
         const auto frontend_end = Clock::now();
@@ -379,6 +382,10 @@ runtime::TaskResult HviskeASRSession::run(const runtime::TaskRequest & request) 
         debug::timing_log_scalar("hviske_asr.segment.frontend_ms", engine::debug::elapsed_ms(frontend_start, frontend_end));
         debug::timing_log_scalar("hviske_asr.segment.encoder_ms", engine::debug::elapsed_ms(encoder_start, encoder_end));
         debug::timing_log_scalar("hviske_asr.segment.decoder_ms", engine::debug::elapsed_ms(decoder_start, decoder_end));
+        emit_progress("hviske_asr", static_cast<int64_t>(segment_index + 1), progress_total);
+    }
+    if (segments.empty()) {
+        emit_progress("hviske_asr", 1, 1);
     }
 
     const std::string separator = chunk_separator(language);

@@ -438,6 +438,7 @@ runtime::TaskResult FishAudioSession::run(const runtime::TaskRequest & request) 
     runtime::AudioBuffer merged_audio;
     std::optional<FishAudioCodes> reference_codes = std::nullopt;
     std::optional<FishAudioConversationTurn> previous_turn = std::nullopt;
+    emit_progress("fish_audio", 0, static_cast<int64_t>(chunk_requests.size()));
     for (size_t chunk_index = 0; chunk_index < chunk_requests.size(); ++chunk_index) {
         const auto & chunk_request = chunk_requests[chunk_index];
         auto fish_request = make_request(chunk_request);
@@ -449,6 +450,7 @@ runtime::TaskResult FishAudioSession::run(const runtime::TaskRequest & request) 
         if (chunk_requests.size() > 1) {
             previous_turn = FishAudioConversationTurn{fish_request.text, std::move(generated.codes)};
         }
+        emit_progress("fish_audio", static_cast<int64_t>(chunk_index + 1), static_cast<int64_t>(chunk_requests.size()));
     }
     runtime::TaskResult result;
     result.audio_output = std::move(merged_audio);

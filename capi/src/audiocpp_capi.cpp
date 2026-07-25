@@ -34,12 +34,14 @@
 #include "cJSON.h"
 // cJSON.h is under external/cJSON/ — add include path if needed
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 #include <filesystem>
 
 /* ======================================================================== */
@@ -50,6 +52,9 @@ struct audiocpp_model {
     std::unique_ptr<engine::runtime::ILoadedVoiceModel> loaded_model;
     std::unique_ptr<engine::runtime::IVoiceTaskSession> session;
     engine::runtime::IOfflineVoiceTaskSession *offline = nullptr;
+    // Progress callback (installed once, persists across runs until replaced/cleared)
+    audiocpp_progress_fn progress_fn = nullptr;
+    void *progress_user = nullptr;
 };
 
 struct audiocpp_stream {
@@ -81,10 +86,14 @@ static void set_error(audiocpp_error_t *err, int code, const char *msg) {
 }
 
 // Catches all C++ exceptions in a lambda; returns false on exception.
+// ProgressCanceled is reported with code 0 (cancellation is not a hard error)
+// so callers can distinguish "user cancelled" from real failures.
 #define AUDIOCPP_CATCH(err, body)                                  \
     do {                                                            \
         try {                                                       \
             body;                                                   \
+        } catch (const engine::runtime::ProgressCanceled &e) {     \
+            set_error((err), 0, e.what());                         \
         } catch (const std::exception &e) {                        \
             set_error((err), -1, e.what());                        \
         } catch (...) {                                             \
@@ -179,6 +188,39 @@ audiocpp_model_t *audiocpp_load_model(
 
 void audiocpp_free_model(audiocpp_model_t *model) {
     delete model;
+}
+
+/* ======================================================================== */
+/* Progress callback                                                         */
+/* ======================================================================== */
+
+// Install (or clear) the progress callback. The C function pointer + user data
+// are stored on the model handle, and a C++ adapter std::function is registered
+// on the session so it persists across runs until replaced.
+void audiocpp_set_progress_callback(audiocpp_model_t *model,
+                                    audiocpp_progress_fn fn,
+                                    void *user_data) {
+    if (!model) return;
+    model->progress_fn = fn;
+    model->progress_user = user_data;
+    if (!model->session) return;
+    if (fn == nullptr) {
+        model->session->set_progress_callback(nullptr);
+        return;
+    }
+    // Adapter: bridge C++ ProgressInfo -> C callback. Return false from C side
+    // (non-zero) to request cancellation; the std::function returning false
+    // makes emit_progress() throw ProgressCanceled inside run().
+    audiocpp_model *m = static_cast<audiocpp_model *>(model);
+    model->session->set_progress_callback(
+        [m](const engine::runtime::ProgressInfo & info) -> bool {
+            if (!m->progress_fn) return true;  // cleared mid-flight: continue
+            const char *stage = info.stage.empty() ? "" : info.stage.c_str();
+            int cont = m->progress_fn(info.progress, stage,
+                                      info.completed_units, info.total_units,
+                                      m->progress_user);
+            return cont == 0;  // 0 == continue
+        });
 }
 
 /* ======================================================================== */
@@ -337,6 +379,211 @@ audiocpp_audio_t *audiocpp_tts_with_voice_ref(
         std::memcpy(result->samples, buf.samples.data(), buf.samples.size() * sizeof(float));
     });
     return result;
+}
+
+/* ======================================================================== */
+/* Batch TTS                                                                 */
+/* ======================================================================== */
+
+audiocpp_audio_batch_t *audiocpp_tts_batch(
+    audiocpp_model_t *model,
+    const char *const *texts,
+    int n_texts,
+    const char *options_json,
+    int merge_mode,
+    audiocpp_error_t *err
+) {
+    audiocpp_audio_batch_t *result = nullptr;
+    AUDIOCPP_CATCH(err, {
+        if (!model || !model->offline) {
+            throw std::runtime_error("invalid model handle");
+        }
+        if (!texts || n_texts <= 0) {
+            throw std::runtime_error("n_texts must be > 0");
+        }
+
+        // Prepare once for the batch using the first text (the prepare contract
+        // is about graph capacity, which is sized per the worst chunk inside
+        // any text; using the first text is sufficient for capacity signaling
+        // — the engine re-prepares internally if a later chunk exceeds it).
+        engine::runtime::TaskRequest first_req;
+        first_req.text_input = engine::runtime::Transcript{};
+        first_req.text_input->text = texts[0] ? texts[0] : "";
+        apply_options(first_req, options_json);
+        model->session->prepare(engine::runtime::build_preparation_request(first_req));
+
+        // Suppress per-chunk progress during the batch so the installed
+        // callback only sees request-level progress. Save & restore the
+        // caller's callback around the whole batch.
+        audiocpp_progress_fn saved_fn = model->progress_fn;
+        void *saved_user = model->progress_user;
+        model->session->set_progress_callback(nullptr);
+
+        // Helper to emit request-level progress via the original C callback.
+        auto emit_request_progress = [&](int completed) {
+            if (!saved_fn) return;
+            float p = (n_texts > 0) ? static_cast<float>(completed) / static_cast<float>(n_texts) : 1.0f;
+            if (p < 0.0f) p = 0.0f;
+            if (p > 1.0f) p = 1.0f;
+            // Returning non-zero requests cancellation; we honor it by
+            // throwing ProgressCanceled, which unwinds the batch cleanly.
+            if (saved_fn(p, "batch_tts", completed, n_texts, saved_user) != 0) {
+                throw engine::runtime::ProgressCanceled("batch_tts canceled by progress callback");
+            }
+        };
+
+        // Synthesize each text independently. Individual failures do not abort
+        // the whole batch — they are recorded per-item (empty audio).
+        std::vector<engine::runtime::TaskResult> item_results(
+            static_cast<size_t>(n_texts));
+        int produced = 0;
+        for (int i = 0; i < n_texts; ++i) {
+            emit_request_progress(i);  // before each request
+            engine::runtime::TaskRequest req;
+            req.text_input = engine::runtime::Transcript{};
+            req.text_input->text = texts[i] ? texts[i] : "";
+            apply_options(req, options_json);
+            try {
+                item_results[static_cast<size_t>(i)] = model->offline->run(req);
+                if (item_results[static_cast<size_t>(i)].audio_output &&
+                    !item_results[static_cast<size_t>(i)].audio_output->samples.empty()) {
+                    ++produced;
+                }
+            } catch (...) {
+                // Leave this item's result empty; continue with the rest.
+            }
+        }
+        emit_request_progress(n_texts);  // final 100%
+
+        // Restore the caller's callback (even though we suppressed it, the
+        // model handle's stored fn/user are unchanged — but the SESSION's
+        // std::function was nulled, so reinstall the adapter if one was set).
+        if (saved_fn != nullptr) {
+            audiocpp_model *m = static_cast<audiocpp_model *>(model);
+            m->session->set_progress_callback(
+                [m](const engine::runtime::ProgressInfo & info) -> bool {
+                    if (!m->progress_fn) return true;
+                    const char *stage = info.stage.empty() ? "" : info.stage.c_str();
+                    return m->progress_fn(info.progress, stage,
+                                          info.completed_units, info.total_units,
+                                          m->progress_user) == 0;
+                });
+        }
+
+        if (produced == 0) {
+            throw std::runtime_error("batch TTS produced no audio output for any text");
+        }
+
+        result = new audiocpp_audio_batch_t{};
+        result->n_items = n_texts;
+        result->items = static_cast<audiocpp_audio_t *>(
+            calloc(static_cast<size_t>(n_texts), sizeof(audiocpp_audio_t)));
+        if (!result->items) {
+            delete result;
+            result = nullptr;
+            throw std::runtime_error("out of memory allocating batch items");
+        }
+
+        if (merge_mode == AUDIOCPP_BATCH_MERGE_CONCAT) {
+            // Concatenate all non-empty outputs into a single buffer, recording
+            // per-text [start,end) sample ranges.
+            result->chapter_starts = static_cast<int64_t *>(
+                calloc(static_cast<size_t>(n_texts), sizeof(int64_t)));
+            result->chapter_ends = static_cast<int64_t *>(
+                calloc(static_cast<size_t>(n_texts), sizeof(int64_t)));
+            if (!result->chapter_starts || !result->chapter_ends) {
+                free(result->chapter_starts);
+                free(result->chapter_ends);
+                free(result->items);
+                delete result;
+                result = nullptr;
+                throw std::runtime_error("out of memory allocating chapters");
+            }
+            std::vector<float> merged;
+            int sample_rate = 0;
+            int channels = 0;
+            for (int i = 0; i < n_texts; ++i) {
+                const auto &tr = item_results[static_cast<size_t>(i)];
+                result->chapter_starts[i] = static_cast<int64_t>(
+                    merged.size() / static_cast<size_t>(std::max(1, channels)));
+                if (!tr.audio_output || tr.audio_output->samples.empty()) {
+                    result->chapter_ends[i] = result->chapter_starts[i];
+                    continue;
+                }
+                const auto &buf = *tr.audio_output;
+                if (sample_rate == 0) {
+                    sample_rate = buf.sample_rate;
+                    channels = std::max(1, buf.channels);
+                }
+                if (buf.sample_rate != sample_rate || buf.channels != channels) {
+                    free(result->chapter_starts);
+                    free(result->chapter_ends);
+                    free(result->items);
+                    delete result;
+                    result = nullptr;
+                    throw std::runtime_error(
+                        "cannot concat batch audio with differing sample rates or channels");
+                }
+                merged.insert(merged.end(), buf.samples.begin(), buf.samples.end());
+                result->chapter_ends[i] = static_cast<int64_t>(
+                    merged.size() / static_cast<size_t>(channels));
+            }
+            // All texts' audio lives in items[0]; the rest stay empty.
+            result->items[0].n_samples = static_cast<int64_t>(merged.size());
+            result->items[0].sample_rate = sample_rate;
+            result->items[0].samples = static_cast<float *>(
+                malloc(merged.size() * sizeof(float)));
+            if (!result->items[0].samples) {
+                free(result->chapter_starts);
+                free(result->chapter_ends);
+                free(result->items);
+                delete result;
+                result = nullptr;
+                throw std::runtime_error("out of memory allocating merged audio");
+            }
+            std::memcpy(result->items[0].samples, merged.data(),
+                        merged.size() * sizeof(float));
+        } else {
+            // Independent: each item gets its own audio buffer (or stays empty).
+            for (int i = 0; i < n_texts; ++i) {
+                const auto &tr = item_results[static_cast<size_t>(i)];
+                if (!tr.audio_output || tr.audio_output->samples.empty()) {
+                    continue;  // leave samples=NULL, n_samples=0
+                }
+                const auto &buf = *tr.audio_output;
+                result->items[i].n_samples = static_cast<int64_t>(buf.samples.size());
+                result->items[i].sample_rate = buf.sample_rate;
+                result->items[i].samples = static_cast<float *>(
+                    malloc(buf.samples.size() * sizeof(float)));
+                if (!result->items[i].samples) {
+                    // Free everything allocated so far before throwing.
+                    for (int j = 0; j <= i; ++j) {
+                        free(result->items[j].samples);
+                    }
+                    free(result->items);
+                    delete result;
+                    result = nullptr;
+                    throw std::runtime_error("out of memory allocating audio output");
+                }
+                std::memcpy(result->items[i].samples, buf.samples.data(),
+                            buf.samples.size() * sizeof(float));
+            }
+        }
+    });
+    return result;
+}
+
+void audiocpp_free_audio_batch(audiocpp_audio_batch_t *batch) {
+    if (!batch) return;
+    if (batch->items) {
+        for (int i = 0; i < batch->n_items; ++i) {
+            free(batch->items[i].samples);
+        }
+        free(batch->items);
+    }
+    free(batch->chapter_starts);
+    free(batch->chapter_ends);
+    delete batch;
 }
 
 /* ======================================================================== */
@@ -1115,7 +1362,29 @@ int audiocpp_stream_finish(
         }
         auto task_result = stream->streaming->finish_stream();
 
-        // Clear the sink
+        // Some streaming ASR models (e.g. Nemotron) emit partial-text events to
+        // the sink only inside finalize(), which runs as part of finish_stream()
+        // ABOVE — after the caller's last stream_pull(). Those events would be
+        // stranded. Recover them: if the final TaskResult has no text but sink
+        // collected partial_text events, use the last partial as the result.
+        if ((!task_result.text_output || task_result.text_output->text.empty())
+            && out_text) {
+            for (const auto &ev : stream->sink_events) {
+                if (ev.partial_text.has_value() && !ev.partial_text->text.empty()) {
+                    if (!task_result.text_output) {
+                        task_result.text_output = engine::runtime::Transcript{};
+                    }
+                    task_result.text_output->text = ev.partial_text->text;
+                    if (task_result.text_output->language.empty()) {
+                        task_result.text_output->language = ev.partial_text->language;
+                    }
+                }
+            }
+        }
+
+        // Clear the sink (events are now folded into task_result or were already
+        // returned via stream_pull during the session).
+        stream->sink_events.clear();
         stream->streaming->set_stream_event_sink(nullptr);
 
         // Extract final text (for ASR)
@@ -1154,7 +1423,14 @@ audiocpp_stream_event_t *audiocpp_stream_pull(
         // For streaming TTS (supertonic/omnivoice/voxcpm2) this returns audio
         // chunks; for input=None models process_audio_chunk would throw, so
         // callers MUST use stream_pull (not stream_push) for TTS.
-        (void)timeout_ms;  // current impl: next_stream_event is synchronous/blocking internally
+        //
+        // timeout_ms is accepted for forward compatibility but the current
+        // implementation is synchronous: -1 / 0 / >0 all block until an event
+        // is available or the stream is exhausted. Reject any other (invalid)
+        // value explicitly so callers don't get silent wrong behavior.
+        if (timeout_ms != -1 && timeout_ms < 0) {
+            throw std::runtime_error("timeout_ms must be -1 or >= 0");
+        }
         auto maybe_ev = stream->streaming->next_stream_event();
         if (!maybe_ev) {
             // Stream exhausted (no more data) — result stays nullptr, not an error

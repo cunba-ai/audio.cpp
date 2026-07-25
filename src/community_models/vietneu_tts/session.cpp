@@ -389,7 +389,9 @@ runtime::TaskResult VietneuTTSSession::run(const runtime::TaskRequest & request)
     double talker_ms = 0.0;
     double decoder_ms = 0.0;
     runtime::AudioBuffer merged_audio;
-    for (const auto & chunk_request : chunk_requests) {
+    emit_progress("vietneu_tts", 0, static_cast<int64_t>(chunk_requests.size()));
+    for (size_t i = 0; i < chunk_requests.size(); ++i) {
+        const auto & chunk_request = chunk_requests[i];
         const VietneuTTSRequest qwen_request = make_request(chunk_request);
         const auto prompt_start = Clock::now();
         const auto & voice_prompt = resolve_voice_prompt(*qwen_request.voice_clone, prompt_builder);
@@ -408,6 +410,7 @@ runtime::TaskResult VietneuTTSSession::run(const runtime::TaskRequest & request)
             merged_audio,
             decode_moss_audio(codes.generated_codes, *moss_speech_decoder_));
         decoder_ms += engine::debug::elapsed_ms(decoder_start, Clock::now());
+        emit_progress("vietneu_tts", static_cast<int64_t>(i + 1), static_cast<int64_t>(chunk_requests.size()));
     }
     release_talker_cached_step_graph();
     runtime::TaskResult result;

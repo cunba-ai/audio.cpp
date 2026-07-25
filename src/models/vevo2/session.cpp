@@ -755,7 +755,9 @@ runtime::TaskResult Vevo2Session::run(const runtime::TaskRequest & request) {
     Vevo2TokenSequence cached_prosody_tokens;
     bool have_cached_prosody_tokens = false;
 
-    for (const auto & chunk_request : chunk_requests) {
+    emit_progress("vevo2", 0, static_cast<int64_t>(chunk_requests.size()));
+    for (size_t i = 0; i < chunk_requests.size(); ++i) {
+        const auto & chunk_request = chunk_requests[i];
         Vevo2TokenSequence prosody_tokens;
         Vevo2TokenSequence style_content_tokens;
         Vevo2TokenSequence generated_tokens;
@@ -864,6 +866,7 @@ runtime::TaskResult Vevo2Session::run(const runtime::TaskRequest & request) {
         } else {
             runtime::append_audio_buffer(merged_audio, chunk_audio);
         }
+        emit_progress("vevo2", static_cast<int64_t>(i + 1), static_cast<int64_t>(chunk_requests.size()));
     }
 
     if (have_audio_output) {

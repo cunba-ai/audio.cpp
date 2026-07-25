@@ -752,6 +752,9 @@ runtime::TaskResult OuteTTSSession::run(const runtime::TaskRequest &request) {
   int64_t released_cache_capacity = 0;
   int64_t retry_count = 0;
   size_t chunk_index = 0;
+  const int64_t initial_chunk_count =
+      static_cast<int64_t>(initial_chunk_requests.size());
+  emit_progress("outetts", 0, initial_chunk_count);
   while (!pending_chunks.empty()) {
     auto chunk_request = std::move(pending_chunks.front());
     pending_chunks.pop_front();
@@ -901,6 +904,7 @@ runtime::TaskResult OuteTTSSession::run(const runtime::TaskRequest &request) {
       release_ms += debug::elapsed_ms(release_start);
     }
     ++chunk_index;
+    emit_progress("outetts", static_cast<int64_t>(chunk_index), initial_chunk_count);
   }
 
   runtime::TaskResult result;

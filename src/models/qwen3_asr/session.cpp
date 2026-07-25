@@ -185,10 +185,14 @@ runtime::TaskResult Qwen3ASRSession::run(const runtime::TaskRequest & request) {
             empty.text_output = runtime::Transcript{"", request.text_input.has_value() ? request.text_input->language : ""};
             return empty;
         }
-        return run_single(make_request(request));
+        emit_progress("qwen3_asr", 0, 1);
+        auto single = run_single(make_request(request));
+        emit_progress("qwen3_asr", 1, 1);
+        return single;
     }
     const auto & audio = *request.audio_input;
     if (chunks.size() <= 1) {
+        emit_progress("qwen3_asr", 0, 1);
         auto item_request = request;
         item_request.audio_input = engine::audio::slice_audio_buffer(audio, chunks.front().source_span);
         auto item = run_single(make_request(item_request));
@@ -199,11 +203,14 @@ runtime::TaskResult Qwen3ASRSession::run(const runtime::TaskRequest & request) {
             chunks.front().source_span,
             chunks.front().keep_span);
         item.word_timestamps = std::move(merged_words);
+        emit_progress("qwen3_asr", 1, 1);
         return item;
     }
     runtime::TaskResult merged;
     std::ostringstream text;
-    for (const auto & chunk : chunks) {
+    emit_progress("qwen3_asr", 0, static_cast<int64_t>(chunks.size()));
+    for (size_t chunk_index = 0; chunk_index < chunks.size(); ++chunk_index) {
+        const auto & chunk = chunks[chunk_index];
         runtime::TaskRequest item_request = request;
         item_request.audio_input = engine::audio::slice_audio_buffer(audio, chunk.source_span);
         auto item = run_single(make_request(item_request));
@@ -223,6 +230,7 @@ runtime::TaskResult Qwen3ASRSession::run(const runtime::TaskRequest & request) {
             item.word_timestamps,
             chunk.source_span,
             chunk.keep_span);
+        emit_progress("qwen3_asr", static_cast<int64_t>(chunk_index + 1), static_cast<int64_t>(chunks.size()));
     }
     if (merged.text_output.has_value()) {
         if (request_return_timestamps(request) && !merged.word_timestamps.empty()) {

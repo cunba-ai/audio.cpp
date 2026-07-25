@@ -369,7 +369,9 @@ runtime::TaskResult MossTTSNanoSession::run(const runtime::TaskRequest & request
     int64_t chunk_index = 0;
     int64_t max_new_frames_hit_count = 0;
     runtime::AudioBuffer merged_audio;
-    for (const auto & chunk_request : chunk_requests) {
+    emit_progress("moss_tts_nano", 0, static_cast<int64_t>(chunk_requests.size()));
+    for (size_t i = 0; i < chunk_requests.size(); ++i) {
+        const auto & chunk_request = chunk_requests[i];
         const auto tts_request = make_request(chunk_request);
         const MossTTSNanoAudioCodes * reference_codes = nullptr;
         const auto audio_tokenizer_encode_start = Clock::now();
@@ -407,6 +409,7 @@ runtime::TaskResult MossTTSNanoSession::run(const runtime::TaskRequest & request
                 tts_request.generation.active_codebooks));
         audio_tokenizer_decode_ms += engine::debug::elapsed_ms(audio_tokenizer_decode_start, Clock::now());
         ++chunk_index;
+        emit_progress("moss_tts_nano", static_cast<int64_t>(i + 1), static_cast<int64_t>(chunk_requests.size()));
     }
 
     runtime::TaskResult result;

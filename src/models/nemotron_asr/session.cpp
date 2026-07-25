@@ -274,6 +274,7 @@ runtime::TaskResult NemotronASROfflineSession::run(const runtime::TaskRequest & 
     if (streaming) {
         throw std::runtime_error("Nemotron ASR streaming request requires a streaming session");
     }
+    emit_progress("nemotron_asr", 0, 1);
     debug::timing_log_scalar("nemotron_asr.request_config_ms", engine::debug::elapsed_ms(config_start, Clock::now()));
     debug::trace_log_scalar("nemotron_asr.prompt_id", prompt_id);
     debug::trace_log_scalar("nemotron_asr.lookahead_tokens", lookahead);
@@ -299,6 +300,7 @@ runtime::TaskResult NemotronASROfflineSession::run(const runtime::TaskRequest & 
     result.text_output = runtime::Transcript{decoded.text, language};
     result.word_timestamps = std::move(decoded.token_timestamps);
     debug::timing_log_scalar("session.wall_ms", engine::debug::elapsed_ms(wall_start, Clock::now()));
+    emit_progress("nemotron_asr", 1, 1);
     return result;
 }
 

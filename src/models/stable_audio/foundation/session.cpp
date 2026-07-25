@@ -263,6 +263,7 @@ runtime::TaskResult FoundationSession::run(const runtime::TaskRequest & request)
         throw std::runtime_error("Stable Audio Foundation supports only the gen task");
     }
     const auto wall_start = Clock::now();
+    emit_progress("stable_audio", 0, 1);
     const FoundationRequest parsed = parse_foundation_request(request, assets_->config);
     if (parsed.audio.inpaint_audio.has_value() || !parsed.audio.inpaint_regions.empty()) {
         throw std::runtime_error("Stable Audio Foundation inpaint conditioning is not declared by this model config");
@@ -338,6 +339,7 @@ runtime::TaskResult FoundationSession::run(const runtime::TaskRequest & request)
             {},
         });
     }
+    emit_progress("stable_audio", 1, 1);
     return out;
 }
 

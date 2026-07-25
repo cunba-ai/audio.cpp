@@ -172,8 +172,10 @@ runtime::TaskResult SileroVADSession::run(const runtime::TaskRequest & request) 
     }
     const auto config = silero_config_from_options(request.options, &default_config_);
     const auto wall_start = std::chrono::steady_clock::now();
+    emit_progress("silero_vad", 0, 1);
     auto result = runtime_.run_offline(*request.audio_input, config);
     engine::debug::timing_log_scalar("session.wall_ms", engine::debug::elapsed_ms(wall_start));
+    emit_progress("silero_vad", 1, 1);
     return result;
 }
 

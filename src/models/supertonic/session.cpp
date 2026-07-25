@@ -112,8 +112,11 @@ runtime::TaskResult SupertonicSession::run(const runtime::TaskRequest & request)
     const auto chunk_requests = build_chunk_requests(request);
     runtime::TaskResult result;
     runtime::AudioBuffer merged_audio;
-    for (const auto & chunk_request : chunk_requests) {
+    emit_progress("supertonic", 0, static_cast<int64_t>(chunk_requests.size()));
+    for (size_t i = 0; i < chunk_requests.size(); ++i) {
+        const auto & chunk_request = chunk_requests[i];
         runtime::append_audio_buffer(merged_audio, synthesize_chunk(chunk_request));
+        emit_progress("supertonic", static_cast<int64_t>(i + 1), static_cast<int64_t>(chunk_requests.size()));
     }
     result.audio_output = std::move(merged_audio);
     return result;

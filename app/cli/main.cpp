@@ -60,6 +60,7 @@ void print_task_list_help() {
         << "    --load-option key=value\n"
         << "    --session-option key=value\n"
         << "    --request-option key=value\n"
+        << "    --show-progress  Print chunk-level progress ([family] NN% i/total) during offline run\n"
         << "  Batch:\n"
         << "    --request-sequence <json>  Run JSON requests in one offline session\n"
         << "    --batch-text-file <txt>  Run one offline request per non-empty line\n"
@@ -745,6 +746,19 @@ int audiocpp_cli_main(int argc, char ** argv) {
             if (offline == nullptr) {
                 throw std::runtime_error("selected task session does not support offline execution");
             }
+            // --show-progress: install a printing progress callback so the user
+            // can watch chunked TTS/ASR advance. Callbacks fire synchronously on
+            // this thread from inside run(); a no-op when the flag is absent.
+            if (has_arg(argc, argv, "--show-progress")) {
+                std::string family = session->family();
+                session->set_progress_callback(
+                    [family](const engine::runtime::ProgressInfo & info) -> bool {
+                        std::cerr << "  [" << family << "] "
+                                  << static_cast<int>(info.progress * 100.0f) << "% ("
+                                  << info.completed_units << "/" << info.total_units << ")\n";
+                        return true;  // never cancel from the CLI
+                    });
+            }
             engine::runtime::TaskRequest base_request =
                 optional_path_arg(argc, argv, "--request-sequence").has_value()
                     ? engine::runtime::TaskRequest{}
@@ -823,6 +837,18 @@ int audiocpp_cli_main(int argc, char ** argv) {
             auto * offline = dynamic_cast<engine::runtime::IOfflineVoiceTaskSession *>(session.get());
             if (offline == nullptr) {
                 throw std::runtime_error("selected task session does not support offline execution");
+            }
+            // --show-progress: install a printing progress callback. Fires
+            // synchronously on this thread from inside run(); no-op otherwise.
+            if (has_arg(argc, argv, "--show-progress")) {
+                std::string family = session->family();
+                session->set_progress_callback(
+                    [family](const engine::runtime::ProgressInfo & info) -> bool {
+                        std::cerr << "  [" << family << "] "
+                                  << static_cast<int>(info.progress * 100.0f) << "% ("
+                                  << info.completed_units << "/" << info.total_units << ")\n";
+                        return true;  // never cancel from the CLI
+                    });
             }
             const auto result = offline->run(request);
             std::cout << "family=" << session->family() << "\n";

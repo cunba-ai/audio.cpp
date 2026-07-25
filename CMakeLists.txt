@@ -675,7 +675,8 @@ endif()
 
 # Embed the audio-enhancement models (deepfilternet2/rnnoise/zipenhancer/flashsr)
 # into the binary so denoise/super-resolve work with no external files. These are
-# larger than VAD weights (~40MB total), so this is a separate option from VAD.
+# larger than VAD weights (~28MB total: deepfilternet2 8.9 + rnnoise 11.0 +
+# zipenhancer 7.9 + flashsr 0.3), so this is a separate option from VAD.
 # The loaders expect files on disk, so the C wrapper materializes the embedded
 # bytes to a per-process temp dir on first use.
 option(AUDIOCPP_EMBED_AUDIO_UTILITIES

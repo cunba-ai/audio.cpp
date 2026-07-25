@@ -32,7 +32,7 @@ Each zip contains:
   `audiocpp_load_model(NULL, "silero_vad", ...)` loads from the embedded bytes.
   Off by default — without it, ship `assets/framework/models/{silero,marblenet}_vad/`.
 - `AUDIOCPP_EMBED_AUDIO_UTILITIES=ON` — bake deepfilternet2/rnnoise/zipenhancer/
-  flashsr weights into the binary (+~40 MB) so `audiocpp_denoise`/
+  flashsr weights into the binary (+~28 MB) so `audiocpp_denoise`/
   `audiocpp_super_resolve` work with `model_path = NULL`. Off by default —
   without it, ship `assets/framework/audio_utilities/` and pass the model dir.
 
@@ -234,7 +234,7 @@ model_path, options, err)` runs one of three standalone audio-enhancement models
 (`deepfilternet2` / `rnnoise` / `zipenhancer`) to reduce noise. `audiocpp_super_
 resolve(pcm, n, rate, model_path, options, err)` upsamples narrowband audio to
 wideband via `flashsr` (16k → 48k). These are NOT model-registry tasks — they
-load directly. With `AUDIOCPP_EMBED_AUDIO_UTILITIES=ON` (~40 MB), pass
+load directly. With `AUDIOCPP_EMBED_AUDIO_UTILITIES=ON` (~28 MB: deepfilternet2 8.9 + rnnoise 11.0 + zipenhancer 7.9 + flashsr 0.3), pass
 `model_path = NULL` to use baked-in weights; otherwise pass the model directory
 (rnnoise takes a file path). The input sample rate is arbitrary (resampled to the
 model's native rate internally). `options_json` keys: `backend` ("cpu"|"cuda"|

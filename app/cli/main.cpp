@@ -60,6 +60,7 @@ void print_task_list_help() {
         << "    --load-option key=value\n"
         << "    --session-option key=value\n"
         << "    --request-option key=value\n"
+        << "    --show-progress  Print chunk-level progress ([family] NN% i/total) during offline run\n"
         << "  Batch:\n"
         << "    --request-sequence <json>  Run JSON requests in one offline session\n"
         << "    --batch-text-file <txt>  Run one offline request per non-empty line\n"

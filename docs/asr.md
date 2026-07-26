@@ -255,12 +255,13 @@ audiocpp_cli --task asr --family vibevoice_asr --model models/VibeVoice-ASR --ba
 
 ## Voxtral Realtime
 
-Voxtral Realtime is a Mistral realtime ASR model with offline and streaming sessions. The model manager installs the Q8_0 standalone GGUF package by default; native Hugging Face directories and other standalone GGUF variants can also be used when provided directly.
+Voxtral Realtime is a Mistral realtime ASR model with offline and streaming sessions. The model manager installs the Q8_0 standalone GGUF package by default; native Hugging Face directories and other standalone GGUF variants can also be used when provided directly. A Q4_K GGUF package is also available for lower memory use and faster CUDA runs; in a quick path check its transcripts matched Q8_0 except for one capitalization-only difference.
 
 | Field | Value |
 |---|---|
 | Family | `voxtral_realtime` |
 | Model path | `models/Voxtral-Mini-4B-Realtime-2602-GGUF/voxtral-mini-4b-realtime-2602-q8_0.gguf` when installed through the model manager |
+| GGUF variants | `bf16`, `q8_0`, `q4_k` |
 | Task | `asr` |
 | Modes | `offline`, `streaming` |
 | Output | Transcription text |

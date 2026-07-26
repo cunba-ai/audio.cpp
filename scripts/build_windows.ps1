@@ -18,7 +18,7 @@ param(
 )
 
 Set-StrictMode -Version Latest
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"  # let native command stderr (e.g. cmake warnings) flow without aborting the script
 
 function Invoke-Checked {
     param(

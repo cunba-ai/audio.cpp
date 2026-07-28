@@ -1563,6 +1563,13 @@ if (ENGINE_BUILD_TESTS)
         COMMAND wav_reader_test
     )
 
+    add_engine_unittest(backend_weight_store_commit_test tests/unittests/test_backend_weight_store_commit.cpp)
+
+    add_test(
+        NAME backend_weight_store_commit_test
+        COMMAND backend_weight_store_commit_test
+    )
+
     add_engine_unittest(audio_chunking_test tests/unittests/test_audio_chunking.cpp)
 
     add_test(

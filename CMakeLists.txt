@@ -196,6 +196,15 @@ function(audiocpp_configure_runtime_object target_name)
             target_compile_options(${target_name} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/openmp:experimental>)
         endif()
     endif()
+    if (ENGINE_ENABLE_CUDA)
+        # 调用点源文件(torch_random.cpp / istft_graph.cpp)在 OBJECT 库(engine_core +
+        # engine_model_*)里,OBJECT 库的编译定义不跨 target 传播。必须在这里给调用方
+        # 也定义这些宏,否则 #ifdef ENGINE_HAS_CUDA_* 走 #else 抛错分支,从不引用 CUDA
+        # kernel,链接器死代码消除把 kernel 符号从 audiocpp.dll 丢掉。
+        target_compile_definitions(${target_name} PUBLIC
+            ENGINE_HAS_CUDA_ISTFT=1
+            ENGINE_HAS_CUDA_TORCH_RANDOM=1)
+    endif()
 endfunction()
 
 function(audiocpp_add_model target_name)

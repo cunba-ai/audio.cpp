@@ -64,6 +64,7 @@ MioTTSConfig parse_config(const assets::ResourceBundle & resources) {
 
 std::shared_ptr<const MioTTSAssets> load_miotts_assets(const std::filesystem::path & model_path) {
     auto assets = std::make_shared<MioTTSAssets>();
+    assets->source_model_path = model_path;
     assets->resources = engine::model_spec::load_resource_bundle(
         model_path,
         engine::model_spec::default_spec_path("miotts"));

@@ -2,6 +2,7 @@
 
 #include "engine/framework/audio/dsp.h"
 #include "engine/framework/debug/profiler.h"
+#include "engine/framework/io/filesystem.h"
 #include "engine/framework/modules/speech_encoders/wavlm_encoder.h"
 #include "engine/framework/runtime/options.h"
 #include "engine/framework/text/chunking.h"
@@ -81,20 +82,32 @@ void validate_matmul_weight_storage(engine::assets::TensorStorageType storage_ty
     throw std::runtime_error(std::string(option_name) + " supports only native, f32, f16, bf16, and q8_0");
 }
 
-std::filesystem::path default_codec_model_path(const std::filesystem::path & miotts_root) {
-    const auto sibling = miotts_root.parent_path() / "MioCodec-25Hz-44.1kHz-v2";
-    return sibling;
+// Sibling-dependency defaults resolve relative to the *original* model path the
+// caller supplied (a GGUF file or model dir), NOT to ResourceBundle::model_root.
+// When the GGUF embeds sidecar files, materialize_gguf_sidecars() repoints
+// model_root at an audiocpp-gguf temp dir, so model_root.parent_path() would land
+// under %TEMP% and never find the sibling models. source_model_path is the
+// pre-materialization path captured in load_miotts_assets.
+std::filesystem::path default_codec_model_path(const std::filesystem::path & source_model_path) {
+    return source_model_path.parent_path() / "MioCodec-25Hz-44.1kHz-v2";
 }
 
-std::filesystem::path default_asr_model_path(const std::filesystem::path & miotts_root) {
-    return miotts_root.parent_path() / "Qwen3-ASR-0.6B";
+std::filesystem::path default_asr_model_path(const std::filesystem::path & source_model_path) {
+    return source_model_path.parent_path() / "Qwen3-ASR-0.6B";
 }
 
 std::filesystem::path resolve_codec_model_path(const runtime::SessionOptions & options, const MioTTSAssets & assets) {
     if (const auto value = runtime::find_option(options.options, {"miotts.codec_model_path"})) {
         return std::filesystem::path(*value);
     }
-    return default_codec_model_path(assets.resources.model_root());
+    const auto resolved = default_codec_model_path(assets.source_model_path);
+    if (!engine::io::is_existing_file(resolved) && !engine::io::is_existing_directory(resolved)) {
+        throw std::runtime_error(
+            "MioTTS requires a MioCodec model. The default sibling path '" + resolved.string() +
+            "' does not exist. Provide it with the 'miotts.codec_model_path' option "
+            "(a MioCodec GGUF file or directory, e.g. models/MioCodec-25Hz-44.1kHz-v2-GGUF/miocodec-25hz-44khz-v2-q8_0.gguf).");
+    }
+    return resolved;
 }
 
 std::filesystem::path resolve_best_of_n_asr_model_path(
@@ -105,7 +118,14 @@ std::filesystem::path resolve_best_of_n_asr_model_path(
             {"miotts.best_of_n_asr_model_path"})) {
         return std::filesystem::path(*value);
     }
-    return default_asr_model_path(assets.resources.model_root());
+    const auto resolved = default_asr_model_path(assets.source_model_path);
+    if (!engine::io::is_existing_file(resolved) && !engine::io::is_existing_directory(resolved)) {
+        throw std::runtime_error(
+            "MioTTS best-of-N scoring requires a Qwen3-ASR model. The default sibling path '" +
+            resolved.string() + "' does not exist. Provide it with the "
+            "'miotts.best_of_n_asr_model_path' option (a Qwen3-ASR GGUF file or directory).");
+    }
+    return resolved;
 }
 
 std::string normalized_best_of_n_language(std::string value) {

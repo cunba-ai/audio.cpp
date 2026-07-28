@@ -42,6 +42,13 @@ struct MioTTSAssets {
     assets::ResourceBundle resources;
     MioTTSConfig config;
     std::shared_ptr<const assets::TensorSource> model_weights;
+    // The model path the caller passed in (the GGUF file or model directory), kept
+    // verbatim before any sidecar materialization. Sibling-dependency defaults
+    // (MioCodec, Qwen3-ASR) resolve relative to this, not to the ResourceBundle's
+    // model_root, which points at the audiocpp-gguf temp dir when the GGUF embeds
+    // sidecar files (see assets::materialize_gguf_sidecars). Without this, defaults
+    // land under %TEMP%/audiocpp-gguf/... and never find the sibling models.
+    std::filesystem::path source_model_path;
 };
 
 std::shared_ptr<const MioTTSAssets> load_miotts_assets(const std::filesystem::path & model_path);

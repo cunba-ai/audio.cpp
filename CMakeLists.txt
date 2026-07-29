@@ -53,6 +53,7 @@ if (NOT MSVC)
 endif()
 
 set(ENGINE_DEFAULT_ENABLE_CUDA OFF)
+set(ENGINE_DEFAULT_ENABLE_HIP OFF)
 set(ENGINE_DEFAULT_ENABLE_VULKAN OFF)
 set(ENGINE_DEFAULT_ENABLE_METAL OFF)
 set(ENGINE_DEFAULT_ENABLE_LLAMAFILE ON)
@@ -63,6 +64,9 @@ if (APPLE)
 endif()
 if (DEFINED GGML_CUDA)
     set(ENGINE_DEFAULT_ENABLE_CUDA ${GGML_CUDA})
+endif()
+if (DEFINED GGML_HIP)
+    set(ENGINE_DEFAULT_ENABLE_HIP ${GGML_HIP})
 endif()
 if (DEFINED GGML_VULKAN)
     set(ENGINE_DEFAULT_ENABLE_VULKAN ${GGML_VULKAN})
@@ -78,6 +82,7 @@ if (DEFINED GGML_CUDA_GRAPHS)
 endif()
 
 option(ENGINE_ENABLE_CUDA "Build ggml with CUDA backend support" ${ENGINE_DEFAULT_ENABLE_CUDA})
+option(ENGINE_ENABLE_HIP "Build ggml with HIP/ROCm backend support" ${ENGINE_DEFAULT_ENABLE_HIP})
 option(ENGINE_ENABLE_VULKAN "Build ggml with Vulkan backend support" ${ENGINE_DEFAULT_ENABLE_VULKAN})
 option(ENGINE_ENABLE_METAL "Build ggml with Metal backend support" ${ENGINE_DEFAULT_ENABLE_METAL})
 option(ENGINE_ENABLE_LLAMAFILE "Build ggml with llamafile SGEMM support" ${ENGINE_DEFAULT_ENABLE_LLAMAFILE})
@@ -100,7 +105,16 @@ set(AUDIOCPP_GGML_SOURCE_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/external/ggml"
     CACHE PATH "ggml source tree to build with AudioCPP")
 
-if (ENGINE_ENABLE_CUDA)
+# HIP compiles ggml's CUDA backend sources as HIP code, so the two options drive the
+# same ggml backend and cannot coexist: enabling both starts CUDA backend setup and
+# HIP backend setup in the same configure, which fails in confusing ways downstream.
+if (ENGINE_ENABLE_CUDA AND ENGINE_ENABLE_HIP)
+    message(FATAL_ERROR
+        "ENGINE_ENABLE_CUDA and ENGINE_ENABLE_HIP are mutually exclusive; "
+        "configure with exactly one of them (e.g. -DENGINE_ENABLE_CUDA=OFF -DENGINE_ENABLE_HIP=ON)")
+endif()
+
+if (ENGINE_ENABLE_CUDA AND NOT ENGINE_ENABLE_HIP)
     enable_language(CUDA)
     # 12.0 is a floor, not a target: any 12.x or 13.x works (the Dockerfile pins
     # 12.9.0, and docs/build/windows.md ships a CUDA 13 package). The minimum is
@@ -141,10 +155,14 @@ set(GGML_BUILD_TESTS OFF CACHE BOOL "Do not build upstream tests" FORCE)
 set(GGML_ALL_WARNINGS OFF CACHE BOOL "Keep upstream warnings quiet in this sample" FORCE)
 set(GGML_CCACHE OFF CACHE BOOL "Do not probe for ccache in this local setup" FORCE)
 set(GGML_CUDA ${ENGINE_ENABLE_CUDA} CACHE BOOL "Build ggml with CUDA backend support" FORCE)
+set(GGML_HIP ${ENGINE_ENABLE_HIP} CACHE BOOL "Build ggml with HIP backend support" FORCE)
 set(GGML_VULKAN ${ENGINE_ENABLE_VULKAN} CACHE BOOL "Build ggml with Vulkan backend support" FORCE)
 set(GGML_METAL ${ENGINE_ENABLE_METAL} CACHE BOOL "Build ggml with Metal backend support" FORCE)
 set(GGML_LLAMAFILE ${ENGINE_ENABLE_LLAMAFILE} CACHE BOOL "Build ggml with llamafile SGEMM support" FORCE)
 set(GGML_CUDA_GRAPHS ${ENGINE_ENABLE_CUDA_GRAPHS} CACHE BOOL "Enable ggml CUDA graphs support" FORCE)
+# HIP graphs are controlled by a separate upstream option that defaults to ON;
+# keep it in sync so ENGINE_ENABLE_CUDA_GRAPHS=OFF also disables graphs on HIP builds
+set(GGML_HIP_GRAPHS ${ENGINE_ENABLE_CUDA_GRAPHS} CACHE BOOL "Enable ggml HIP graphs support" FORCE)
 
 set(SPM_ENABLE_SHARED OFF CACHE BOOL "Build sentencepiece shared libs" FORCE)
 set(SPM_BUILD_TEST OFF CACHE BOOL "Do not build sentencepiece tests" FORCE)
@@ -362,6 +380,7 @@ audiocpp_add_model(roformer
         src/models/roformer/session.cpp
     INCLUDES
         engine/models/roformer/loader.h
+        engine/models/roformer/session.h
     LOADERS
         engine::models::roformer::make_mel_band_roformer_loader
         engine::models::roformer::make_bs_roformer_loader
@@ -407,18 +426,32 @@ audiocpp_add_model(glm_tts
         src/community_models/glm_tts/assets.cpp
         src/community_models/glm_tts/flow.cpp
         src/community_models/glm_tts/frontend.cpp
-        src/community_models/glm_tts/loader.cpp
         src/community_models/glm_tts/llama.cpp
         src/community_models/glm_tts/session.cpp
         src/community_models/glm_tts/prompt.cpp
         src/community_models/glm_tts/speech_tokenizer.cpp
         src/community_models/glm_tts/tokenizer_text.cpp
     INCLUDES
-        engine/community_models/glm_tts/loader.h
+        engine/community_models/glm_tts/session.h
     LOADERS
         engine::models::glm_tts::make_glm_tts_loader
     DEPENDS
         outetts
+)
+
+audiocpp_add_model(kroko_asr
+    SOURCES
+        src/community_models/kroko_asr/assets.cpp
+        src/community_models/kroko_asr/decoder.cpp
+        src/community_models/kroko_asr/encoder.cpp
+        src/community_models/kroko_asr/frontend.cpp
+        src/community_models/kroko_asr/session.cpp
+        src/community_models/kroko_asr/tokenizer.cpp
+        src/community_models/kroko_asr/zipformer.cpp
+    INCLUDES
+        engine/community_models/kroko_asr/session.h
+    LOADERS
+        engine::models::kroko_asr::make_kroko_asr_loader
 )
 
 audiocpp_add_model(outetts
@@ -426,11 +459,10 @@ audiocpp_add_model(outetts
         src/community_models/outetts/assets.cpp
         src/community_models/outetts/dac.cpp
         src/community_models/outetts/llama.cpp
-        src/community_models/outetts/loader.cpp
         src/community_models/outetts/session.cpp
         src/community_models/outetts/tokenizer.cpp
     INCLUDES
-        engine/community_models/outetts/loader.h
+        engine/community_models/outetts/session.h
     LOADERS
         engine::models::outetts::make_outetts_loader
     DEPENDS
@@ -451,6 +483,25 @@ audiocpp_add_model(parakeet_tdt
     LOADERS
         engine::community_models::parakeet_tdt::make_parakeet_tdt_loader
 )
+
+audiocpp_add_model(inflect_v2
+    SOURCES
+        src/community_models/inflect_v2/assets.cpp
+        src/community_models/inflect_v2/frontend.cpp
+        src/community_models/inflect_v2/runtime.cpp
+        src/community_models/inflect_v2/session.cpp
+    INCLUDES
+        engine/community_models/inflect_v2/session.h
+    LOADERS
+        engine::models::inflect_v2::make_inflect_v2_loader
+)
+
+if (MSVC)
+    set_source_files_properties(
+        src/community_models/inflect_v2/frontend.cpp
+        PROPERTIES COMPILE_OPTIONS /utf-8
+    )
+endif()
 
 audiocpp_add_model(pocket_tts
     SOURCES
@@ -1208,7 +1259,11 @@ if (ENGINE_ENABLE_OPENMP)
     endif()
 endif()
 
-if (ENGINE_ENABLE_CUDA)
+if (MSVC)
+    target_compile_options(engine_runtime PRIVATE /utf-8)
+endif()
+
+if (ENGINE_ENABLE_CUDA AND NOT ENGINE_ENABLE_HIP)
     target_sources(engine_runtime PRIVATE
         src/framework/audio/istft_cuda_runtime.cu
         src/framework/sampling/torch_random_cuda_runtime.cu
@@ -1225,6 +1280,7 @@ if (ENGINE_ENABLE_CUDA)
     else()
         set_target_properties(engine_runtime PROPERTIES CUDA_ARCHITECTURES native)
     endif()
+    target_compile_definitions(engine_core PRIVATE ENGINE_HAS_CUDA_ISTFT=1 ENGINE_HAS_CUDA_TORCH_RANDOM=1)
     target_compile_definitions(engine_runtime PUBLIC ENGINE_HAS_CUDA_ISTFT=1 ENGINE_HAS_CUDA_TORCH_RANDOM=1)
     target_link_libraries(engine_runtime PRIVATE CUDA::cudart CUDA::cufft)
 endif()
@@ -1359,6 +1415,14 @@ add_executable(audiocpp_cli
 )
 
 target_link_libraries(audiocpp_cli PRIVATE engine_runtime ggml)
+# MinGW selects the wmain() entry point only when linked with -municode;
+# without it the CLI fails to link (undefined reference / ld error 5).
+# MSVC detects wmain natively, so this is MinGW-only. Link option only:
+# -municode also defines UNICODE at compile time, so passing it link-only
+# keeps the source compiled with no macro side effects.
+if (MINGW)
+    target_link_options(audiocpp_cli PRIVATE -municode)
+endif()
 if (ENGINE_ENABLE_OPENMP)
     target_link_libraries(audiocpp_cli PRIVATE OpenMP::OpenMP_CXX)
 endif()
@@ -1371,6 +1435,7 @@ add_executable(audiocpp_server
     app/server/runtime.cpp
     app/cli/args.cpp
     app/cli/request.cpp
+    app/streaming/pcm_source.cpp
     app/streaming/streaming.cpp
 )
 
@@ -1503,6 +1568,10 @@ if (ENGINE_BUILD_WARMBENCH)
     add_engine_warmbench(glm_tts_campplus_probe tests/glm_tts/glm_tts_campplus_probe.cpp)
     add_engine_warmbench(glm_tts_llama_probe tests/glm_tts/glm_tts_llama_probe.cpp)
     add_engine_warmbench(glm_tts_warm_bench tests/glm_tts/glm_tts_warm_bench.cpp)
+    add_engine_warmbench(kroko_asr_encoder_probe tests/kroko_asr/kroko_asr_encoder_probe.cpp)
+    add_engine_warmbench(kroko_asr_frontend_probe tests/kroko_asr/kroko_asr_frontend_probe.cpp)
+    add_engine_warmbench(kroko_asr_streaming_probe tests/kroko_asr/kroko_asr_streaming_probe.cpp)
+    add_engine_warmbench(kroko_asr_zipformer_probe tests/kroko_asr/kroko_asr_zipformer_probe.cpp)
     add_engine_warmbench(pocket_tts_warm_bench tests/pocket_tts/pocket_tts_warm_bench.cpp)
     add_engine_warmbench(qwen3_asr_warm_bench tests/qwen3_asr/qwen3_asr_warm_bench.cpp)
     add_engine_warmbench(qwen3_forced_aligner_warm_bench tests/qwen3_forced_aligner/qwen3_forced_aligner_warm_bench.cpp)
@@ -1579,11 +1648,40 @@ if (ENGINE_BUILD_TESTS)
         COMMAND backend_weight_store_commit_test
     )
 
+    add_engine_unittest(wav_reader_chunk_bounds_test tests/unittests/test_wav_reader_chunk_bounds.cpp)
+
+    add_test(
+        NAME wav_reader_chunk_bounds_test
+        COMMAND wav_reader_chunk_bounds_test
+    )
+
+    add_engine_unittest(hf_tokenizer_vocab_bounds_test tests/unittests/test_hf_tokenizer_vocab_bounds.cpp)
+
+    add_test(
+        NAME hf_tokenizer_vocab_bounds_test
+        COMMAND hf_tokenizer_vocab_bounds_test
+    )
+
+    add_engine_unittest(safetensors_offsets_test tests/unittests/test_safetensors_offsets.cpp)
+
+    add_test(
+        NAME safetensors_offsets_test
+        COMMAND safetensors_offsets_test
+    )
+
     add_engine_unittest(audio_chunking_test tests/unittests/test_audio_chunking.cpp)
 
     add_test(
         NAME audio_chunking_test
         COMMAND audio_chunking_test
+    )
+
+    add_engine_unittest(inflect_v2_frontend_test tests/unittests/test_inflect_v2_frontend.cpp)
+    target_include_directories(inflect_v2_frontend_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
+
+    add_test(
+        NAME inflect_v2_frontend_test
+        COMMAND inflect_v2_frontend_test
     )
 
     add_engine_unittest(voxtral_realtime_stream_chunking_test tests/unittests/test_voxtral_realtime_stream_chunking.cpp)
@@ -1692,6 +1790,31 @@ if (ENGINE_BUILD_TESTS)
     add_test(
         NAME streaming_audio_input_test
         COMMAND streaming_audio_input_test
+    )
+
+    add_executable(http_live_body_test
+        tests/unittests/test_http_live_body.cpp
+        app/server/http.cpp
+    )
+    target_link_libraries(http_live_body_test PRIVATE engine_runtime ggml)
+    if(WIN32)
+        target_link_libraries(http_live_body_test PRIVATE ws2_32)
+    endif()
+    target_include_directories(http_live_body_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
+
+    add_test(
+        NAME http_live_body_test
+        COMMAND http_live_body_test
+    )
+    # This test talks to a real loopback socket, so a framing regression could
+    # block forever rather than fail. Bound it so CI reports a failure instead.
+    set_tests_properties(http_live_body_test PROPERTIES TIMEOUT 120)
+
+    add_engine_unittest(partial_text_render_test tests/unittests/test_partial_text_render.cpp)
+
+    add_test(
+        NAME partial_text_render_test
+        COMMAND partial_text_render_test
     )
 
     add_engine_unittest(hf_sampler_test tests/unittests/test_hf_sampler.cpp)

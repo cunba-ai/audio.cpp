@@ -3,7 +3,8 @@
 #
 # The WebUI starts/switches audiocpp_server on demand — pick a model in the UI and
 # click load; no need to start a server separately. Backend (cuda|cpu) is auto-detected
-# by webui.py from nvidia-smi and the available build; override with AUDIOCPP_BACKEND=gpu|cpu.
+# by webui.py from nvidia-smi and the available build; override with
+# AUDIOCPP_BACKEND=gpu|cpu|metal.
 # UI language: English by default, with 中文 / 中文繁體 selectable from the picker in the
 # UI. That pick is saved to webui/configs/ui_language.json and wins on later runs, so
 # AUDIOCPP_LANG (en|zh|zh-Hant) only sets the default before anything has been picked.

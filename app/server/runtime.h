@@ -4,6 +4,8 @@
 #include "config.h"
 #include "http.h"
 
+#include "../streaming/streaming.h"
+
 #include "engine/framework/io/json.h"
 #include "engine/framework/runtime/model.h"
 #include "engine/framework/runtime/session.h"
@@ -24,6 +26,12 @@ public:
     ServerState(ServerConfig config, std::filesystem::path request_base);
 
     HttpResponse handle(const HttpRequest & request) override;
+
+    // Server-level `live_ingest` policy with this request's model override applied.
+    // Deliberately does not reject an unknown or non-streaming model: it runs before
+    // the handler, and rejecting here would turn a client's mistake into a dropped
+    // connection instead of the 400 handle_transcription_live already produces.
+    LiveIngestLimits live_ingest_limits(const HttpRequest & request) const override;
 
 private:
     struct LoadedModel {
@@ -79,6 +87,21 @@ private:
         const engine::runtime::TaskRequest & request,
         const std::function<void(const engine::runtime::StreamEvent &)> & event_sink = {},
         std::optional<int> busy_timeout_ms = std::nullopt);
+    // Shared body of the two entry points above/below; `audio` selects the source.
+    TimedTaskResult run_streaming_model_impl(
+        LoadedModel & model,
+        const engine::runtime::TaskRequest & request,
+        const minitts::app::AudioChunkStream * audio,
+        const std::function<void(const engine::runtime::StreamEvent &)> & event_sink,
+        std::optional<int> busy_timeout_ms);
+    // Same as run_streaming_model, but pulls audio from `audio` instead of
+    // `request.audio_input`, so the samples are never fully materialized.
+    TimedTaskResult run_streaming_model_from(
+        LoadedModel & model,
+        const engine::runtime::TaskRequest & request,
+        const minitts::app::AudioChunkStream & audio,
+        const std::function<void(const engine::runtime::StreamEvent &)> & event_sink = {},
+        std::optional<int> busy_timeout_ms = std::nullopt);
     HttpResponse handle_speech(const std::string & body_text);
     HttpResponse handle_speech_stream(
         LoadedModel & model,
@@ -95,6 +118,7 @@ private:
         LoadedModel & model,
         const engine::runtime::TaskRequest & request,
         std::optional<int> busy_timeout_ms = std::nullopt);
+    HttpResponse handle_transcription_live(const HttpRequest & request);
     HttpResponse handle_generic_run(const std::string & body_text);
     HttpResponse handle_generic_stream(const std::string & body_text);
     HttpResponse handle_voices(const HttpRequest & request) const;

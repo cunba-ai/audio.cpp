@@ -30,11 +30,31 @@ REM --- CUDA present? (NVIDIA driver installs nvcuda.dll in System32) ---
 set "HAS_CUDA="
 if exist "%SystemRoot%\System32\nvcuda.dll" set "HAS_CUDA=1"
 
-REM --- Locate the from-source binaries. The default Visual Studio generator nests
-REM them in build\bin\Release (multi-config); Ninja/Makefiles use build\bin. ---
+REM --- Locate the from-source binaries. Prefer the standard Windows preset
+REM directories produced by scripts\build_windows.ps1, then fall back to older
+REM plain build layouts. ---
 set "BIN="
-if exist "%ROOT%\build\bin\Release\audiocpp_server.exe" set "BIN=%ROOT%\build\bin\Release"
-if not defined BIN if exist "%ROOT%\build\bin\audiocpp_server.exe" set "BIN=%ROOT%\build\bin"
+set "CACHE="
+if defined HAS_CUDA if exist "%ROOT%\build\windows-cuda-release\bin\audiocpp_server.exe" (
+    set "BIN=%ROOT%\build\windows-cuda-release\bin"
+    set "CACHE=%ROOT%\build\windows-cuda-release\CMakeCache.txt"
+)
+if not defined BIN if exist "%ROOT%\build\windows-cpu-release\bin\audiocpp_server.exe" (
+    set "BIN=%ROOT%\build\windows-cpu-release\bin"
+    set "CACHE=%ROOT%\build\windows-cpu-release\CMakeCache.txt"
+)
+if not defined BIN if exist "%ROOT%\build\windows-cuda-release\bin\audiocpp_server.exe" (
+    set "BIN=%ROOT%\build\windows-cuda-release\bin"
+    set "CACHE=%ROOT%\build\windows-cuda-release\CMakeCache.txt"
+)
+if not defined BIN if exist "%ROOT%\build\bin\Release\audiocpp_server.exe" (
+    set "BIN=%ROOT%\build\bin\Release"
+    set "CACHE=%ROOT%\build\CMakeCache.txt"
+)
+if not defined BIN if exist "%ROOT%\build\bin\audiocpp_server.exe" (
+    set "BIN=%ROOT%\build\bin"
+    set "CACHE=%ROOT%\build\CMakeCache.txt"
+)
 if defined BIN set "SERVER_EXE=%BIN%\audiocpp_server.exe"
 if defined BIN set "CLI_EXE=%BIN%\audiocpp_cli.exe"
 if defined BIN set "GGUF_EXE=%BIN%\audiocpp_gguf.exe"
@@ -42,8 +62,8 @@ if defined BIN set "GGUF_EXE=%BIN%\audiocpp_gguf.exe"
 REM --- BACKEND: read the actual build's GGML_CUDA flag from its CMakeCache, so we
 REM never advertise a GPU backend a CPU-only build can't serve. cuda when ON, else cpu. ---
 set "BACKEND=cpu"
-if exist "%ROOT%\build\CMakeCache.txt" (
-    for /f "tokens=2 delims==" %%A in ('findstr /b /c:"GGML_CUDA:BOOL" "%ROOT%\build\CMakeCache.txt" 2^>nul') do (
+if defined CACHE if exist "%CACHE%" (
+    for /f "tokens=2 delims==" %%A in ('findstr /b /c:"GGML_CUDA:BOOL" "%CACHE%" 2^>nul') do (
         if /I "%%A"=="ON" set "BACKEND=cuda"
     )
 )

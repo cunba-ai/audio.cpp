@@ -14,6 +14,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
@@ -112,6 +113,78 @@ class EveryStripPrefixPackageIsCoveredTests(unittest.TestCase):
                 self.assertFalse(required.startswith(source.strip_prefix),
                                  f"{package.id} required_files still carries the strip_prefix")
         self.assertGreater(checked, 0, "no strip_prefix packages found to check")
+
+
+class SpecPackageBridgeTests(unittest.TestCase):
+    def test_voxcpm2_spec_package_is_available_to_webui_manager(self):
+        package = mm.PACKAGE_BY_ID["voxcpm2_q8_0"]
+        self.assertEqual(package.target_directory, "VoxCPM2-GGUF")
+        self.assertEqual(package.required_files, ("voxcpm2-q8_0.gguf",))
+        self.assertEqual(package.source.repo_id, "audio-cpp/audio.cpp-gguf")
+        self.assertEqual(package.source.include_prefixes,
+                         ("VoxCPM2-GGUF/voxcpm2-q8_0.gguf",))
+        self.assertEqual(package.source.strip_prefix, "VoxCPM2-GGUF/")
+
+    def test_converter_specs_stay_on_legacy_manager_path(self):
+        package = mm.PACKAGE_BY_ID["inflect_micro_v2"]
+        self.assertEqual(package.required_files, ("config.json", "model.safetensors"))
+        self.assertEqual(package.source.repo_id, "owensong/Inflect-Micro-v2-ONNX")
+
+
+class SnapshotDependencyRoutingTests(unittest.TestCase):
+    def test_voxcpm2_safetensors_postprocess_loads_install_deps(self):
+        calls = []
+        original_download = mmw._ensure_download_deps
+        original_install = mmw._ensure_install_deps
+        original_install_snapshot = mmw.install_snapshot
+        mmw._ensure_download_deps = lambda: calls.append("download")
+        mmw._ensure_install_deps = lambda: calls.append("install")
+        mmw.install_snapshot = lambda package, source, root, overwrite: root / package.target_directory
+        self.addCleanup(setattr, mmw, "_ensure_download_deps", original_download)
+        self.addCleanup(setattr, mmw, "_ensure_install_deps", original_install)
+        self.addCleanup(setattr, mmw, "install_snapshot", original_install_snapshot)
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            code = mmw.command_install(SimpleNamespace(
+                package_id="voxcpm2",
+                models_root=tmp,
+                overwrite=True,
+                source_file=None,
+                output_file=None,
+                source_dir=None,
+                variant=None,
+            ))
+
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, ["install"])
+
+    def test_spec_gguf_snapshot_stays_download_only(self):
+        calls = []
+        original_download = mmw._ensure_download_deps
+        original_install = mmw._ensure_install_deps
+        original_install_snapshot = mmw.install_snapshot
+        mmw._ensure_download_deps = lambda: calls.append("download")
+        mmw._ensure_install_deps = lambda: calls.append("install")
+        mmw.install_snapshot = lambda package, source, root, overwrite: root / package.target_directory
+        self.addCleanup(setattr, mmw, "_ensure_download_deps", original_download)
+        self.addCleanup(setattr, mmw, "_ensure_install_deps", original_install)
+        self.addCleanup(setattr, mmw, "install_snapshot", original_install_snapshot)
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            code = mmw.command_install(SimpleNamespace(
+                package_id="voxcpm2_q8_0",
+                models_root=tmp,
+                overwrite=True,
+                source_file=None,
+                output_file=None,
+                source_dir=None,
+                variant=None,
+            ))
+
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, ["download"])
 
 
 if __name__ == "__main__":

@@ -42,10 +42,17 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 import model_manager as mm
+import model_manager_v2 as mmv2
 
 # huggingface_hub is imported lazily (see _ensure_download_deps) so that
 # ``list``/``info`` keep working without it, exactly as upstream keeps Torch lazy.
 hf_hub_download = None
+
+
+SPEC_PACKAGE_BY_ID = {
+    record.id: record
+    for record in mmv2.flatten_packages(mmv2.load_specs(mmv2.DEFAULT_SPECS_DIR))
+}
 
 
 # --- dependency loading ------------------------------------------------------
@@ -253,6 +260,62 @@ def staging_dir_name(package) -> str:
     return f"{safe}.partial"
 
 
+def spec_package_required_files(package: mmv2.PackageRecord) -> tuple[str, ...]:
+    prefix = (package.strip_prefix or "").strip("/")
+    if prefix == ".":
+        prefix = ""
+    files = []
+    for remote in package.files:
+        if prefix:
+            marker = prefix + "/"
+            if not remote.startswith(marker):
+                raise RuntimeError(f"file path does not start with strip_prefix '{package.strip_prefix}': {remote}")
+            local = remote[len(marker):]
+        else:
+            local = remote
+        parts = [part for part in local.replace("\\", "/").split("/") if part]
+        if not parts or any(part == ".." for part in parts):
+            raise RuntimeError(f"unsafe package file path: {remote}")
+        files.append("/".join(parts))
+    return tuple(files)
+
+
+def spec_package_source(package: mmv2.PackageRecord):
+    mmv2.ensure_hf_package(package)
+    strip_prefix = package.strip_prefix
+    if strip_prefix and strip_prefix != "." and not strip_prefix.endswith("/"):
+        strip_prefix += "/"
+    if strip_prefix == ".":
+        strip_prefix = ""
+    return mm.SnapshotSource(
+        repo_id=package.download["repo"],
+        revision=package.download.get("revision", "main"),
+        include_prefixes=package.files,
+        strip_prefix=strip_prefix,
+    )
+
+
+def spec_package_as_legacy(package: mmv2.PackageRecord):
+    return mm.ModelPackage(
+        id=package.id,
+        display_name=package.display_name,
+        target_directory=package.target_directory,
+        source=spec_package_source(package),
+        required_files=spec_package_required_files(package),
+        family=package.family,
+        standalone=True,
+    )
+
+
+for _spec_package in SPEC_PACKAGE_BY_ID.values():
+    if _spec_package.id not in mm.PACKAGE_BY_ID:
+        if _spec_package.download.get("kind") != "huggingface_snapshot":
+            continue
+        _legacy_package = spec_package_as_legacy(_spec_package)
+        mm.PACKAGE_BY_ID[_legacy_package.id] = _legacy_package
+        mm.CATALOG = (*mm.CATALOG, _legacy_package)
+
+
 def prune_staging_root(staging_root: Path) -> None:
     try:
         if staging_root.exists() and not any(staging_root.iterdir()):
@@ -405,8 +468,11 @@ def command_install(args) -> int:
     if isinstance(source, mm.UnsupportedSource):
         raise RuntimeError(f"{package.id} is not installable: {source.reason}")
     if isinstance(source, mm.SnapshotSource):
-        # Plain download: huggingface_hub only, no Torch DLLs.
-        _ensure_download_deps()
+        if package.id in mm.POSTPROCESS_SNAPSHOT_PACKAGE_IDS or package.id == "moss_tts_nano_100m_model":
+            _ensure_install_deps()
+        else:
+            # Plain download: huggingface_hub only, no Torch DLLs.
+            _ensure_download_deps()
         install_path = install_snapshot(package, source, models_root, args.overwrite)
     elif isinstance(source, mm.CompositeSnapshotSource):
         # Composite snapshots may run a Torch post-process step, so bring in full deps.

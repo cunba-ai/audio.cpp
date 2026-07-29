@@ -11,6 +11,15 @@ The launch scripts can be **double-clicked** or invoked from a command line / Po
 | `webui/run_webui.sh` | Linux / macOS WebUI launcher | `./webui/run_webui.sh` |
 | `webui/_env.bat` | WebUI environment detection (**do not run directly**) | `call`ed by `run_webui.bat` |
 
+## Windows
+
+From the repository root, create a Python environment, install the WebUI dependencies, then launch the WebUI:
+
+```bat
+python -m venv venv && .\venv\Scripts\python.exe -m pip install -r webui\requirements.txt
+webui\run_webui.bat                REM UI -> http://127.0.0.1:7860
+```
+
 ## Linux / macOS
 
 On Linux / macOS, use `webui/run_webui.sh`:
@@ -23,11 +32,12 @@ python3 -m venv venv && ./venv/bin/pip install -r webui/requirements.txt
 - The Python interpreter is probed in order: `$AUDIOCPP_PYTHON`, `venv/bin/python`, `.venv/bin/python`,
   `webui/venv/bin/python`, `webui/.venv/bin/python`, `python3`, `python`.
 - The backend (cuda/cpu) is auto-detected: Windows checks `nvcuda.dll`, other platforms check `nvidia-smi`,
-  then confirms that the matching server build exists; override with `AUDIOCPP_BACKEND=gpu|cpu`.
-- The binaries can come from a portable bundle's `gpu/` or `cpu/` directories, or from a source build's
-  `build/<os>-<backend>-<type>/bin` (such as `build/linux-cuda-release/bin`).
+  then confirms that the matching server build exists; override with `AUDIOCPP_BACKEND=gpu|cpu|metal`.
+- The binaries can come from a portable bundle's `gpu/`, `metal/`, or `cpu/` directories, or from a source build's
+  `build/<os>-<backend>-<type>/bin` (such as `build/linux-cuda-release/bin` or `build/macos-metal-release/bin`).
   A plain `cmake -B build` producing `build/bin` is also recognized — when the directory name carries no
-  backend information, the backend is inferred from `GGML_CUDA` in `CMakeCache.txt`.
+  backend information, the backend is inferred from `ENGINE_ENABLE_METAL`, `GGML_METAL`, or `GGML_CUDA` in
+  `CMakeCache.txt`.
 - The Windows-only packages in `webui/requirements.txt` (pywin32, plus the pythonnet/pywebview used by
   SpeakType) are marked with `sys_platform`, so they install cleanly on Linux too.
 
@@ -67,7 +77,8 @@ To hand control back to the environment variable, just delete `webui/configs/ui_
   An uninstalled id shows "not installed"; you can download it in the WebUI, or install it with
   `python tools/model_manager.py install <download_id>` (see `models_catalog.json`).
 - **Automatic backend selection:** if CUDA (an NVIDIA driver) is detected, GPU is used; otherwise it falls back
-  to CPU. To force a backend, set `AUDIOCPP_BACKEND=gpu` (= cuda) or `AUDIOCPP_BACKEND=cpu`.
+  to CPU. To force a backend, set `AUDIOCPP_BACKEND=gpu` (= cuda), `AUDIOCPP_BACKEND=cpu`, or
+  `AUDIOCPP_BACKEND=metal`.
   The CLI, server, and WebUI all follow this detection (a machine without an NVIDIA GPU automatically drops to
   the CPU build, which is slower and impractical for some large models).
 - **Path base:** relative paths inside the scripts (such as `voice\demo_01_man.wav`, `output\xxx.wav`) are all
@@ -107,7 +118,7 @@ Starts the Gradio web interface (`webui.py`); open **http://127.0.0.1:7860** in 
   model that has not been downloaded yet, if you want to check without arming anything.
   The VRAM estimate is reported on the CPU backend too (labelled as such — the CPU backend runs in system RAM);
   only the low-VRAM *warning* stays CPU-quiet, since there is no VRAM to fall short of. A download the `models/`
-  volume cannot hold is refused outright — no Confirm button is offered — and a fit that leaves under 2 GB free is
+  volume cannot hold is refused outright — no Confirm button is offered — and a fit that leaves under 20 GB free is
   flagged but still allowed.
   Sizes are unavailable for converter installs and for gated repos without a token; those download as before.
 - **While it runs**, progress is shown against the package total ("Downloaded 5.00 GB of 17.00 GB (29%)"), and the
@@ -115,7 +126,7 @@ Starts the Gradio web interface (`webui.py`); open **http://127.0.0.1:7860** in 
   Disk is judged against the bytes still to fetch, so a healthy download does not drift into a false alarm as free
   space drops. The VRAM warning stays on screen after the download finishes — it decides whether the model can be
   run at all, not whether it can be fetched.
-- Backend is auto-detected (as above: GPU if CUDA is present, otherwise CPU); `AUDIOCPP_BACKEND=gpu|cpu` forces it.
+- Backend is auto-detected (as above: GPU if CUDA is present, otherwise CPU); `AUDIOCPP_BACKEND=gpu|cpu|metal` forces it.
   In CPU mode, the ggml thread count is set automatically from the **physical** core count — SMT/Hyper-Threading
   siblings are not counted, and one core is left free above 4 — so a long run leaves the rest of the machine
   usable. Filling every logical CPU is faster (~1.4x in a short CPU TTS run on an 8-core/16-thread 5800H); set
@@ -336,7 +347,7 @@ An uninstalled id prompts at runtime; you can click "download" in the WebUI, or 
 
 | Variable | Purpose | Applies to |
 |---|---|---|
-| `AUDIOCPP_BACKEND` | `gpu`(=cuda) / `cpu` to force the backend | cli / server / webui |
+| `AUDIOCPP_BACKEND` | `gpu`(=cuda) / `cpu` / `metal` to force the backend | cli / server / webui |
 | `AUDIOCPP_HOST` | server bind address (`0.0.0.0` opens it to the LAN) | server |
 | `AUDIOCPP_BUNDLE` | manually specify the bundle root directory | all |
 | `AUDIOCPP_SERVER` | make the WebUI connect to an already-running external server | webui |

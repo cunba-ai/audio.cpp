@@ -21,6 +21,7 @@ if os.path.join(REPO_ROOT, "tools") not in sys.path:
     sys.path.insert(0, os.path.join(REPO_ROOT, "tools"))
 
 import model_manager  # noqa: E402
+import model_manager_v2  # noqa: E402
 
 try:
     from webui import webui as app
@@ -35,13 +36,42 @@ _LOADER_CALL_RE = re.compile(r"\bmake_([a-z0-9_]+)_loader\s*\(\s*\)")
 
 # Families the server registers but the WebUI deliberately does not surface,
 # with the reason. Keep this empty unless there is one.
-UNLISTED_FAMILIES: dict[str, str] = {}
+UNLISTED_FAMILIES: dict[str, str] = {
+    "kroko_asr": (
+        "Kroko Community packages require a user-supplied free .data file; "
+        "the WebUI installer cannot provide that local converter input."
+    ),
+}
 
 
 def _packages():
     catalog = model_manager.CATALOG
     values = catalog.values() if isinstance(catalog, dict) else catalog
-    return {p.id: p for p in values}
+    packages = {p.id: p for p in values}
+    for package in model_manager_v2.flatten_packages(
+            model_manager_v2.load_specs(model_manager_v2.DEFAULT_SPECS_DIR)):
+        packages.setdefault(package.id, package)
+    return packages
+
+
+def _target_directory(package):
+    return package.target_directory
+
+
+def _required_files(package):
+    if hasattr(package, "required_files"):
+        return list(package.required_files)
+    prefix = (package.strip_prefix or "").strip("/")
+    if prefix == ".":
+        prefix = ""
+    files = []
+    for remote in package.files:
+        if prefix:
+            marker = prefix + "/"
+            files.append(remote[len(marker):] if remote.startswith(marker) else remote)
+        else:
+            files.append(remote)
+    return [path.replace("\\", "/") for path in files]
 
 
 def _load(path):
@@ -53,8 +83,8 @@ class CatalogSyncTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.packages = _packages()
-        cls.entries = _load(CATALOG_PATH)["models"]
-        cls.required = _load(REQUIRED_FILES_PATH)
+        cls.entries = app.CATALOG["models"]
+        cls.required = app.REQUIRED_FILES
 
     def test_every_download_id_is_a_model_manager_package(self):
         for entry in self.entries:
@@ -70,8 +100,8 @@ class CatalogSyncTests(unittest.TestCase):
             download_id = entry.get("download_id")
             if download_id not in self.packages:
                 continue
-            target = self.packages[download_id].target_directory
-            self.assertEqual(os.path.basename(entry["path"]), target,
+            target = os.path.normpath("models/" + _target_directory(self.packages[download_id]))
+            self.assertEqual(os.path.normpath(entry["path"]), target,
                              f"catalog entry {entry['id']} looks in {entry['path']!r}, "
                              f"but {download_id} installs into {target!r}")
 
@@ -86,12 +116,20 @@ class CatalogSyncTests(unittest.TestCase):
                             f"{entry['path']!r} must be a bundled directory in the repo")
 
     def test_required_files_mirrors_the_package_specs(self):
-        expected = {pkg_id: list(p.required_files)
-                    for pkg_id, p in self.packages.items() if p.required_files}
+        expected = {pkg_id: _required_files(p)
+                    for pkg_id, p in self.packages.items() if _required_files(p)}
         actual = {k: v for k, v in self.required.items() if k != "_comment"}
-        self.assertEqual(actual, expected,
-                         "configs/required_files.json is stale; regenerate it from "
-                         "tools/model_manager.py CATALOG (see its _comment)")
+        missing = {pkg_id: files for pkg_id, files in expected.items() if actual.get(pkg_id) != files}
+        self.assertFalse(missing,
+                         "WebUI required-file metadata is missing or stale for packages: "
+                         f"{sorted(missing)}")
+
+    def test_catalog_prefers_spec_gguf_packages(self):
+        by_id = {entry["id"]: entry for entry in self.entries}
+        self.assertEqual(by_id["voxcpm2"]["download_id"], "voxcpm2_q8_0")
+        self.assertEqual(by_id["voxcpm2"]["path"], "models/VoxCPM2-GGUF")
+        self.assertEqual(by_id["moss-tts-local"]["download_id"], "moss_tts_local_v1_5_q8_0")
+        self.assertEqual(by_id["moss-tts-local"]["path"], "models/MOSS-TTS-Local-v1.5-GGUF")
 
     def test_gguf_families_come_from_the_package_specs(self):
         specs = {os.path.splitext(f)[0]

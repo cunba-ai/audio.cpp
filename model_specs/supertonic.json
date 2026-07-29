@@ -12,7 +12,6 @@
     {
       "id": "supertonic_3_q8_0",
       "display_name": "Supertonic 3 Q8_0 GGUF",
-      "default": true,
       "format": "gguf",
       "precision": "q8_0",
       "target_directory": "Supertonic-3-GGUF",
@@ -35,6 +34,7 @@
     {
       "id": "supertonic_3_orig",
       "display_name": "Supertonic 3 Original-Dtype GGUF",
+      "default": true,
       "format": "gguf",
       "precision": "orig",
       "target_directory": "Supertonic-3-GGUF",

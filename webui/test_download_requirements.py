@@ -6,8 +6,8 @@ behind in models/.engine_model_staging.
 
 The Download button now only proposes: it reports the download size, the resulting disk
 utilization, and the share of VRAM (or of system RAM on the CPU backend) the model would
-need, raises an alarm past DISK_USAGE_ALARM / MEMORY_USAGE_ALARM, and waits for an
-explicit confirmation. A download that cannot fit at all is refused outright.
+need, raises an alarm below DISK_FREE_ALARM_BYTES (or past MEMORY_USAGE_ALARM), and waits
+for an explicit confirmation. A download that cannot fit at all is refused outright.
 
 Sizes come from the Hugging Face tree API; it is stubbed here so the tests stay offline.
 """
@@ -105,7 +105,7 @@ class RequirementsNoteTests(_AppPatch):
 
 
 class DiskAlarmTests(_AppPatch):
-    """Above DISK_USAGE_ALARM the download is still offered, but loudly."""
+    """Low remaining space after a download is still offered, but loudly."""
 
     def setUp(self):
         self.entry = {"id": "m", "label": "M", "family": "vevo2", "download_id": "pkg",
@@ -114,32 +114,28 @@ class DiskAlarmTests(_AppPatch):
         self.stub_size(10 * GB)
         self.patch(BACKEND="gpu", LOCAL_VRAM_GB=8.0)
 
-    def test_the_threshold_is_seventy_five_percent(self):
-        self.assertEqual(app.DISK_USAGE_ALARM, 0.75)
+    def test_the_free_space_threshold_is_twenty_gb(self):
+        self.assertEqual(app.DISK_FREE_ALARM_BYTES, 20 * GB)
 
-    def test_crossing_the_line_alarms_without_blocking(self):
-        self.stub_disk(30 * GB)          # 70% used -> 80% after
+    def test_leaving_less_than_twenty_gb_alarms_without_blocking(self):
+        self.stub_disk(29 * GB)          # 19 GB left after a 10 GB download
         note, blocker = app.download_requirements(self.entry)
         self.assertIn("🚨", note)
-        self.assertIn("80%", note)
+        self.assertIn("19.00 GB", note)
+        self.assertIn("20.00 GB", note)
         self.assertEqual(blocker, "", "an alarm must not block; it is the user's disk")
 
-    def test_staying_under_the_line_does_not_alarm(self):
-        self.stub_disk(40 * GB)          # 60% used -> 70% after
+    def test_leaving_at_least_twenty_gb_does_not_alarm(self):
+        self.stub_disk(30 * GB)          # exactly 20 GB left after the download
         note, _blocker = app.download_requirements(self.entry)
         self.assertNotIn("🚨", note)
 
-    def test_a_volume_already_over_the_line_says_so(self):
-        self.stub_disk(19 * GB)          # 81% used already
+    def test_a_large_disk_with_plenty_left_does_not_alarm(self):
+        # The reported issue: 82% full on a 7.27 TB disk still leaves about 1.4 TB free.
+        self.stub_disk(1425 * GB, total=7270 * GB)
         note, _blocker = app.download_requirements(self.entry)
-        self.assertIn("🚨", note)
-        self.assertIn("already over the line", note,
-                      "a volume that was already full must not read as caused by this download")
-
-    def test_the_alarm_is_reported_before_and_after(self):
-        self.stub_disk(19 * GB)
-        note, _blocker = app.download_requirements(self.entry)
-        self.assertIn("81% → 91%", note)
+        self.assertIn("80% → 81%", note)
+        self.assertNotIn("Disk alarm", note)
 
 
 class MemoryAlarmTests(_AppPatch):

@@ -14,7 +14,8 @@ Just launch this (it starts the server for you):
     venv\\Scripts\\python audiocpp-portable\\webui.py
 
 Env overrides:
-    AUDIOCPP_BACKEND=gpu|cpu     which bin dir to launch the server from
+    AUDIOCPP_BACKEND=gpu|cpu|metal
+                                 which bin dir to launch the server from
                                  (default: auto — gpu when an NVIDIA driver and the
                                  gpu server build are both present, else cpu)
     AUDIOCPP_THREADS=N           ggml compute threads (default 1; cpu backend
@@ -42,7 +43,7 @@ import threading
 import time
 import warnings
 import wave
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import numpy as np
 import requests
@@ -212,10 +213,80 @@ GGUF_EXE_NAME = "audiocpp_gguf" + EXE_SUFFIX
 SERVER_LAUNCHER = SERVER_EXE_NAME
 
 
+def _safe_local_package_file(remote_path, strip_prefix):
+    prefix = (strip_prefix or "").strip("/")
+    if not prefix or prefix == ".":
+        local = remote_path
+    else:
+        marker = prefix + "/"
+        if not remote_path.startswith(marker):
+            raise ValueError(f"{remote_path!r} does not start with strip_prefix {strip_prefix!r}")
+        local = remote_path[len(marker):]
+    local = local.replace("\\", "/")
+    parts = [part for part in local.split("/") if part]
+    if not parts or any(part == ".." for part in parts):
+        raise ValueError(f"unsafe package file path: {remote_path!r}")
+    return "/".join(parts)
+
+
+def _load_spec_packages():
+    """Package metadata from model_specs/*.json, keyed by package id and family.
+
+    model_specs is the runtime/download source of truth for new GGUF packages. The
+    WebUI catalog still owns UI placement and labels, then this metadata fills in
+    the install id, target directory, and required file list.
+    """
+    by_id, by_family = {}, {}
+    for root in (PROJECT_ROOT, BUNDLE_ROOT):
+        spec_dir = os.path.join(root, "model_specs")
+        if not os.path.isdir(spec_dir):
+            continue
+        for name in sorted(os.listdir(spec_dir)):
+            if not name.endswith(".json"):
+                continue
+            path = os.path.join(spec_dir, name)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    spec = json.load(f)
+            except (OSError, ValueError) as exc:
+                print(f"[webui] failed to read model spec {path}: {exc}")
+                continue
+            family = spec.get("family") or os.path.splitext(name)[0]
+            defaults = spec.get("package_defaults", {}).get("download", {})
+            for package in spec.get("packages", []):
+                try:
+                    files = tuple(package.get("files") or ())
+                    strip_prefix = package.get("strip_prefix", "")
+                    record = {
+                        "family": family,
+                        "id": package["id"],
+                        "display_name": package.get("display_name", package["id"]),
+                        "format": package["format"],
+                        "precision": package.get("precision", ""),
+                        "target_directory": package["target_directory"],
+                        "files": files,
+                        "required_files": tuple(_safe_local_package_file(f, strip_prefix) for f in files),
+                        "strip_prefix": strip_prefix,
+                        "download": {**defaults, **package.get("download", {})},
+                        "default": bool(package.get("default", False)),
+                    }
+                except (KeyError, TypeError, ValueError) as exc:
+                    print(f"[webui] ignored invalid package in {path}: {exc}")
+                    continue
+                by_id[record["id"]] = record
+                by_family.setdefault(family, []).append(record)
+        if by_id:
+            break
+    return by_id, by_family
+
+
+SPEC_PACKAGE_BY_ID, SPEC_PACKAGES_BY_FAMILY = {}, {}
+
+
 def _cmake_cache_backend(bin_dir):
-    """gpu/cpu for a build tree whose directory name doesn't say, read from its
-    CMakeCache.txt (GGML_CUDA:BOOL=ON). Returns None when there is no cache to
-    read — an installed tree, or a layout we don't recognize."""
+    """Backend for a build tree whose directory name doesn't say, read from its
+    CMakeCache.txt. Returns None when there is no cache to read — an installed
+    tree, or a layout we don't recognize."""
     # Walk up from the bin dir to find the build tree's CMakeCache.txt. Single-config
     # generators put the exe in build/bin (cache one level up); multi-config ones
     # (Visual Studio) nest it in build/bin/Release, so the cache sits two levels up.
@@ -234,9 +305,15 @@ def _cmake_cache_backend(bin_dir):
         return None
     try:
         with open(cache, encoding="utf-8", errors="replace") as fh:
+            enabled = {}
             for line in fh:
-                if line.startswith("GGML_CUDA:"):
-                    return "gpu" if line.rstrip().upper().endswith("ON") else "cpu"
+                key, sep, value = line.partition(":")
+                if sep:
+                    enabled[key] = line.rstrip().upper().endswith("ON")
+            if enabled.get("ENGINE_ENABLE_METAL") or enabled.get("GGML_METAL"):
+                return "metal"
+            if "GGML_CUDA" in enabled:
+                return "gpu" if enabled["GGML_CUDA"] else "cpu"
     except OSError:
         return None
     return "cpu"
@@ -246,12 +323,12 @@ def _discover_dev_bin_dirs():
     """Locate from-source build outputs, newest-wins per backend.
 
     Two layouts are in the wild. The one README documents is
-    build/<os>-<backend>-<type>/bin (windows-cuda-release, linux-cpu-release, …),
+    build/<os>-<backend>-<type>/bin (windows-cuda-release, macos-metal-release, …),
     where the backend is in the directory name. A plain `cmake -B build` instead
     lands in build/bin and says nothing about the backend, so that one is
     classified from its CMakeCache."""
     out = {}
-    for backend, keyword in (("gpu", "*cuda*"), ("cpu", "*cpu*")):
+    for backend, keyword in (("gpu", "*cuda*"), ("metal", "*metal*"), ("cpu", "*cpu*")):
         hits = sorted(d for d in glob.glob(os.path.join(PROJECT_ROOT, "build", keyword, "bin"))
                       if os.path.isfile(os.path.join(d, SERVER_EXE_NAME)))
         if hits:
@@ -292,7 +369,7 @@ def _find_bundle_root():
     for c in (HERE,                                         # webui.py directly in the bundle
               PROJECT_ROOT,                                 # webui/ shipped under the bundle
               os.path.join(PROJECT_ROOT, "audiocpp-portable")):
-        if os.path.isdir(os.path.join(c, "gpu")) or os.path.isdir(os.path.join(c, "cpu")):
+        if any(os.path.isdir(os.path.join(c, b)) for b in ("gpu", "metal", "cpu")):
             return c
     if any(os.path.isfile(_dev_server_exe(b)) for b in DEV_BIN_DIRS):
         return PROJECT_ROOT
@@ -300,9 +377,10 @@ def _find_bundle_root():
 
 
 BUNDLE_ROOT = _find_bundle_root()
+SPEC_PACKAGE_BY_ID, SPEC_PACKAGES_BY_FAMILY = _load_spec_packages()
 
 def _detect_backend():
-    """Which bundle build (gpu/ or cpu/) to launch. AUDIOCPP_BACKEND=gpu|cuda|cpu
+    """Which bundle build to launch. AUDIOCPP_BACKEND=gpu|cuda|cpu|metal
     wins; otherwise auto-detect: gpu when an NVIDIA driver AND the gpu server
     build are both present, else cpu (the server runs fine on the cpu backend,
     just slower and with lower model coverage)."""
@@ -410,15 +488,16 @@ def _find_gguf_exe():
     (linux-cuda-release, a plain build/bin, …) are covered too; the active
     backend is tried first, then the other one.
     """
-    other = "cpu" if BACKEND == "gpu" else "gpu"
     candidates = [
         os.environ.get("AUDIOCPP_GGUF"),
         *(os.path.join(DEV_BIN_DIRS[b], GGUF_EXE_NAME)
-          for b in (BACKEND, other) if b in DEV_BIN_DIRS),
+          for b in (BACKEND, "gpu", "metal", "cpu") if b in DEV_BIN_DIRS),
         os.path.join(BUNDLE_ROOT, BACKEND, GGUF_EXE_NAME),
         os.path.join(BUNDLE_ROOT, "gpu", GGUF_EXE_NAME),
+        os.path.join(BUNDLE_ROOT, "metal", GGUF_EXE_NAME),
         os.path.join(BUNDLE_ROOT, "cpu", GGUF_EXE_NAME),
         os.path.join(PROJECT_ROOT, "audiocpp-portable", "gpu", GGUF_EXE_NAME),
+        os.path.join(PROJECT_ROOT, "audiocpp-portable", "metal", GGUF_EXE_NAME),
         os.path.join(PROJECT_ROOT, "audiocpp-portable", "cpu", GGUF_EXE_NAME),
     ]
     seen = set()
@@ -1436,10 +1515,89 @@ def _load_catalog():
     if os.path.isfile(CATALOG_PATH):
         try:
             with open(CATALOG_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
+                return _normalize_catalog_from_specs(json.load(f))
         except Exception as e:
             print(f"[webui] failed to read {CATALOG_PATH}: {e}; using defaults")
-    return DEFAULT_CATALOG
+    return _normalize_catalog_from_specs(DEFAULT_CATALOG)
+
+
+def _variant_key(value):
+    key = re.sub(r"[^a-z0-9]+", "", str(value).lower())
+    for suffix in ("safetensors", "gguf", "q80", "bf16", "f16", "orig"):
+        if key.endswith(suffix):
+            key = key[:-len(suffix)]
+    return key
+
+
+def _prefer_package(candidates):
+    gguf = [p for p in candidates if p.get("format") == "gguf"]
+    if gguf:
+        defaults = [p for p in gguf if p.get("default")]
+        q8 = [p for p in gguf if p.get("precision") == "q8_0"]
+        return (defaults or q8 or gguf)[0]
+    defaults = [p for p in candidates if p.get("default")]
+    return (defaults or candidates)[0] if candidates else None
+
+
+def _matching_spec_package(entry):
+    family = entry.get("family")
+    packages = SPEC_PACKAGES_BY_FAMILY.get(family, [])
+    if not packages:
+        return None
+    download_id = entry.get("download_id") or ""
+    current = SPEC_PACKAGE_BY_ID.get(download_id)
+    if current is not None:
+        if current.get("format") == "gguf":
+            return current
+        stem = re.sub(r"_?safetensors$", "", current["id"])
+        related = [p for p in packages if p["id"].startswith(stem + "_") and p.get("format") == "gguf"]
+        return _prefer_package(related) or current
+
+    direct = [p for p in packages if p["id"] == download_id or p["id"].startswith(download_id + "_")]
+    if direct:
+        return _prefer_package(direct)
+
+    path_base = os.path.basename(str(entry.get("path", "")).rstrip("/\\"))
+    path_key = _variant_key(path_base)
+    same_target = [p for p in packages if _variant_key(p.get("target_directory", "")) == path_key]
+    if same_target:
+        target = _prefer_package(same_target)
+        if target and target.get("format") == "safetensors":
+            stem = re.sub(r"_?safetensors$", "", target["id"])
+            related = [p for p in packages if p["id"].startswith(stem + "_") and p.get("format") == "gguf"]
+            return _prefer_package(related) or target
+        return target
+    return None
+
+
+def _without_legacy_weight_type_options(entry):
+    options = entry.get("session_options")
+    if not isinstance(options, dict):
+        return
+    filtered = {k: v for k, v in options.items()
+                if not (isinstance(k, str) and k.endswith("weight_type"))}
+    if filtered:
+        entry["session_options"] = filtered
+    else:
+        entry.pop("session_options", None)
+
+
+def _normalize_catalog_from_specs(catalog):
+    out = dict(catalog)
+    models = []
+    for raw in catalog.get("models", []):
+        entry = dict(raw)
+        package = _matching_spec_package(entry)
+        if package is not None:
+            entry["download_id"] = package["id"]
+            entry["path"] = "models/" + package["target_directory"]
+            entry["package_format"] = package.get("format")
+            entry["package_precision"] = package.get("precision")
+            if package.get("format") == "gguf":
+                _without_legacy_weight_type_options(entry)
+        models.append(entry)
+    out["models"] = models
+    return out
 
 
 def _load_model_params():
@@ -1460,15 +1618,20 @@ def _load_required_files():
     的最终布局）。用于把“手动拷贝/下载中断的不完整目录”和“已安装”区分开——不完整目录
     server 端只会报 no registered model loader，用户看不出缺了什么。
     文件缺失/损坏 -> {}（完整性检查停用，退回“目录存在即已安装”的旧行为）。"""
+    required = {pkg_id: list(package["required_files"])
+                for pkg_id, package in SPEC_PACKAGE_BY_ID.items()
+                if package.get("required_files")}
     if os.path.isfile(REQUIRED_FILES_PATH):
         try:
             with open(REQUIRED_FILES_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return {k: v for k, v in data.items() if isinstance(v, list)}
+            for key, value in data.items():
+                if isinstance(value, list) and key not in required:
+                    required[key] = value
         except Exception as e:
             print(f"[webui] failed to read {REQUIRED_FILES_PATH}: {e}; "
                   + _t("跳过模型完整性检查", "skipping model integrity check"))
-    return {}
+    return required
 
 
 CATALOG = _load_catalog()
@@ -1845,11 +2008,39 @@ def loaded_ids():
         return []
 
 
+def _is_downloaded_gguf_package(entry):
+    required = REQUIRED_FILES.get(entry.get("download_id") or "") or []
+    return bool(required) and all(str(path).lower().endswith(".gguf") for path in required)
+
+
+def _declared_package_gguf_path(entry):
+    if not _is_downloaded_gguf_package(entry):
+        return None
+    model_path = entry["abs_path"]
+    if not os.path.isdir(model_path):
+        return None
+    required = REQUIRED_FILES.get(entry.get("download_id") or "") or []
+    found = []
+    for rel in required:
+        parts = [part for part in str(rel).replace("\\", "/").split("/") if part]
+        candidate = os.path.join(model_path, *parts)
+        if os.path.isfile(candidate):
+            found.append(candidate)
+    return found[0] if len(found) == 1 else None
+
+
+def _server_model_path(entry):
+    gguf = _existing_gguf_path(entry)
+    if gguf is not None and _is_downloaded_gguf_package(entry):
+        return gguf
+    return entry["abs_path"]
+
+
 def _write_temp_config(entry):
     model = {
         "id": entry["id"],
         "family": entry["family"],
-        "path": entry["abs_path"],
+        "path": _server_model_path(entry),
         "task": entry.get("task", "tts"),
         "mode": entry.get("mode", "offline"),
     }
@@ -1992,8 +2183,8 @@ def _pump_server_output(proc):
 def _start_server(entry):
     global _server_proc, _loaded_id
     if not os.path.isfile(SERVER_EXE):
-        raise gr.Error(_t("找不到 server：{path}（可用 AUDIOCPP_BACKEND=gpu|cpu 指定）",
-                          "Server not found: {path}. Set AUDIOCPP_BACKEND=gpu|cpu.",
+        raise gr.Error(_t("找不到 server：{path}（可用 AUDIOCPP_BACKEND=gpu|cpu|metal 指定）",
+                          "Server not found: {path}. Set AUDIOCPP_BACKEND=gpu|cpu|metal.",
                           path=SERVER_EXE))
     cfg = _write_temp_config(entry)
     flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
@@ -2278,10 +2469,11 @@ def _live_download_prefix(entry):
                             "❌ **Will run out of disk**: ≈{need} still to fetch, only {free} free "
                             "on models/.", need=_fmt_bytes(remaining), free=_fmt_bytes(usage.free)))
         elif verdict == "alarm":
-            lines.append(_t("🚨 **磁盘告警**：下完将占用 {fill:.0%}（告警线 {limit:.0%}）。",
-                            "🚨 **Disk alarm**: {fill:.0%} full when this finishes "
-                            "(alarm above {limit:.0%}).",
-                            fill=_disk_fill_after(remaining, usage), limit=DISK_USAGE_ALARM))
+            lines.append(_t("🚨 **磁盘告警**：下完仅剩 {left}（告警线低于 {free_limit}）。",
+                            "🚨 **Disk alarm**: {left} left when this finishes "
+                            "(alarm below {free_limit} free).",
+                            left=_fmt_bytes(usage.free - remaining),
+                            free_limit=_fmt_bytes(DISK_FREE_ALARM_BYTES)))
     lines.extend(requirements_info_lines(entry))
     return "\n\n".join(lines) + "\n\n" if lines else ""
 
@@ -2300,10 +2492,13 @@ def hf_token_present():
 
 _dl_size_cache = {}      # download_id -> total remote bytes, or None when unknown
 _dl_size_lock = threading.Lock()
-# A volume this full after the download is worth stopping for — not because the fetch
-# fails (it fits) but because what is left is no longer comfortable to work in. Alarming,
-# not blocking: it is the user's disk, so the download stays available behind a confirm.
-DISK_USAGE_ALARM = 0.75
+
+
+# Leaving too little free space after the download is worth stopping for: not because the
+# fetch fails (it fits), but because the volume is no longer comfortable to work in.
+# Alarming, not blocking: it is the user's disk, so the download stays available behind
+# a confirm.
+DISK_FREE_ALARM_BYTES = 20 * 1000 ** 3
 # Likewise for the device the model runs on: needing more than this share of VRAM (or of
 # system RAM on the CPU backend) means it will run, if at all, with nothing to spare.
 MEMORY_USAGE_ALARM = 0.80
@@ -2347,6 +2542,36 @@ def package_download_bytes(download_id):
     with _dl_size_lock:
         if download_id in _dl_size_cache:
             return _dl_size_cache[download_id]
+    spec_package = SPEC_PACKAGE_BY_ID.get(download_id)
+    if spec_package is not None:
+        total = None
+        download = spec_package.get("download") or {}
+        if download.get("kind") == "huggingface_snapshot" and download.get("repo"):
+            repo = download["repo"]
+            revision = download.get("revision", "main")
+            headers = {"User-Agent": "audio.cpp webui"}
+            token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+            if token:
+                headers["Authorization"] = f"Bearer {token.strip()}"
+            sizes = []
+            try:
+                for remote in spec_package.get("files", ()):
+                    url = ("https://huggingface.co/"
+                           + repo + "/resolve/" + quote(str(revision), safe="")
+                           + "/" + "/".join(quote(part, safe="") for part in remote.split("/")))
+                    response = requests.head(url, headers=headers, allow_redirects=True, timeout=60)
+                    response.raise_for_status()
+                    length = response.headers.get("Content-Length")
+                    if length is None:
+                        sizes = []
+                        break
+                    sizes.append(int(length))
+                total = sum(sizes) if sizes else None
+            except Exception as exc:
+                print(f"[webui] could not read the download size of {download_id}: {exc}")
+        with _dl_size_lock:
+            _dl_size_cache[download_id] = total
+        return total
     mm = _model_manager_module()
     total = None
     if mm is not None:
@@ -2443,14 +2668,14 @@ def _disk_fill_after(need_bytes, usage):
 def _disk_verdict(need_bytes, usage):
     """"" | "alarm" | "short" for fetching `need_bytes` onto `usage`'s volume.
 
-    "short" means it cannot fit at all; "alarm" means it fits but leaves the volume over
-    DISK_USAGE_ALARM full."""
+    "short" means it cannot fit at all; "alarm" means it fits but leaves less than
+    DISK_FREE_ALARM_BYTES free."""
     if need_bytes is None or usage is None:
         return ""
     if usage.free < need_bytes:
         return "short"
-    fill = _disk_fill_after(need_bytes, usage)
-    return "alarm" if fill is not None and fill > DISK_USAGE_ALARM else ""
+    left = usage.free - need_bytes
+    return "alarm" if left < DISK_FREE_ALARM_BYTES else ""
 
 
 def requirements_info_lines(entry):
@@ -2468,8 +2693,6 @@ def requirements_info_lines(entry):
         if fill is None:
             lines.append(_t("📦 下载约 {need}", "📦 Download ≈{need}", need=_fmt_bytes(need)))
         else:
-            # Before → after, so a volume that is already past the line is distinguishable
-            # from a download that pushes it there.
             lines.append(_t("📦 下载约 {need} · models/ 可用 {free} · 占用 {before:.0%} → {fill:.0%}",
                             "📦 Download ≈{need} · {free} free on models/ · {before:.0%} → {fill:.0%} full",
                             need=_fmt_bytes(need), free=_fmt_bytes(usage.free),
@@ -2512,15 +2735,11 @@ def download_requirements(entry):
             "on models/. The download was not started.",
             label=entry["label"], need=_fmt_bytes(need), free=_fmt_bytes(usage.free))
     elif verdict == "alarm":
-        already = usage.used / usage.total > DISK_USAGE_ALARM
         lines.append(_t(
-            "🚨 **磁盘告警**：models/ 所在分区{already}将占用 **{fill:.0%}**（告警线 {limit:.0%}），"
-            "下完仅剩约 {left}。确定要下载再点确认。",
-            "🚨 **Disk alarm**: the `models/` volume {already}would be **{fill:.0%}** full "
-            "(alarm above {limit:.0%}), ≈{left} left. Confirm only if you really want it.",
-            already=_t("本来就已超过告警线，下载后", "is already over the line and ") if already else "",
-            fill=_disk_fill_after(need, usage), limit=DISK_USAGE_ALARM,
-            left=_fmt_bytes(usage.free - need)))
+            "🚨 **磁盘告警**：下完 `models/` 所在分区仅剩约 {left}（低于 {free_limit}）。确定要下载再点确认。",
+            "🚨 **Disk alarm**: the `models/` volume would have ≈{left} left "
+            "(below {free_limit}). Confirm only if you really want it.",
+            left=_fmt_bytes(usage.free - need), free_limit=_fmt_bytes(DISK_FREE_ALARM_BYTES)))
     memory = memory_alarm(entry)
     if memory:
         need_gb, available_gb, share, device = memory
@@ -2792,12 +3011,9 @@ def _gguf_output_path(entry):
 def _existing_gguf_path(entry):
     """The GGUF this entry would actually load, or None.
 
-    Mirrors find_directory_gguf() in src/framework/assets/tensor_source.cpp: an
-    explicitly configured .gguf path, else model.gguf in the model directory, else
-    the sole .gguf in it. Published packages keep their release name
-    (vevo2-q8_0.gguf, voxtral-mini-4b-realtime-2602-q8_0.gguf), so matching only
-    model.gguf reported an installed GGUF package as "no GGUF yet" and offered to
-    convert weights that were never downloaded."""
+    Mirrors find_directory_gguf() in src/framework/assets/tensor_source.cpp for
+    ordinary directories, and also follows downloaded package manifests whose
+    GGUF is nested under the install root."""
     model_path = entry["abs_path"]
     if os.path.isfile(model_path) and model_path.lower().endswith(".gguf"):
         return model_path
@@ -2806,6 +3022,9 @@ def _existing_gguf_path(entry):
     default = os.path.join(model_path, "model.gguf")
     if os.path.isfile(default):
         return default
+    declared = _declared_package_gguf_path(entry)
+    if declared is not None:
+        return declared
     found = sorted(f for f in os.listdir(model_path)
                    if f.lower().endswith(".gguf") and os.path.isfile(os.path.join(model_path, f)))
     # Several GGUFs with no model.gguf are ambiguous for the loader too; it refuses

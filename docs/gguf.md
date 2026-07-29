@@ -67,8 +67,10 @@ Status labels:
 | `higgs_audio_tts` | Done | Pass | --- | Pass | Pass |
 | `htdemucs` | Done | Pass | --- | Pass | Pass (drift) |
 | `hviske_asr` | Done | Pass | --- | --- | Pass |
+| `inflect_v2` | Done | Pass | Pass | --- | --- |
 | `index_tts2` | Done | Pass | Pass | Pass (drift) | Pass (ASR match, drift) |
 | `irodori_tts` | Done | Pass | --- | Pass | Pass (drift) |
+| `kroko_asr` | Done | Pass | --- | --- | Pass |
 | `marblenet_vad` | Bundled (tiny model) | Pass | --- | --- | --- |
 | `mel_band_roformer` | Done | Pass | --- | Pass (drift) | Pass (drift) |
 | `miocodec` | Done | Pass | Pass | Pass (drift) | Pass (drift) |
@@ -78,6 +80,7 @@ Status labels:
 | `nemotron_asr` | Done | Pass | --- | Pass | Pass (minor filler drift) |
 | `omnivoice` | Done | Pass | --- | Pass (drift) | Pass (drift) |
 | `outetts` | Done | Pass (TTS + clone) | --- | --- | Pass (TTS + clone) |
+| `parakeet_tdt` | Done | Pass | Pass | Pass | Pass |
 | `pocket_tts` | Done | Pass | --- | Pass | Pass (drift) |
 | `qwen3_asr` | Done | Pass | --- | Pass | Pass |
 | `qwen3_forced_aligner` | Done | Pass | --- | Pass | Pass |

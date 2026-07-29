@@ -1,14 +1,14 @@
 // Golden-transcription regression test for the Parakeet-TDT 0.6B v3 offline
-// (full-context) ASR path.
+// full-context and bounded-window long-form ASR paths.
 //
 // This is a cheap, deterministic stand-in for the numerical parity work done
 // while debugging the encoder/frontend correctness bugs fixed in 4a10c48 and
 // 3bf2d12: it runs the full model end to end against a fixed test clip and
 // asserts the transcribed text matches the known-correct NeMo reference
-// output exactly. Neither of those two bugs produced a crash or an obviously
-// malformed result — the model loaded, ran, and produced plausible-shaped
-// tensors the whole time — so a text-level assertion like this is the
-// cheapest thing that would actually have caught them.
+// output exactly. It catches output-changing regressions cheaply, but it did
+// not catch every numerical bug found during development: greedy decoding
+// produced the same text for one folded-bias error despite measurable
+// encoder drift.
 //
 // This is *not* a substitute for the numerical layer-by-layer parity
 // comparison against NeMo used to diagnose those bugs (see
@@ -22,9 +22,10 @@
 //
 // Requires the real model weights and the checked-in fixture audio
 // (tests/parakeet_tdt/assets/2086-149220-0033.wav, see that directory's
-// README.md for provenance). If the model directory isn't present (e.g. a
-// fresh checkout without models downloaded), this test SKIPs rather than
-// failing, via SKIP_RETURN_CODE configured in CMakeLists.txt.
+// README.md for provenance). --model accepts either the installed
+// safetensors directory or a standalone GGUF. If the default model directory
+// isn't present (e.g. a fresh checkout without models downloaded), this test
+// SKIPs rather than failing, via SKIP_RETURN_CODE configured in CMakeLists.txt.
 
 #include "engine/framework/audio/wav_reader.h"
 #include "engine/framework/core/backend.h"
@@ -72,13 +73,17 @@ int main(int argc, char ** argv) {
         argc, argv, "--model", repo_path("models/parakeet-tdt-0.6b-v3").string());
     const std::filesystem::path audio_path = arg_value(
         argc, argv, "--audio", repo_path("tests/parakeet_tdt/assets/2086-149220-0033.wav").string());
+    const std::string weight_type = arg_value(argc, argv, "--weight-type", "");
 
-    if (!engine::io::is_existing_file(model_path / "config.json") ||
+    const bool model_available =
+        engine::io::is_existing_file(model_path) ||
+        engine::io::is_existing_file(model_path / "config.json");
+    if (!model_available ||
         !engine::io::is_existing_file(audio_path)) {
         std::fprintf(
             stderr,
             "SKIP: parakeet_golden_transcription_test requires model weights at '%s' "
-            "and test audio at '%s' — neither is present, skipping.\n",
+            "and test audio at '%s'; a model directory or standalone GGUF is accepted.\n",
             model_path.string().c_str(),
             audio_path.string().c_str());
         return kExitSkip;
@@ -86,7 +91,10 @@ int main(int argc, char ** argv) {
 
     try {
         auto registry = engine::runtime::make_default_registry();
-        auto model = registry.load(model_path);
+        engine::runtime::ModelLoadRequest load_request;
+        load_request.model_path = model_path;
+        load_request.family_hint = "parakeet_tdt";
+        auto model = registry.load(load_request);
 
         const engine::runtime::TaskSpec task{
             engine::runtime::VoiceTaskKind::Asr,
@@ -94,6 +102,9 @@ int main(int argc, char ** argv) {
         };
         engine::runtime::SessionOptions session_options;
         session_options.backend.type = engine::core::BackendType::Cpu;
+        if (!weight_type.empty()) {
+            session_options.options["parakeet_tdt.matmul_weight_type"] = weight_type;
+        }
 
         auto session_base = model->create_task_session(task, session_options);
         auto * session = dynamic_cast<engine::runtime::IOfflineVoiceTaskSession *>(session_base.get());
@@ -161,7 +172,8 @@ int main(int argc, char ** argv) {
         }
 
         session_base.reset();
-        session_options.options["parakeet_tdt.matmul_weight_type"] = "q8_0";
+        session_options.options["parakeet_tdt.matmul_weight_type"] =
+            weight_type.empty() ? "q8_0" : weight_type;
         session_options.options["parakeet_tdt.offline_mode"] = "long_form";
         session_options.options["parakeet_tdt.left_context_sec"] = "2";
         session_options.options["parakeet_tdt.right_context_sec"] = "1";

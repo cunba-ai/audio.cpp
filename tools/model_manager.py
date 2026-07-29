@@ -155,7 +155,11 @@ class ModelPackage:
 
 
 UTILITY_CONVERTER_KINDS = {"pytorch_to_safetensors"}
-POSTPROCESS_SNAPSHOT_PACKAGE_IDS = {"voxcpm2"}
+POSTPROCESS_SNAPSHOT_PACKAGE_IDS = {
+    "inflect_micro_v2",
+    "inflect_nano_v2",
+    "voxcpm2",
+}
 # HF repos that require accepting a license / access grant before download.
 _GATED_REPO_MARKERS = (
     "kyutai/pocket-tts",
@@ -175,6 +179,14 @@ def package_install_kind(package: ModelPackage) -> str:
 
 
 def package_usage_examples(package: ModelPackage) -> list[str]:
+    if package.id == "kroko_asr_community_converted":
+        return [
+            "python tools/model_manager.py install "
+            "kroko_asr_community_converted --source-file "
+            "models/Kroko-ASR/"
+            "Kroko-EN-Community-128-L-Streaming-001.data "
+            "--models-root models --overwrite",
+        ]
     if package.id == "voxcpm2_audiovae":
         return [
             "python tools/model_manager.py install voxcpm2_audiovae --source-file models/VoxCPM2/audiovae.pth --models-root models --overwrite",
@@ -999,6 +1011,52 @@ CATALOG: tuple[ModelPackage, ...] = (
         ),
     ),
     ModelPackage(
+        id="inflect_micro_v2",
+        display_name="Inflect Micro v2",
+        target_directory="Inflect-Micro-v2",
+        source=SnapshotSource(
+            repo_id="owensong/Inflect-Micro-v2-ONNX",
+            revision="91b1ab6432323064ec0e8e9704d92fcecd24855f",
+            include_prefixes=(
+                "config.json",
+                "onnx/duration.onnx",
+                "onnx/decode.onnx",
+            ),
+        ),
+        required_files=("config.json", "model.safetensors"),
+        family="inflect_v2",
+        tasks=("tts",),
+        modes=("offline",),
+        standalone=True,
+        description=(
+            "Downloads the pinned official ONNX export and converts its FP32 "
+            "initializers to the native Inflect v2 safetensors layout."
+        ),
+    ),
+    ModelPackage(
+        id="inflect_nano_v2",
+        display_name="Inflect Nano v2",
+        target_directory="Inflect-Nano-v2",
+        source=SnapshotSource(
+            repo_id="owensong/Inflect-Nano-v2-ONNX",
+            revision="df3627e44c26192714c9dcba6b8e9b47e7a6e3d9",
+            include_prefixes=(
+                "config.json",
+                "onnx/duration.onnx",
+                "onnx/decode.onnx",
+            ),
+        ),
+        required_files=("config.json", "model.safetensors"),
+        family="inflect_v2",
+        tasks=("tts",),
+        modes=("offline",),
+        standalone=True,
+        description=(
+            "Downloads the pinned official ONNX export and converts its FP32 "
+            "initializers to the native Inflect v2 safetensors layout."
+        ),
+    ),
+    ModelPackage(
         id="outetts_1_0_1b",
         display_name="OuteTTS 1.0 1B",
         target_directory="Llama-OuteTTS-1.0-1B",
@@ -1309,6 +1367,27 @@ CATALOG: tuple[ModelPackage, ...] = (
             "citrinet_256_tokenizer.model",
             "citrinet_256_vocab.txt",
         ),
+    ),
+    ModelPackage(
+        id="kroko_asr_community_converted",
+        display_name="Kroko Community ASR (converted)",
+        target_directory="Kroko-ASR-Community",
+        source=ConverterSource(
+            kind="kroko_data",
+            description=(
+                "Convert a local free Kroko Community .data package into "
+                "framework-ready safetensors and sidecars."
+            ),
+        ),
+        required_files=(
+            "config.json",
+            "model.safetensors",
+            "tokens.txt",
+        ),
+        family="kroko_asr",
+        standalone=True,
+        tasks=("asr",),
+        modes=("offline", "streaming"),
     ),
     ModelPackage(
         id="voxcpm2",
@@ -1812,6 +1891,25 @@ def convert_moss_tts_weights(root: Path) -> None:
     write_checked_safetensors(tensors, output_path, input_path, overwrite=True)
 
 
+def convert_inflect_v2_weights(root: Path) -> None:
+    subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "tools" / "community_models" / "convert_inflect_v2.py"),
+            "--duration",
+            str(root / "onnx" / "duration.onnx"),
+            "--decode",
+            str(root / "onnx" / "decode.onnx"),
+            "--config",
+            str(root / "config.json"),
+            "--output",
+            str(root / "model.safetensors"),
+        ],
+        check=True,
+    )
+    shutil.rmtree(root / "onnx")
+
+
 def convert_ace_step_silence_latent(root: Path) -> None:
     input_path = root / "silence_latent.pt"
     output_path = root / "silence_latent.safetensors"
@@ -1875,10 +1973,25 @@ def install_snapshot(package: ModelPackage, source: SnapshotSource, models_root:
     staging_root.mkdir(parents=True, exist_ok=True)
     staging_dir = Path(tempfile.mkdtemp(prefix=f"{package.target_directory}.", dir=staging_root))
     try:
-        pre_validate_files = tuple(relative for relative in package.required_files if relative != "audiovae.safetensors")
-        install_snapshot_into_dir(source, staging_dir, pre_validate_files, validate=package.id != "voxcpm2")
+        generated_files = {"audiovae.safetensors"}
+        if package.id in {"inflect_micro_v2", "inflect_nano_v2"}:
+            generated_files.add("model.safetensors")
+        pre_validate_files = tuple(
+            relative
+            for relative in package.required_files
+            if relative not in generated_files
+        )
+        install_snapshot_into_dir(
+            source,
+            staging_dir,
+            pre_validate_files,
+            validate=package.id not in POSTPROCESS_SNAPSHOT_PACKAGE_IDS,
+        )
         if package.id == "voxcpm2":
             convert_voxcpm2_audiovae(staging_dir)
+            validate_required_files(package, staging_dir)
+        elif package.id in {"inflect_micro_v2", "inflect_nano_v2"}:
+            convert_inflect_v2_weights(staging_dir)
             validate_required_files(package, staging_dir)
         elif package.id == "moss_tts_nano_100m_model":
             convert_moss_tts_weights(staging_dir)
@@ -2527,6 +2640,66 @@ def install_converter(
     target_dir = models_root / package.target_directory
     if source.kind == "nemo_archive":
         return install_nemo_archive(package, source, models_root, overwrite)
+    if source.kind == "kroko_data":
+        if not source_file_arg:
+            raise RuntimeError(
+                f"{package.id} requires --source-file <free-kroko.data>"
+            )
+        source_file = resolve_path(source_file_arg)
+        if not source_file.is_file():
+            raise RuntimeError(
+                f"Kroko .data package does not exist: {source_file}"
+            )
+        package_name = re.fullmatch(
+            r"(Kroko-[A-Za-z]{2}-Community-(?:64|128)-L)-Streaming-\d+\.data",
+            source_file.name,
+        )
+        if variant_arg:
+            target_dir = models_root / variant_arg
+        elif package_name:
+            target_dir = models_root / f"{package_name.group(1)}-Native"
+        if target_dir.exists() and not overwrite:
+            raise RuntimeError(
+                f"model directory already exists: {target_dir}"
+            )
+        staging_root = models_root / ".engine_model_staging"
+        staging_root.mkdir(parents=True, exist_ok=True)
+        staging_dir = Path(
+            tempfile.mkdtemp(
+                prefix=f"{target_dir.name}.",
+                dir=staging_root,
+            )
+        )
+        try:
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(
+                        REPO_ROOT
+                        / "tools"
+                        / "community_models"
+                        / "convert_kroko_onnx.py"
+                    ),
+                    str(source_file),
+                    str(staging_dir),
+                    "--overwrite",
+                ],
+                check=True,
+            )
+            validate_required_files(package, staging_dir)
+            if target_dir.exists():
+                shutil.rmtree(target_dir)
+            staging_dir.rename(target_dir)
+            return target_dir
+        except Exception:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            raise
+        finally:
+            try:
+                if staging_root.exists() and not any(staging_root.iterdir()):
+                    staging_root.rmdir()
+            except OSError:
+                pass
     if source.kind == "demucs_reference":
         return install_demucs_reference(package, models_root, overwrite, source_dir_arg, variant_arg)
     if source.kind != "pytorch_to_safetensors":
@@ -2570,10 +2743,11 @@ def command_info(args: argparse.Namespace) -> int:
 
 
 def command_install(args: argparse.Namespace) -> int:
-    _ensure_install_deps()
     package = PACKAGE_BY_ID.get(args.package_id)
     if package is None:
         raise RuntimeError(f"unknown package id: {args.package_id}")
+    if package.id not in {"inflect_micro_v2", "inflect_nano_v2"}:
+        _ensure_install_deps()
     models_root = resolve_path(args.models_root)
     models_root.mkdir(parents=True, exist_ok=True)
     source = package.source

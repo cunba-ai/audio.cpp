@@ -1260,7 +1260,12 @@ if (ENGINE_ENABLE_OPENMP)
 endif()
 
 if (MSVC)
-    target_compile_options(engine_runtime PRIVATE /utf-8)
+    # /utf-8 is an MSVC host-compiler option. Apply only to CXX sources: a bare
+    # /utf-8 is not forwarded to the host compiler by nvcc and is instead treated
+    # as a second input file (nvcc fatal: "A single input file is required"),
+    # breaking the .cu compiles (istft_cuda_runtime.cu, torch_random_cuda_runtime.cu).
+    # The .cu files already get /utf-8 via -Xcompiler=/utf-8 in the CUDA flags.
+    target_compile_options(engine_runtime PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/utf-8>)
 endif()
 
 if (ENGINE_ENABLE_CUDA AND NOT ENGINE_ENABLE_HIP)

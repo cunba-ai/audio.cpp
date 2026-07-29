@@ -114,17 +114,19 @@ The library exports **44 functions** across these categories:
 
 ```c
 // Backend type
-AUDIOCPP_BACKEND_CPU    = 0
-AUDIOCPP_BACKEND_CUDA   = 1   // also covers AMD ROCm (HIP)
-AUDIOCPP_BACKEND_VULKAN = 2
-AUDIOCPP_BACKEND_METAL  = 3
-AUDIOCPP_BACKEND_SYCL   = 4   // Intel oneAPI
-AUDIOCPP_BACKEND_BEST   = 5   // auto-select
+AUDIOCPP_BACKEND_CPU    = 0   // CPU (always available)
+AUDIOCPP_BACKEND_CUDA   = 1   // NVIDIA CUDA (also AMD ROCm/HIP, MUSA)
+AUDIOCPP_BACKEND_VULKAN = 2   // Vulkan (NVIDIA/AMD/Intel/Apple-MoltenVK)
+AUDIOCPP_BACKEND_METAL  = 3   // Apple Metal (macOS/iOS)
+AUDIOCPP_BACKEND_SYCL   = 4   // Intel oneAPI SYCL
+AUDIOCPP_BACKEND_BEST   = 5   // auto-select best available
 
-// Device type
-AUDIOCPP_DEVICE_CPU  = 0
-AUDIOCPP_DEVICE_GPU  = 1
-AUDIOCPP_DEVICE_IGPU = 2
+// Device type (mirrors ggml_backend_dev_type)
+AUDIOCPP_DEVICE_CPU   = 0
+AUDIOCPP_DEVICE_GPU   = 1
+AUDIOCPP_DEVICE_IGPU  = 2
+AUDIOCPP_DEVICE_ACCEL = 3   // hardware accelerator (e.g. Apple Metal)
+AUDIOCPP_DEVICE_META  = 4   // meta device (ggml internal, rare)
 ```
 
 #### Functions
@@ -240,7 +242,13 @@ load directly. With `AUDIOCPP_EMBED_AUDIO_UTILITIES=ON` (~28 MB: deepfilternet2 
 `model_path = NULL` to use baked-in weights; otherwise pass the model directory
 (rnnoise takes a file path). The input sample rate is arbitrary (resampled to the
 model's native rate internally). `options_json` keys: `backend` ("cpu"|"cuda"|
-"vulkan"), `device` (index).
+"vulkan"|"metal"|"sycl"), `device` (index).
+
+> **Models are cached**: `audiocpp_denoise` / `audiocpp_super_resolve` cache the
+> loaded model process-wide keyed by (path, backend, device). The first call
+> pays the load cost (8–11 MB weights + graph build + GPU upload); subsequent
+> calls with the same config reuse the cached model. The cache holds weak
+> references, so models are reclaimed when no caller holds a result.
 
 > **Arbitrary-length input is safe**: each model handles long audio internally
 > via built-in overlap-add (deepfilternet2/zipenhancer/flashsr) or per-frame
@@ -343,7 +351,9 @@ before calling a run function and do not change it mid-run.
 
 ### 6. Streaming (Chunk-Push Model)
 
-For real-time / low-latency processing (streaming VAD, streaming ASR):
+For real-time / low-latency processing (streaming VAD, streaming ASR). The
+streaming session inherits the backend (CPU/CUDA/...) from the model handle —
+it runs on the same device selected at `audiocpp_load_model` time.
 
 ```c
 // 1. Start stream (creates a new streaming session)

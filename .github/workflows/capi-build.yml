@@ -488,7 +488,7 @@ jobs:
     needs: [linux, windows]
     # Only upload to OSS on main-branch pushes (release artifacts). PRs and
     # other branches run the full build matrix for compile verification but
-    # skip the upload.
+    # skip the upload — their artifacts are available via the Actions UI only.
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
 
     steps:

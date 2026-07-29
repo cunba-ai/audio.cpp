@@ -29,6 +29,7 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -1736,6 +1737,18 @@ public:
         const int64_t trailing_rows = static_cast<int64_t>(state.trailing_text.size()) / config.hidden_size;
         std::vector<int32_t> generated_first_codes;
         generated_first_codes.reserve(static_cast<size_t>(max_new_tokens));
+        // Repetition-collapse (runaway) guard. Under sampling, the talker can
+        // fall into a degenerate attractor where one codec token dominates and
+        // the EOS logit collapses far below the top-k (measured rank ~1800/2049),
+        // so generation runs to max_new_tokens producing minutes of junk audio and
+        // a memory blowup. This is a known model-level failure mode of Qwen3-TTS
+        // *Base* variants (upstream QwenLM/Qwen3-TTS#118, sgl-project/sglang-omni#1179).
+        // Detect it: if a single token fills the majority of a recent sliding
+        // window, the trajectory is stuck — truncate and keep the audio already
+        // produced (which is valid up to the collapse point).
+        constexpr int64_t kRunawayWindow = 16;
+        constexpr int64_t kRunawayMinStep = kRunawayWindow;  // don't trip before a full window exists
+        constexpr double kRunawayDominance = 0.5;            // >50% same token in window
         uint64_t sample_call_index = 0;
         double processor_ms = 0.0;
         double code_predictor_ms = 0.0;
@@ -1761,6 +1774,25 @@ public:
             processor_ms += engine::debug::elapsed_ms(processor_start, Clock::now());
             if (first_code == config.codec_eos_token_id) {
                 break;
+            }
+            // Repetition-collapse guard: if one token dominates the recent
+            // window, the trajectory is stuck in a degenerate attractor. Stop
+            // early and keep the valid audio already generated.
+            if (step >= kRunawayMinStep) {
+                const auto tail_begin = generated_first_codes.end() - static_cast<size_t>(kRunawayWindow);
+                const auto tail_end = generated_first_codes.end();
+                std::unordered_map<int32_t, int64_t> counts;
+                for (auto it = tail_begin; it != tail_end; ++it) {
+                    ++counts[*it];
+                }
+                int64_t max_count = 0;
+                for (const auto & [_, c] : counts) {
+                    max_count = std::max(max_count, c);
+                }
+                if (static_cast<double>(max_count) / static_cast<double>(kRunawayWindow) > kRunawayDominance) {
+                    debug::timing_log_scalar("qwen3_tts.talker.runaway_truncated", 1.0);
+                    break;
+                }
             }
             if (step + 1 >= max_new_tokens) {
                 break;

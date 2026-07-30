@@ -56,11 +56,12 @@ Status labels:
 
 | Family | Package-spec refactor | Safetensors tested after refactor | `orig` GGUF tested | 16-bit GGUF tested | `q8_0` GGUF tested |
 |---|---|---|---|---|---|
-| `ace_step` | Done | Pass | --- | Pass (drift) | Pass (drift) |
+| `ace_step` | Done | Pass | --- | Pass (drift) | No (planner sampling can fail) |
 | `bs_roformer` | Done | Pass | --- | --- | Pass |
 | `chatterbox` | Done | Pass | --- | Pass (ASR match, drift) | Pass (ASR match, drift) |
 | `citrinet_asr` | Done | Pass | --- | --- | Pass |
 | `fish_audio` | Done | Pass | --- | Pass | Pass |
+| `fun_asr_nano` | Done | Pass | --- | Pass | Pass |
 | `glm_tts` | Done | Pass (TTS + clone) | --- | --- | Pass (ASR match, drift) |
 | `heartmula` | Done | Pass | --- | Pass (drift) | Pass (drift) |
 | `higgs_audio_stt` | Done | Pass | --- | Pass | Pass |
@@ -87,6 +88,7 @@ Status labels:
 | `qwen3_tts` base | Done | Pass | Pass | Pass (ASR match, drift) | Pass (ASR match, drift) |
 | `qwen3_tts` custom voice | Done | Pass | --- | Pass (ASR match, drift) | Pass (ASR match, drift) |
 | `qwen3_tts` voice design | Done | Pass | --- | Pass (ASR match, drift) | Pass (ASR match, drift) |
+| `rvc` | Done | --- | --- | Pass | --- |
 | `seed_vc` | Done | Pass | --- | Pass (drift) | Pass (drift) |
 | `silero_vad` | Skip (tiny model) | --- | --- | --- | --- |
 | `sortformer_diar` | Done | Pass | --- | Pass | Pass |

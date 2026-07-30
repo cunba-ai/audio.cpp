@@ -2,12 +2,14 @@
 
 | Model | Family | Mode(s) | Quick Start |
 |---|---|---|---|
+| Fun-ASR-Nano | `fun_asr_nano` | offline | [Fun-ASR-Nano](#fun-asr-nano) |
 | Qwen3 ASR | `qwen3_asr` | offline | [Qwen3 ASR](#qwen3-asr) |
 | Citrinet ASR | `citrinet_asr` | offline | [Citrinet ASR](#citrinet-asr) |
 | Kroko Community ASR | `kroko_asr` | offline, streaming | [Kroko Community ASR](#kroko-community-asr) |
 | Higgs Audio STT | `higgs_audio_stt` | offline, streaming | [Higgs Audio STT](#higgs-audio-stt) |
 | Hviske ASR | `hviske_asr` | offline | [Hviske ASR](#hviske-asr) |
 | Nemotron ASR | `nemotron_asr` | offline, streaming | [Nemotron ASR](#nemotron-asr) |
+| Parakeet-TDT | `parakeet_tdt` | offline, streaming | [Parakeet-TDT](#parakeet-tdt) |
 | VibeVoice ASR | `vibevoice_asr` | offline | [VibeVoice ASR](#vibevoice-asr) |
 | Voxtral Realtime | `voxtral_realtime` | offline, streaming | [Voxtral Realtime](#voxtral-realtime) |
 
@@ -20,6 +22,24 @@ audiocpp_cli --task asr --family <family> --model <model-dir> --backend cuda --a
 ```
 
 When `--mode streaming` is used, the selected model provides its default streaming policy.
+
+## Fun-ASR-Nano
+
+Fun-ASR-Nano provides offline multilingual transcription for Chinese, English,
+and Japanese with automatic language selection. The recommended package is the
+standalone Q8_0 GGUF published by FunAudioLLM.
+
+```bash
+python3 tools/model_manager_v2.py install fun_asr_nano
+audiocpp_cli --task asr --family fun_asr_nano \
+  --model models/Fun-ASR-Nano-2512-GGUF/fun-asr-nano-2512-q8_0.gguf \
+  --backend cuda --audio speech_16k.wav --text-out transcript.txt
+```
+
+The runtime supports fixed offline chunking and inverse text normalization.
+Streaming and timestamp output are not exposed. See the
+[Fun-ASR-Nano model guide](models/fun_asr_nano.md) for package, option, GGUF,
+and server details.
 
 ## Qwen3 ASR
 
@@ -68,26 +88,23 @@ joiner, greedy search, and modified beam search natively without ONNX Runtime.
 Blank penalty, natural-text hotwords, and opt-in endpoint segmentation are
 available as request options. Public free packages
 are available for German, English, Spanish, French, Italian, Hebrew, Dutch,
-Portuguese, Swedish, and Turkish. Download the matching free Kroko Community
-`.data` package and convert it before use:
+Portuguese, Swedish, and Turkish. The model manager defaults to the standalone
+English Q8_0 GGUF package:
 
 ```powershell
-python .\tools\community_models\convert_kroko_onnx.py `
-  .\models\Kroko-ASR\Kroko-EN-Community-128-L-Streaming-001.data `
-  .\models\Kroko-ASR\Kroko-EN-Community-128-L-Native `
-  --overwrite
+python .\tools\model_manager.py install kroko_asr_community_q8_0 --models-root .\models --overwrite
 ```
 
 ```powershell
 .\build\windows-cuda-release\bin\audiocpp_cli.exe `
   --task asr --mode streaming --family kroko_asr `
-  --model .\models\Kroko-ASR\Kroko-EN-Community-128-L-Native `
+  --model .\models\Kroko-ASR-GGUF\kroko-en-community-64-l-q8_0.gguf `
   --backend cuda --audio .\speech.wav --language en `
   --text-out .\transcript.txt --words-out .\words.json
 ```
 
-Converted safetensors and standalone Q8 GGUF are supported in offline and
-stateful streaming modes. Partial transcripts and word timestamps are exposed.
+Standalone Q8 GGUF is supported in offline and stateful streaming modes. Partial
+transcripts and word timestamps are exposed.
 See [Kroko Community ASR](community_models/kroko_asr.md) for package selection,
 conversion, GGUF, decoding options, parity, performance, and limitation details.
 
@@ -230,6 +247,23 @@ audiocpp_cli --task asr --family nemotron_asr --model models/nemotron-3.5-asr-st
 | `--words-out` | JSON path | not set | Write token timestamp output when produced. |
 | `--text-out` | TXT path | not set | Transcript output. The transcript is also printed to stdout. |
 | `--session-option nemotron_asr.mem_saver=true|false` | bool | `false` | Release the offline encoder graph after each offline request. |
+
+## Parakeet-TDT
+
+Parakeet-TDT is a FastConformer-TDT ASR model for multilingual offline,
+long-form, and buffered-streaming transcription. The model manager defaults to
+the standalone Q8_0 GGUF package.
+
+```bash
+python3 tools/model_manager.py install parakeet_tdt_q8_0 --models-root models
+audiocpp_cli --task asr --family parakeet_tdt \
+  --model models/Parakeet-TDT-0.6B-v3-GGUF/parakeet-tdt-0.6b-v3-q8_0.gguf \
+  --backend cuda --audio speech_16k.wav --text-out transcript.txt
+```
+
+Use `parakeet_tdt_f16` for the F16 GGUF variant. See
+[Parakeet-TDT 0.6B v3](community_models/parakeet_tdt.md) for long-form,
+streaming, conversion, options, validation, and performance details.
 
 ## VibeVoice ASR
 

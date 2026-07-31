@@ -92,6 +92,12 @@ int main(int argc, char **argv) {
     printf("[stream] audiocpp version: %s\n", p_version());
 
     audiocpp_error_t err = {0, NULL};
+    // __zh__ => 用源码内写死的 UTF-8 中文,绕过 Windows 命令行编码(codepage)问题,
+    // 确保 text 进 CAPI 时是合法 UTF-8。
+    const char *zh_text = u8"你好世界,这是一个测试。";
+    if (strcmp(text, "__zh__") == 0) {
+        text = zh_text;
+    }
     printf("[stream] 加载模型: %s (backend=%s, task=TTS)\n", model_path, backend_str);
     audiocpp_model_t *model = p_load_model(model_path, NULL, TASK_TTS, backend, 0, 4, &err);
     if (!model) {

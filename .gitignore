@@ -46,3 +46,4 @@ __pycache__/
 # personal voice recording — stays local, repo is public
 /webui/voice/my-record.wav
 ref/
+audiocpp.dll

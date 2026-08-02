@@ -1470,17 +1470,27 @@ if (AUDIOCPP_BUILD_CAPI)
         # via file Properties > Details (right-click the DLL) without loading
         # it. Derive a numeric FILEVERSION from git describe; anything we can't
         # parse falls back to 0.0.0.0 (the string fields still carry the truth).
-        set(AUDIOCPP_RC_FILEVERSION "0,0,0,0")
-        string(REGEX MATCH "([0-9]+)\\.([0-9]+)\\.([0-9]+)(-([0-9]+))?" _v "${AUDIOCPP_GIT_VERSION}")
-        if (CMAKE_MATCH_1 AND CMAKE_MATCH_2 AND CMAKE_MATCH_3)
-            set(AUDIOCPP_RC_FILEVERSION "${CMAKE_MATCH_1},${CMAKE_MATCH_2},${CMAKE_MATCH_3},${CMAKE_MATCH_5}")
+        #
+        # Only attach the .rc under MSVC (or icx, which drives MSVC link.exe):
+        # these toolchains ship rc.exe and CMake reliably compiles the RC object.
+        # The Windows clang/MinGW toolchains (e.g. AMD ROCm's clang + lld under
+        # "Unix Makefiles") do not wire up a working resource compiler — CMake
+        # lists the .rc.res as a build target but never actually compiles it, so
+        # the link fails with "no such file or directory: ...rc.res". Those
+        # builds still expose the version via the strings build-id outlet.
+        if (MSVC OR CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
+            set(AUDIOCPP_RC_FILEVERSION "0,0,0,0")
+            string(REGEX MATCH "([0-9]+)\\.([0-9]+)\\.([0-9]+)(-([0-9]+))?" _v "${AUDIOCPP_GIT_VERSION}")
+            if (CMAKE_MATCH_1 AND CMAKE_MATCH_2 AND CMAKE_MATCH_3)
+                set(AUDIOCPP_RC_FILEVERSION "${CMAKE_MATCH_1},${CMAKE_MATCH_2},${CMAKE_MATCH_3},${CMAKE_MATCH_5}")
+            endif()
+            set(AUDIOCPP_RC_FILE "${CMAKE_CURRENT_BINARY_DIR}/audiocpp_version.rc")
+            configure_file(
+                "${CMAKE_CURRENT_SOURCE_DIR}/capi/src/audiocpp_version.rc.in"
+                "${AUDIOCPP_RC_FILE}"
+                @ONLY)
+            target_sources(audiocpp PRIVATE "${AUDIOCPP_RC_FILE}")
         endif()
-        set(AUDIOCPP_RC_FILE "${CMAKE_CURRENT_BINARY_DIR}/audiocpp_version.rc")
-        configure_file(
-            "${CMAKE_CURRENT_SOURCE_DIR}/capi/src/audiocpp_version.rc.in"
-            "${AUDIOCPP_RC_FILE}"
-            @ONLY)
-        target_sources(audiocpp PRIVATE "${AUDIOCPP_RC_FILE}")
     else()
         # Linux/macOS: version script
         set(AUDIOCPP_MAP_FILE "${CMAKE_CURRENT_BINARY_DIR}/audiocpp.map")

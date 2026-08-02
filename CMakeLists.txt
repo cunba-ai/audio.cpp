@@ -208,6 +208,13 @@ function(audiocpp_configure_runtime_object target_name)
     )
     target_compile_definitions(${target_name} PRIVATE ${AUDIOCPP_LIBYAML_COMPILE_DEFINITIONS})
     target_link_libraries(${target_name} PRIVATE ggml sentencepiece)
+    if (MSVC)
+        # Source files embed UTF-8 text (CJK normalization tables, comments);
+        # MSVC defaults to the host code page and mis-parses multibyte sequences
+        # unless told to read sources as UTF-8. Scoped to CXX so .cu files (which
+        # get it via -Xcompiler=/utf-8 in the CUDA flags) are unaffected.
+        target_compile_options(${target_name} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/utf-8>)
+    endif()
     if (ENGINE_ENABLE_OPENMP)
         target_link_libraries(${target_name} PRIVATE OpenMP::OpenMP_CXX)
         if (MSVC)
@@ -1143,6 +1150,51 @@ file(GENERATE
     OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/model_registry_loaders.inc"
     CONTENT "${AUDIOCPP_REGISTRY_LOADER_CONTENT}")
 
+# ──────────────────────────────────────────────────────────────────────────
+# Embed build provenance (git describe/commit/branch + build date) into the
+# audiocpp shared library. Single source of truth is generated/audiocpp_build_info.h,
+# consumed by audiocpp_version() (runtime API), the Windows VS_VERSION_INFO
+# resource (file-properties viewable without loading the DLL), and a strong-
+# symbol version string (strings/readelf viewable on every platform).
+# Captured at configure time; reconfigures pick up the then-current git state.
+# ──────────────────────────────────────────────────────────────────────────
+find_package(Git QUIET)
+if (GIT_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} describe --tags --always --dirty
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE AUDIOCPP_GIT_VERSION
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE AUDIOCPP_GIT_COMMIT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} rev-parse --abbrev-ref HEAD
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE AUDIOCPP_GIT_BRANCH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+endif()
+# Fall back to sentinels if git is unavailable or this is a tarball checkout.
+if (NOT AUDIOCPP_GIT_VERSION)
+    set(AUDIOCPP_GIT_VERSION "unknown")
+endif()
+if (NOT AUDIOCPP_GIT_COMMIT)
+    set(AUDIOCPP_GIT_COMMIT "unknown")
+endif()
+if (NOT AUDIOCPP_GIT_BRANCH)
+    set(AUDIOCPP_GIT_BRANCH "unknown")
+endif()
+string(TIMESTAMP AUDIOCPP_BUILD_DATE "%Y-%m-%dT%H:%M:%SZ" UTC)
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/capi/src/audiocpp_build_info.h.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/audiocpp_build_info.h"
+    @ONLY)
+
 set(AUDIOCPP_RUNTIME_OBJECTS
     $<TARGET_OBJECTS:engine_core>
     $<TARGET_OBJECTS:engine_model_silero_vad>
@@ -1329,11 +1381,17 @@ if (AUDIOCPP_BUILD_CAPI)
     # the DLL. This makes symbol export work across all compilers (MSVC, icx,
     # clang) without relying solely on the .def file.
     target_compile_definitions(audiocpp PRIVATE AUDIOCPP_EXPORTS)
+    if (MSVC)
+        # CAPI sources are UTF-8 (CJK docstrings/comments); read as UTF-8 so
+        # non-ASCII bytes don't warn (C4819) on non-English system code pages.
+        target_compile_options(audiocpp PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/utf-8>)
+    endif()
     target_include_directories(audiocpp PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/capi/include"
     )
     target_include_directories(audiocpp PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/external/cJSON"
+        "${CMAKE_CURRENT_BINARY_DIR}/generated"
     )
     target_link_libraries(audiocpp PRIVATE engine_runtime ggml cjson_vendor)
     if (ENGINE_ENABLE_OPENMP)
@@ -1407,6 +1465,22 @@ if (AUDIOCPP_BUILD_CAPI)
             # clang++ (e.g. AMD ROCm) drives lld-link: forward via -Wl,
             target_link_options(audiocpp PRIVATE "-Wl,/DEF:${AUDIOCPP_DEF_FILE}")
         endif()
+
+        # Embed a VS_VERSION_INFO resource so the build version is viewable
+        # via file Properties > Details (right-click the DLL) without loading
+        # it. Derive a numeric FILEVERSION from git describe; anything we can't
+        # parse falls back to 0.0.0.0 (the string fields still carry the truth).
+        set(AUDIOCPP_RC_FILEVERSION "0,0,0,0")
+        string(REGEX MATCH "([0-9]+)\\.([0-9]+)\\.([0-9]+)(-([0-9]+))?" _v "${AUDIOCPP_GIT_VERSION}")
+        if (CMAKE_MATCH_1 AND CMAKE_MATCH_2 AND CMAKE_MATCH_3)
+            set(AUDIOCPP_RC_FILEVERSION "${CMAKE_MATCH_1},${CMAKE_MATCH_2},${CMAKE_MATCH_3},${CMAKE_MATCH_5}")
+        endif()
+        set(AUDIOCPP_RC_FILE "${CMAKE_CURRENT_BINARY_DIR}/audiocpp_version.rc")
+        configure_file(
+            "${CMAKE_CURRENT_SOURCE_DIR}/capi/src/audiocpp_version.rc.in"
+            "${AUDIOCPP_RC_FILE}"
+            @ONLY)
+        target_sources(audiocpp PRIVATE "${AUDIOCPP_RC_FILE}")
     else()
         # Linux/macOS: version script
         set(AUDIOCPP_MAP_FILE "${CMAKE_CURRENT_BINARY_DIR}/audiocpp.map")

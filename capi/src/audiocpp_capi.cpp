@@ -7,6 +7,8 @@
 
 #include "audiocpp.h"
 
+#include "audiocpp_build_info.h"
+
 #include "engine/framework/assets/embedded.h"
 #include "engine/framework/audio/chunking.h"
 #include "engine/framework/audio/deepfilternet2.h"
@@ -860,10 +862,53 @@ audiocpp_vad_t *audiocpp_vad(
 /* Utilities                                                                 */
 /* ======================================================================== */
 
+// A self-contained build-ID string embedded verbatim into the binary so the
+// full version (tag + commit + branch + date + backend) is recoverable from
+// the file alone via `strings audiocpp.dll | grep audiocpp-build-id`, without
+// loading or calling it. Kept distinct from audiocpp_version()'s runtime-built
+// string: the macro literals there are merged/split by the optimizer, but this
+// single volatile-touched constant survives as one contiguous ASCII run.
+//
+// NOTE: intentionally not exported (hidden visibility) — it is a metadata
+// marker, not part of the C ABI.
+namespace {
+// Concatenated at compile time from the generated build-info macros. The
+// leading \n and the volatile read defeat dead-stripping so the linker keeps
+// the literal in .rdata/.rodata even though no public symbol references it.
+const char kAudiocppBuildId[] =
+    "\naudiocpp-build-id: " AUDIOCPP_BUILD_VERSION " "
+    AUDIOCPP_BUILD_COMMIT " " AUDIOCPP_BUILD_BRANCH " " AUDIOCPP_BUILD_DATE "\n";
+[[maybe_unused]] volatile char audiocpp_build_id_anchor = kAudiocppBuildId[0];
+}  // namespace
+
 const char *audiocpp_version(void) {
-    // audio.cpp doesn't expose a version string via the framework headers.
-    // Return a static identifier; update per release.
-    return "audio.cpp-capi-0.1.0";
+    // Report the build provenance captured at CMake configure time
+    // (generated/audiocpp_build_info.h). Format:
+    //   audio.cpp-capi <version> <commit> <branch> <date> <backend>
+    // The leading "audio.cpp-capi" tag is intentionally a stable, grep-able
+    // marker so `strings audiocpp.dll | grep audio.cpp-capi` surfaces the
+    // build from the file alone, without loading or calling it.
+#if defined(GGML_USE_CUDA)
+    static constexpr const char *kBackend = "cuda";
+#elif defined(GGML_USE_HIP)
+    static constexpr const char *kBackend = "hip";
+#elif defined(GGML_USE_SYCL)
+    static constexpr const char *kBackend = "sycl";
+#elif defined(GGML_USE_VULKAN)
+    static constexpr const char *kBackend = "vulkan";
+#elif defined(GGML_USE_METAL)
+    static constexpr const char *kBackend = "metal";
+#else
+    static constexpr const char *kBackend = "cpu";
+#endif
+    static const std::string version =
+        std::string("audio.cpp-capi ") +
+        AUDIOCPP_BUILD_VERSION + " " +
+        AUDIOCPP_BUILD_COMMIT + " " +
+        AUDIOCPP_BUILD_BRANCH + " " +
+        AUDIOCPP_BUILD_DATE + " " +
+        kBackend;
+    return version.c_str();
 }
 
 void audiocpp_free_audio(audiocpp_audio_t *audio) {

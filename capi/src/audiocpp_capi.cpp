@@ -1568,6 +1568,20 @@ audiocpp_stream_t *audiocpp_stream_start(
             throw std::runtime_error("model does not support streaming for this task");
         }
 
+        // Build an initial request from options, prepare the session, then start
+        // the stream — all BEFORE taking ownership of the result handle.
+        // start_stream can throw (e.g. empty text, model rejects the request); if
+        // it does, we must return NULL so the caller sees the failure in `err`
+        // instead of a half-initialized stream handle that blows up on the first
+        // pull ("streaming has not been started").
+        engine::runtime::TaskRequest req;
+        apply_options(req, options_json);
+        // Streaming sessions still need prepare() (e.g. supertonic's start_stream
+        // calls require_prepared). The offline run() path prepares implicitly;
+        // this streaming entry point must do it explicitly.
+        streaming->prepare(engine::runtime::build_preparation_request(req));
+        streaming->start_stream(req);
+
         result = new audiocpp_stream{};
         result->session = std::move(session);
         result->streaming = streaming;
@@ -1578,11 +1592,6 @@ audiocpp_stream_t *audiocpp_stream_start(
         streaming->set_stream_event_sink([&result](const engine::runtime::StreamEvent &ev) {
             result->sink_events.push_back(ev);
         });
-
-        // Build an initial request from options and start the stream
-        engine::runtime::TaskRequest req;
-        apply_options(req, options_json);
-        streaming->start_stream(req);
     });
     return result;
 }

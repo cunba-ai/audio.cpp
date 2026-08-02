@@ -692,6 +692,16 @@ Supertonic 3 is a preset-voice multilingual TTS model. It does not use external 
 | Voice input | Built-in preset voice id |
 | Built-in voices | `M1`-`M5`, `F1`-`F5` |
 
+> **Chinese text: use `--language en` (or omit `--language`).** `zh` (and any code
+> not in the list above) is rejected by the Supertonic text frontend with
+> `invalid Supertonic language: zh`. The model itself reads Chinese text fine
+> when routed through the `en` frontend (the text is wrapped in an `<en>…</en>`
+> tag and the multilingual encoder handles the CJK characters), so for Chinese
+> synthesis pass `--language en` or leave it at the default. This applies to
+> both offline and streaming; in streaming the rejection surfaces as the pull
+> loop producing zero chunks (the per-chunk `encode` throws and is swallowed by
+> the stream error boundary), so it is easy to misread as a streaming bug.
+
 ```bash
 audiocpp_cli --task tts --family supertonic --model /path/to/supertonic-3 --backend cuda --language en --text "Hello from Supertonic." --voice-id M1 --out out.wav
 ```

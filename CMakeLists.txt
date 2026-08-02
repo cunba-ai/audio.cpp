@@ -17,6 +17,9 @@ option(AUDIOCPP_DEPLOYMENT_BUILD
 option(AUDIOCPP_EMBED_VAD_ASSETS
     "Embed silero_vad + marblenet_vad weights into the binary (no external files needed for VAD)"
     ON)
+option(AUDIOCPP_EMBED_AUDIO_UTILITIES
+    "Embed deepfilternet2/rnnoise/zipenhancer/flashsr weights into the binary"
+    ON)
 
 # Model specs remain editable runtime data in normal builds. The converter always
 # carries the source catalog so the conversion binary is portable. Deployment builds
@@ -229,6 +232,19 @@ function(audiocpp_configure_runtime_object target_name)
         target_compile_definitions(${target_name} PUBLIC
             ENGINE_HAS_CUDA_ISTFT=1
             ENGINE_HAS_CUDA_TORCH_RANDOM=1)
+    endif()
+    # Propagate the AUDIOCPP_EMBED_* options to the OBJECT libraries the same way
+    # ENGINE_HAS_CUDA_* is above: these defines are added to engine_runtime below,
+    # but OBJECT-library TUs (engine_core/embedded.cpp, the model sessions) compile
+    # BEFORE engine_runtime links and don't inherit its PUBLIC defines. Without
+    # this, embedded.cpp compiles its #else stub (has_embedded_asset always false)
+    # even though the weight byte-arrays are baked into engine_runtime — so the
+    # data is in the binary but unreachable at runtime.
+    if (AUDIOCPP_EMBED_VAD_ASSETS)
+        target_compile_definitions(${target_name} PUBLIC AUDIOCPP_EMBED_VAD_ASSETS=1)
+    endif()
+    if (AUDIOCPP_EMBED_AUDIO_UTILITIES)
+        target_compile_definitions(${target_name} PUBLIC AUDIOCPP_EMBED_AUDIO_UTILITIES=1)
     endif()
 endfunction()
 
@@ -1296,9 +1312,6 @@ endif()
 # zipenhancer 7.9 + flashsr 0.3), so this is a separate option from VAD.
 # The loaders expect files on disk, so the C wrapper materializes the embedded
 # bytes to a per-process temp dir on first use.
-option(AUDIOCPP_EMBED_AUDIO_UTILITIES
-    "Embed deepfilternet2/rnnoise/zipenhancer/flashsr weights into the binary"
-    ON)
 if (AUDIOCPP_EMBED_AUDIO_UTILITIES)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     set(EMBEDDED_AUD_CPP "${CMAKE_CURRENT_BINARY_DIR}/generated/embedded_audio_utilities.cpp")

@@ -486,10 +486,12 @@ jobs:
     name: Publish to OSS
     runs-on: ubuntu-22.04
     needs: [linux, windows]
-    # Only upload to OSS on main-branch pushes (release artifacts). PRs and
+    # Only upload to OSS on main-branch builds (release artifacts). PRs and
     # other branches run the full build matrix for compile verification but
     # skip the upload — their artifacts are available via the Actions UI only.
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # A manual workflow_dispatch on main also uploads, so rebuilt artifacts
+    # can be published without crafting a push.
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
 
     steps:
       - name: Clone

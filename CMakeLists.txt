@@ -1175,6 +1175,16 @@ file(GENERATE
 # Captured at configure time; reconfigures pick up the then-current git state.
 # ──────────────────────────────────────────────────────────────────────────
 find_package(Git QUIET)
+# find_package(Git) can silently fail to set GIT_FOUND in some CI containers
+# (e.g. the nvidia/cuda image) even when git is installed, leaving the build-id
+# all-"unknown". Fall back to a direct PATH lookup like llama.cpp's build-info
+# does, so the configure-time git capture works in every environment.
+if (NOT GIT_FOUND)
+    find_program(GIT_EXECUTABLE NAMES git git.exe)
+    if (GIT_EXECUTABLE)
+        set(GIT_FOUND TRUE)
+    endif()
+endif()
 if (GIT_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
     execute_process(
         COMMAND ${GIT_EXECUTABLE} describe --tags --always --dirty
@@ -1206,6 +1216,7 @@ if (NOT AUDIOCPP_GIT_BRANCH)
     set(AUDIOCPP_GIT_BRANCH "unknown")
 endif()
 string(TIMESTAMP AUDIOCPP_BUILD_DATE "%Y-%m-%dT%H:%M:%SZ" UTC)
+message(STATUS "audio.cpp git capture: GIT_FOUND=${GIT_FOUND} GIT_EXECUTABLE=${GIT_EXECUTABLE} version=${AUDIOCPP_GIT_VERSION} commit=${AUDIOCPP_GIT_COMMIT} branch=${AUDIOCPP_GIT_BRANCH}")
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/capi/src/audiocpp_build_info.h.in"
     "${CMAKE_CURRENT_BINARY_DIR}/generated/audiocpp_build_info.h"

@@ -1185,57 +1185,59 @@ if (NOT GIT_FOUND)
         set(GIT_FOUND TRUE)
     endif()
 endif()
-# actions/checkout in Docker containers may surface the repo without a .git
-# dir at CMAKE_CURRENT_SOURCE_DIR (e.g. the checkout root differs). Probe both
-# the literal .git path and a `git rev-parse --git-dir` lookup so the capture
-# works whether or not the dotfile is where we expect.
-set(_audiocpp_git_dir "")
-execute_process(
-    COMMAND ${GIT_EXECUTABLE} -c safe.directory=* rev-parse --git-dir
-    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    OUTPUT_VARIABLE _audiocpp_git_dir
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET
-    RESULT_VARIABLE _audiocpp_gitdir_rc)
-if (NOT IS_ABSOLUTE "${_audiocpp_git_dir}")
-    set(_audiocpp_git_dir "${CMAKE_CURRENT_SOURCE_DIR}/${_audiocpp_git_dir}")
+# Probe for a usable git worktree. actions/checkout on GitHub runners runs
+# OUTSIDE the Docker container (e.g. nvidia/cuda) and only bind-mounts the
+# working tree into it — the .git directory is absent in-container, so a
+# literal EXISTS check fails and git commands return rc=128. Resolve the
+# worktree via `git rev-parse --git-dir` (which succeeds whenever git can
+# operate at all, regardless of where .git lives) and gate on that.
+set(_audiocpp_in_git_worktree FALSE)
+if (GIT_FOUND)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} -c safe.directory=* rev-parse --git-dir
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE _audiocpp_git_dir
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+        RESULT_VARIABLE _audiocpp_gitdir_rc)
+    if (_audiocpp_gitdir_rc EQUAL 0)
+        set(_audiocpp_in_git_worktree TRUE)
+    endif()
 endif()
-if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
-    set(_audiocpp_dotgit_exists TRUE)
-else()
-    set(_audiocpp_dotgit_exists FALSE)
-endif()
-message(STATUS "audio.cpp git probe: GIT_FOUND=${GIT_FOUND} dotgit_exists=${_audiocpp_dotgit_exists} gitdir_rc=${_audiocpp_gitdir_rc} gitdir=${_audiocpp_git_dir}")
-if (GIT_FOUND AND (_audiocpp_gitdir_rc EQUAL 0))
-    # In CI Docker containers (e.g. nvidia/cuda) the checkout's owner may not
-    # match the running user, so git refuses with "detected dubious ownership".
-    # `-c safe.directory=*` bypasses the check per-invocation without touching
-    # global config. Without this the capture silently fails (ERROR_QUIET) and
-    # the build-id comes out all-"unknown" on Linux .so.
+if (_audiocpp_in_git_worktree)
+    # `-c safe.directory=*` bypasses git's "dubious ownership" refusal when the
+    # checkout's owner doesn't match the running user (common in CI containers).
     execute_process(
         COMMAND ${GIT_EXECUTABLE} -c safe.directory=* describe --tags --always --dirty
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         OUTPUT_VARIABLE AUDIOCPP_GIT_VERSION
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_VARIABLE _git_ver_err
-        RESULT_VARIABLE _git_ver_rc)
+        OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
     execute_process(
         COMMAND ${GIT_EXECUTABLE} -c safe.directory=* rev-parse HEAD
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         OUTPUT_VARIABLE AUDIOCPP_GIT_COMMIT
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_VARIABLE _git_commit_err
-        RESULT_VARIABLE _git_commit_rc)
+        OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
     execute_process(
         COMMAND ${GIT_EXECUTABLE} -c safe.directory=* rev-parse --abbrev-ref HEAD
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         OUTPUT_VARIABLE AUDIOCPP_GIT_BRANCH
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_VARIABLE _git_branch_err
-        RESULT_VARIABLE _git_branch_rc)
-    message(STATUS "audio.cpp git capture detail: ver_rc=${_git_ver_rc} ver=[${AUDIOCPP_GIT_VERSION}] ver_err=[${_git_ver_err}] commit=[${AUDIOCPP_GIT_COMMIT}] branch=[${AUDIOCPP_GIT_BRANCH}]")
+        OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
 endif()
-# Fall back to sentinels if git is unavailable or this is a tarball checkout.
+# CI fallback: when .git is absent (Docker-container checkouts) the GitHub
+# Actions runner still exposes the commit and branch via environment variables
+# that are inherited by the container. Use them so the build-id carries real
+# provenance instead of "unknown".
+if (NOT AUDIOCPP_GIT_COMMIT AND DEFINED ENV{GITHUB_SHA})
+    set(AUDIOCPP_GIT_COMMIT "$ENV{GITHUB_SHA}")
+endif()
+if (NOT AUDIOCPP_GIT_BRANCH AND DEFINED ENV{GITHUB_REF_NAME})
+    set(AUDIOCPP_GIT_BRANCH "$ENV{GITHUB_REF_NAME}")
+endif()
+if (NOT AUDIOCPP_GIT_VERSION AND AUDIOCPP_GIT_COMMIT)
+    # No tag history reachable without .git; fall back to the short commit.
+    string(SUBSTRING "${AUDIOCPP_GIT_COMMIT}" 0 7 AUDIOCPP_GIT_VERSION)
+endif()
+# Final sentinel fallback if nothing was captured (e.g. a raw tarball build).
 if (NOT AUDIOCPP_GIT_VERSION)
     set(AUDIOCPP_GIT_VERSION "unknown")
 endif()
@@ -1246,7 +1248,7 @@ if (NOT AUDIOCPP_GIT_BRANCH)
     set(AUDIOCPP_GIT_BRANCH "unknown")
 endif()
 string(TIMESTAMP AUDIOCPP_BUILD_DATE "%Y-%m-%dT%H:%M:%SZ" UTC)
-message(STATUS "audio.cpp git capture: GIT_FOUND=${GIT_FOUND} GIT_EXECUTABLE=${GIT_EXECUTABLE} version=${AUDIOCPP_GIT_VERSION} commit=${AUDIOCPP_GIT_COMMIT} branch=${AUDIOCPP_GIT_BRANCH}")
+message(STATUS "audio.cpp build provenance: version=${AUDIOCPP_GIT_VERSION} commit=${AUDIOCPP_GIT_COMMIT} branch=${AUDIOCPP_GIT_BRANCH} date=${AUDIOCPP_BUILD_DATE}")
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/capi/src/audiocpp_build_info.h.in"
     "${CMAKE_CURRENT_BINARY_DIR}/generated/audiocpp_build_info.h"

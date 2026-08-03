@@ -907,6 +907,14 @@ AUDIOCPP_API void audiocpp_list_devices(void);
 /** Get the audio.cpp version string (static, do NOT free). */
 AUDIOCPP_API const char *audiocpp_version(void);
 
+/**
+ * Get the build-ID string (static, do NOT free): a single grep-able line
+ * "audiocpp-build-id: <version> <commit> <branch> <date>". Also embedded
+ * verbatim in the binary so it is recoverable via `strings <lib> | grep
+ * audiocpp-build-id` without loading it.
+ */
+AUDIOCPP_API const char *audiocpp_build_id(void);
+
 /** Free an audio result. Safe to call with NULL. */
 AUDIOCPP_API void audiocpp_free_audio(audiocpp_audio_t *audio);
 

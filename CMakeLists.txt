@@ -1438,6 +1438,7 @@ if (AUDIOCPP_BUILD_CAPI)
             "    audiocpp_vad\n"
             "    audiocpp_vad_energy\n"
             "    audiocpp_version\n"
+            "    audiocpp_build_id\n"
             "    audiocpp_free_audio\n"
             "    audiocpp_free_text\n"
             "    audiocpp_free_diar\n"

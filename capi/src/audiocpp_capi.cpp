@@ -867,19 +867,31 @@ audiocpp_vad_t *audiocpp_vad(
 // the file alone via `strings audiocpp.dll | grep audiocpp-build-id`, without
 // loading or calling it. Kept distinct from audiocpp_version()'s runtime-built
 // string: the macro literals there are merged/split by the optimizer, but this
-// single volatile-touched constant survives as one contiguous ASCII run.
+// single constant survives as one contiguous ASCII run.
 //
-// NOTE: intentionally not exported (hidden visibility) — it is a metadata
-// marker, not part of the C ABI.
-namespace {
-// Concatenated at compile time from the generated build-info macros. The
-// leading \n and the volatile read defeat dead-stripping so the linker keeps
-// the literal in .rdata/.rodata even though no public symbol references it.
+// Retention (Linux .so): keeping a metadata-only string through gcc/clang LTO
+// + --gc-sections is hard. An earlier version used a `volatile char` anchor in
+// an anonymous namespace; that internally-linked, only-self-referenced object
+// was removed by the ELF linker even without --gc-sections, so the strings
+// outlet was empty on .so (MSVC has no such DCE, so .dll worked). The triple
+// defense here is: (1) external linkage (no anonymous namespace), (2) the GCC
+// `used` attribute forbidding the compiler from dropping the symbol, (3) an
+// exported referencing function (audiocpp_build_id) so the linker keeps it.
+#if defined(__GNUC__)
+__attribute__((used))
+#endif
 const char kAudiocppBuildId[] =
     "\naudiocpp-build-id: " AUDIOCPP_BUILD_VERSION " "
     AUDIOCPP_BUILD_COMMIT " " AUDIOCPP_BUILD_BRANCH " " AUDIOCPP_BUILD_DATE "\n";
-[[maybe_unused]] volatile char audiocpp_build_id_anchor = kAudiocppBuildId[0];
-}  // namespace
+
+// Exported accessor for the build-ID string. Roots the literal against dead-
+// stripping on Linux (gcc/clang + --gc-sections / LTO): the earlier
+// `volatile char` anchor in an anonymous namespace was removed by the linker
+// even without --gc-sections, so .so lost the string (.dll was unaffected).
+// The string is also grep-able via `strings <lib> | grep audiocpp-build-id`.
+const char *audiocpp_build_id(void) {
+    return kAudiocppBuildId;
+}
 
 const char *audiocpp_version(void) {
     // Report the build provenance captured at CMake configure time

@@ -135,6 +135,7 @@ jobs:
             -DCMAKE_HIP_COMPILER_LAUNCHER=ccache \
             -DBUILD_SHARED_LIBS=ON \
             -DAUDIOCPP_BUILD_CAPI=ON \
+            -DAUDIOCPP_DEPLOYMENT_BUILD=ON \
             -DENGINE_BUILD_EXAMPLES=OFF \
             -DENGINE_ENABLE_OPENMP=OFF \
             ${{ matrix.config.cmake_extra }}
@@ -315,6 +316,7 @@ jobs:
             -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache ^
             -DBUILD_SHARED_LIBS=ON ^
             -DAUDIOCPP_BUILD_CAPI=ON ^
+            -DAUDIOCPP_DEPLOYMENT_BUILD=ON ^
             -DENGINE_BUILD_EXAMPLES=OFF ^
             -DENGINE_ENABLE_OPENMP=OFF ^
             -DENGINE_ENABLE_CUDA=ON ^
@@ -335,6 +337,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release `
             -DBUILD_SHARED_LIBS=ON `
             -DAUDIOCPP_BUILD_CAPI=ON `
+            -DAUDIOCPP_DEPLOYMENT_BUILD=ON `
             -DENGINE_BUILD_EXAMPLES=OFF `
             -DENGINE_ENABLE_OPENMP=OFF `
             -DGGML_HIP=ON `
@@ -354,6 +357,7 @@ jobs:
             -DCMAKE_CXX_COMPILER=icx ^
             -DBUILD_SHARED_LIBS=ON ^
             -DAUDIOCPP_BUILD_CAPI=ON ^
+            -DAUDIOCPP_DEPLOYMENT_BUILD=ON ^
             -DENGINE_BUILD_EXAMPLES=OFF ^
             -DGGML_SYCL=ON ^
             -DGGML_SYCL_F16=OFF ^
@@ -370,6 +374,7 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache ^
             -DBUILD_SHARED_LIBS=ON ^
             -DAUDIOCPP_BUILD_CAPI=ON ^
+            -DAUDIOCPP_DEPLOYMENT_BUILD=ON ^
             -DENGINE_BUILD_EXAMPLES=OFF ^
             -DENGINE_ENABLE_OPENMP=OFF ^
             -DENGINE_ENABLE_VULKAN=ON

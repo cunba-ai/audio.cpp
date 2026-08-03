@@ -1186,24 +1186,33 @@ if (NOT GIT_FOUND)
     endif()
 endif()
 if (GIT_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
+    # In CI Docker containers (e.g. nvidia/cuda) the checkout's owner may not
+    # match the running user, so git refuses with "detected dubious ownership".
+    # `-c safe.directory=*` bypasses the check per-invocation without touching
+    # global config. Without this the capture silently fails (ERROR_QUIET) and
+    # the build-id comes out all-"unknown" on Linux .so.
     execute_process(
-        COMMAND ${GIT_EXECUTABLE} describe --tags --always --dirty
+        COMMAND ${GIT_EXECUTABLE} -c safe.directory=* describe --tags --always --dirty
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         OUTPUT_VARIABLE AUDIOCPP_GIT_VERSION
         OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET)
+        ERROR_VARIABLE _git_ver_err
+        RESULT_VARIABLE _git_ver_rc)
     execute_process(
-        COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
+        COMMAND ${GIT_EXECUTABLE} -c safe.directory=* rev-parse HEAD
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         OUTPUT_VARIABLE AUDIOCPP_GIT_COMMIT
         OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET)
+        ERROR_VARIABLE _git_commit_err
+        RESULT_VARIABLE _git_commit_rc)
     execute_process(
-        COMMAND ${GIT_EXECUTABLE} rev-parse --abbrev-ref HEAD
+        COMMAND ${GIT_EXECUTABLE} -c safe.directory=* rev-parse --abbrev-ref HEAD
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         OUTPUT_VARIABLE AUDIOCPP_GIT_BRANCH
         OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET)
+        ERROR_VARIABLE _git_branch_err
+        RESULT_VARIABLE _git_branch_rc)
+    message(STATUS "audio.cpp git capture detail: ver_rc=${_git_ver_rc} ver=[${AUDIOCPP_GIT_VERSION}] ver_err=[${_git_ver_err}] commit=[${AUDIOCPP_GIT_COMMIT}] branch=[${AUDIOCPP_GIT_BRANCH}]")
 endif()
 # Fall back to sentinels if git is unavailable or this is a tarball checkout.
 if (NOT AUDIOCPP_GIT_VERSION)

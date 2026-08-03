@@ -102,15 +102,39 @@ static int try_progress(const char *wav_path) {
     return ok;
 }
 
+// TEST 0: backend availability probe — CPU must always be available, GPU
+// probes must return 0/1 without aborting (no driver, no crash), and an
+// unknown backend id must be 0.
+static int probe_backends(void) {
+    static const int ids[] = {
+        AUDIOCPP_BACKEND_CPU, AUDIOCPP_BACKEND_CUDA, AUDIOCPP_BACKEND_VULKAN,
+        AUDIOCPP_BACKEND_METAL, AUDIOCPP_BACKEND_SYCL, AUDIOCPP_BACKEND_BEST,
+    };
+    static const char *names[] = {"CPU", "CUDA", "Vulkan", "Metal", "SYCL", "BEST"};
+    int fail = 0;
+    printf("\n=== TEST 0: backend availability probe ===\n");
+    for (int i = 0; i < 6; ++i) {
+        int av = audiocpp_backend_available(ids[i]);
+        printf("  audiocpp_backend_available(%s) = %d\n", names[i], av);
+        if (ids[i] == AUDIOCPP_BACKEND_CPU && av != 1) fail = 1;
+    }
+    int unknown = audiocpp_backend_available(999);
+    printf("  audiocpp_backend_available(999) = %d\n", unknown);
+    if (unknown != 0) fail = 1;
+    return fail;
+}
+
 int main(void) {
     printf("audiocpp version: %s\n", audiocpp_version());
+    int r0 = probe_backends();
     int r1 = try_load("TEST 1: with family_hint", "qwen3_asr");
     int r2 = try_load("TEST 2: family_hint=NULL", NULL);
     // TEST 3 needs a wav file; pass via argv or a default path. For the
     // static smoke test we skip it unless AUDIOCPP_TEST_WAV is set.
     const char *wav = getenv("AUDIOCPP_TEST_WAV");
     int r3 = wav ? try_progress(wav) : 0;
-    printf("\n=== SUMMARY ===\n  with hint: %s\n  without: %s\n  progress: %s\n",
-           r1 ? "FAIL" : "OK", r2 ? "FAIL" : "OK", r3 ? "FAIL" : (wav ? "OK" : "SKIP"));
-    return (r1 || r2 || r3) ? 1 : 0;
+    printf("\n=== SUMMARY ===\n  probe: %s\n  with hint: %s\n  without: %s\n  progress: %s\n",
+           r0 ? "FAIL" : "OK", r1 ? "FAIL" : "OK", r2 ? "FAIL" : "OK",
+           r3 ? "FAIL" : (wav ? "OK" : "SKIP"));
+    return (r0 || r1 || r2 || r3) ? 1 : 0;
 }

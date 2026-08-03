@@ -896,14 +896,16 @@ const char *audiocpp_build_id(void) {
 const char *audiocpp_version(void) {
     // Report the build provenance captured at CMake configure time
     // (generated/audiocpp_build_info.h). Format:
-    //   audio.cpp-capi <version> <commit> <branch> <date> <backend>
-    // The leading "audio.cpp-capi" tag is intentionally a stable, grep-able
-    // marker so `strings audiocpp.dll | grep audio.cpp-capi` surfaces the
-    // build from the file alone, without loading or calling it.
+    //   <version> <commit_short> <branch> <build_time> <backend>
+    // e.g. "release-0.4.2-178-g3239acd 3239acd main 2026-08-03T10:50:06Z cuda"
+    // The backend tag is a compile-time label only — use
+    // audiocpp_backend_available() to probe what this build can actually run.
+    // Full provenance (long commit) stays recoverable from the file alone via
+    // `strings audiocpp.dll | grep audiocpp-build-id`.
 #if defined(GGML_USE_CUDA)
     static constexpr const char *kBackend = "cuda";
 #elif defined(GGML_USE_HIP)
-    static constexpr const char *kBackend = "hip";
+    static constexpr const char *kBackend = "rocm";
 #elif defined(GGML_USE_SYCL)
     static constexpr const char *kBackend = "sycl";
 #elif defined(GGML_USE_VULKAN)
@@ -913,10 +915,12 @@ const char *audiocpp_version(void) {
 #else
     static constexpr const char *kBackend = "cpu";
 #endif
+    // Short commit: first 7 chars (also 7 for the "unknown" fallback).
+    static const std::string kCommitShort =
+        std::string(AUDIOCPP_BUILD_COMMIT).substr(0, 7);
     static const std::string version =
-        std::string("audio.cpp-capi ") +
-        AUDIOCPP_BUILD_VERSION + " " +
-        AUDIOCPP_BUILD_COMMIT + " " +
+        std::string(AUDIOCPP_BUILD_VERSION) + " " +
+        kCommitShort + " " +
         AUDIOCPP_BUILD_BRANCH + " " +
         AUDIOCPP_BUILD_DATE + " " +
         kBackend;
@@ -1989,6 +1993,113 @@ void audiocpp_list_devices(void) {
             printf("  %-4d  %-10s  %-6s  %-10d  %-30s\n",
                    i, bn, tn, info.device_id, info.name);
         }
+    }
+}
+
+/* ======================================================================== */
+/* Backend availability probe                                                */
+/* ======================================================================== */
+
+namespace {
+
+// Compile-time half of the availability check: was this backend baked into
+// the build? Mirrors the backend tag logic in audiocpp_version() (the same
+// GGML_USE_* macro set). CUDA also covers AMD ROCm/HIP and MUSA builds, whose
+// ggml registries register under "ROCm"/"MUSA" (see backend_reg_to_id).
+bool backend_compiled_in(int backend) {
+    switch (backend) {
+        case AUDIOCPP_BACKEND_CUDA:
+#if defined(GGML_USE_CUDA) || defined(GGML_USE_HIP)
+            return true;
+#else
+            return false;
+#endif
+        case AUDIOCPP_BACKEND_VULKAN:
+#if defined(GGML_USE_VULKAN)
+            return true;
+#else
+            return false;
+#endif
+        case AUDIOCPP_BACKEND_METAL:
+#if defined(GGML_USE_METAL)
+            return true;
+#else
+            return false;
+#endif
+        case AUDIOCPP_BACKEND_SYCL:
+#if defined(GGML_USE_SYCL)
+            return true;
+#else
+            return false;
+#endif
+        default:
+            // CPU is handled by the caller (always available); BEST/unknown
+            // never match a single compiled-in backend.
+            return false;
+    }
+}
+
+// Runtime half: does at least one device of this backend exist right now
+// (driver installed, hardware detected)? Device discovery is ggml's own
+// graceful probe — a backend with no usable driver simply registers zero
+// devices (e.g. ggml_backend_cuda_reg() returns nullptr when cuInit fails);
+// it never aborts. Mirrors engine::core::list_backend_devices().
+bool backend_has_device(int backend) {
+    // Trigger registration of statically compiled backends (the ggml backend
+    // registry constructor calls each *_reg()) and, in GGML_BACKEND_DL
+    // builds, pick up dynamically loaded backends.
+    if (ggml_backend_reg_count() == 0) {
+        ggml_backend_load_all();
+    }
+    const size_t count = ggml_backend_dev_count();
+    for (size_t i = 0; i < count; ++i) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        if (dev == nullptr) {
+            continue;
+        }
+        ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+        if (reg == nullptr) {
+            continue;
+        }
+        if (backend_reg_to_id(reg) == backend) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// AUDIOCPP_BACKEND_BEST: available iff some GPU backend is compiled in AND
+// has a device at runtime.
+bool backend_has_gpu_device(void) {
+    static const int kGpuBackends[] = {
+        AUDIOCPP_BACKEND_CUDA,
+        AUDIOCPP_BACKEND_VULKAN,
+        AUDIOCPP_BACKEND_METAL,
+        AUDIOCPP_BACKEND_SYCL,
+    };
+    for (int backend : kGpuBackends) {
+        if (backend_compiled_in(backend) && backend_has_device(backend)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+}  // namespace
+
+int audiocpp_backend_available(int backend) {
+    switch (backend) {
+        case AUDIOCPP_BACKEND_CPU:
+            return 1;  // CPU is always compiled in and always "present"
+        case AUDIOCPP_BACKEND_CUDA:
+        case AUDIOCPP_BACKEND_VULKAN:
+        case AUDIOCPP_BACKEND_METAL:
+        case AUDIOCPP_BACKEND_SYCL:
+            return (backend_compiled_in(backend) && backend_has_device(backend)) ? 1 : 0;
+        case AUDIOCPP_BACKEND_BEST:
+            return backend_has_gpu_device() ? 1 : 0;
+        default:
+            return 0;  // unknown backend id — never abort
     }
 }
 

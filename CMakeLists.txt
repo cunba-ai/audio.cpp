@@ -1512,12 +1512,17 @@ if (AUDIOCPP_BUILD_CAPI)
             "    audiocpp_device_count\n"
             "    audiocpp_device_info\n"
             "    audiocpp_list_devices\n"
+            "    audiocpp_backend_available\n"
             "    audiocpp_set_progress_callback\n"
         )
         if (MSVC OR CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
             # MSVC link.exe and icx (which drives link.exe on Windows) both
             # accept /DEF:path directly.
             target_link_options(audiocpp PRIVATE "/DEF:${AUDIOCPP_DEF_FILE}")
+        elseif (MINGW AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+            # GNU ld's PE emulation does not understand /DEF:; it consumes a
+            # .def file directly as a link input.
+            target_link_libraries(audiocpp PRIVATE "${AUDIOCPP_DEF_FILE}")
         else()
             # clang++ (e.g. AMD ROCm) drives lld-link: forward via -Wl,
             target_link_options(audiocpp PRIVATE "-Wl,/DEF:${AUDIOCPP_DEF_FILE}")
@@ -1567,8 +1572,12 @@ endif()
 add_executable(capi_test tests/test_capi_load.c capi/src/audiocpp_capi.cpp)
 set_target_properties(capi_test PROPERTIES CXX_VISIBILITY_PRESET default)
 target_compile_definitions(capi_test PRIVATE AUDIOCPP_EXPORTS)
-target_include_directories(capi_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/capi/include")
-target_link_libraries(capi_test PRIVATE engine_runtime ggml)
+target_include_directories(capi_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/capi/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/external/cJSON"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated"
+)
+target_link_libraries(capi_test PRIVATE engine_runtime ggml cjson_vendor)
 if (ENGINE_ENABLE_OPENMP)
     target_link_libraries(capi_test PRIVATE OpenMP::OpenMP_CXX)
 endif()

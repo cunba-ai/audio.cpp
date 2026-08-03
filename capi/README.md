@@ -106,7 +106,7 @@ println!("{}", text.text);
 
 ## API Reference
 
-The library exports **44 functions** across these categories:
+The library exports **46 functions** across these categories:
 
 ### 1. Backend & Device Selection
 
@@ -133,6 +133,7 @@ AUDIOCPP_DEVICE_META  = 4   // meta device (ggml internal, rare)
 
 | Function | Description |
 |---|---|
+| `audiocpp_backend_available(backend)` | 1 if `backend` is compiled in **and** has a device at runtime (CPU always 1; `AUDIOCPP_BACKEND_BEST` = any GPU available). Never aborts. |
 | `audiocpp_device_count()` | Count all compute devices across compiled backends |
 | `audiocpp_device_info(index, *out)` | Get device name, backend, memory, per-backend device_id |
 | `audiocpp_list_devices()` | Print all devices to stdout (convenience) |
@@ -140,7 +141,10 @@ AUDIOCPP_DEVICE_META  = 4   // meta device (ggml internal, rare)
 **Device selection flow**: enumerate → find GPU → pass `backend` + `device_id`
 to `audiocpp_load_model`. The `device_id` from `audiocpp_device_info` is
 per-backend (e.g. `device_id=0` for the first CUDA GPU, independent from
-the first SYCL GPU).
+the first SYCL GPU). For a `--backend gpu` request, resolve it with
+`audiocpp_backend_available()` (CUDA → Vulkan → SYCL → Metal → fall back to
+CPU) instead of parsing the backend tag from `audiocpp_version()`. The
+`device_id` to pass is 0 for the first device of the resolved backend.
 
 ---
 

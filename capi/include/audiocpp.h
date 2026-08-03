@@ -82,6 +82,23 @@ enum {
     AUDIOCPP_BACKEND_BEST   = 5,  /**< auto-select best available */
 };
 
+/** Whether this build can actually use the given backend.
+ *
+ *  Returns true only if BOTH conditions hold:
+ *    1. The backend was compiled into this build
+ *       (e.g. a CUDA build returns false for Vulkan, true for CUDA);
+ *    2. At least one device of that backend is present at runtime
+ *       (driver installed, hardware detected).
+ *
+ *  CPU (AUDIOCPP_BACKEND_CPU) always returns true.
+ *  Use this to probe which GPU backend a "gpu" request should resolve to,
+ *  mirroring transcribe.cpp's transcribe_backend_available().
+ *
+ *  @param backend  One of AUDIOCPP_BACKEND_* (CPU/CUDA/Vulkan/Metal/SYCL).
+ *                  AUDIOCPP_BACKEND_BEST returns true iff some GPU backend is available.
+ *  @return 1 if available, 0 otherwise. Never aborts. */
+AUDIOCPP_API int audiocpp_backend_available(int backend);
+
 /* ======================================================================== */
 /* Task type (mirrors engine::runtime::VoiceTaskKind)                        */
 /* ======================================================================== */
@@ -904,7 +921,11 @@ AUDIOCPP_API void audiocpp_list_devices(void);
 /* Utilities                                                                 */
 /* ======================================================================== */
 
-/** Get the audio.cpp version string (static, do NOT free). */
+/** Get the version string (static, do NOT free).
+ *  Format: "<version> <commit_short> <branch> <build_time> <backend>"
+ *  e.g. "release-0.4.2-178-g3239acd 3239acd main 2026-08-03T10:50:06Z cuda".
+ *  Backend is a compile-time label (cpu/cuda/rocm/sycl/vulkan/metal); probe
+ *  what this build can actually run with audiocpp_backend_available(). */
 AUDIOCPP_API const char *audiocpp_version(void);
 
 /**

@@ -1185,7 +1185,28 @@ if (NOT GIT_FOUND)
         set(GIT_FOUND TRUE)
     endif()
 endif()
-if (GIT_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
+# actions/checkout in Docker containers may surface the repo without a .git
+# dir at CMAKE_CURRENT_SOURCE_DIR (e.g. the checkout root differs). Probe both
+# the literal .git path and a `git rev-parse --git-dir` lookup so the capture
+# works whether or not the dotfile is where we expect.
+set(_audiocpp_git_dir "")
+execute_process(
+    COMMAND ${GIT_EXECUTABLE} -c safe.directory=* rev-parse --git-dir
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    OUTPUT_VARIABLE _audiocpp_git_dir
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+    RESULT_VARIABLE _audiocpp_gitdir_rc)
+if (NOT IS_ABSOLUTE "${_audiocpp_git_dir}")
+    set(_audiocpp_git_dir "${CMAKE_CURRENT_SOURCE_DIR}/${_audiocpp_git_dir}")
+endif()
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
+    set(_audiocpp_dotgit_exists TRUE)
+else()
+    set(_audiocpp_dotgit_exists FALSE)
+endif()
+message(STATUS "audio.cpp git probe: GIT_FOUND=${GIT_FOUND} dotgit_exists=${_audiocpp_dotgit_exists} gitdir_rc=${_audiocpp_gitdir_rc} gitdir=${_audiocpp_git_dir}")
+if (GIT_FOUND AND (_audiocpp_gitdir_rc EQUAL 0))
     # In CI Docker containers (e.g. nvidia/cuda) the checkout's owner may not
     # match the running user, so git refuses with "detected dubious ownership".
     # `-c safe.directory=*` bypasses the check per-invocation without touching

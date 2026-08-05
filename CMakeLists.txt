@@ -289,6 +289,7 @@ add_library(engine_core OBJECT
     src/framework/runtime/options.cpp
     src/framework/runtime/session_base.cpp
     src/framework/runtime/workspace.cpp
+    src/framework/midi/midi_file.cpp
     src/framework/io/filesystem.cpp
     src/framework/io/config.cpp
     src/framework/io/json.cpp
@@ -380,6 +381,7 @@ add_library(engine_core OBJECT
     src/framework/audio/zipenhancer.cpp
     src/framework/modules/speaker_encoders/ecapa_tdnn_runtime.cpp
     src/framework/modules/speaker_encoders/titanet_runtime.cpp
+    src/framework/codecs/mimi_codec_runtime.cpp
     src/framework/codecs/neural_audio.cpp
     src/framework/sampling/decode_modules.cpp
     src/framework/sampling/diffusion_math.cpp
@@ -409,11 +411,9 @@ audiocpp_configure_runtime_object(engine_model_marblenet_vad)
 audiocpp_add_model(roformer
     SOURCES
         src/models/roformer/assets.cpp
-        src/models/roformer/loader.cpp
         src/models/roformer/runtime.cpp
         src/models/roformer/session.cpp
     INCLUDES
-        engine/models/roformer/loader.h
         engine/models/roformer/session.h
     LOADERS
         engine::models::roformer::make_mel_band_roformer_loader
@@ -429,10 +429,9 @@ audiocpp_add_model(demucs
         src/models/demucs/frontend.cpp
         src/models/demucs/pipeline.cpp
         src/models/demucs/postprocess.cpp
-        src/models/demucs/loader.cpp
         src/models/demucs/session.cpp
     INCLUDES
-        engine/models/demucs/loader.h
+        engine/models/demucs/session.h
     LOADERS
         engine::models::demucs::make_htdemucs_loader
     ALIASES
@@ -763,12 +762,11 @@ audiocpp_add_model(heartmula
         src/models/heartmula/assets.cpp
         src/models/heartmula/codec.cpp
         src/models/heartmula/generator.cpp
-        src/models/heartmula/loader.cpp
         src/models/heartmula/mula.cpp
         src/models/heartmula/session.cpp
         src/models/heartmula/tokenizer_text.cpp
     INCLUDES
-        engine/models/heartmula/loader.h
+        engine/models/heartmula/session.h
     LOADERS
         engine::models::heartmula::make_heartmula_loader
 )
@@ -783,9 +781,8 @@ audiocpp_add_model(higgs_audio_stt
         src/models/higgs_audio_stt/prompt_asr.cpp
         src/models/higgs_audio_stt/postprocess.cpp
         src/models/higgs_audio_stt/session.cpp
-        src/models/higgs_audio_stt/loader.cpp
     INCLUDES
-        engine/models/higgs_audio_stt/loader.h
+        engine/models/higgs_audio_stt/session.h
     LOADERS
         engine::models::higgs_audio_stt::make_higgs_audio_stt_loader
 )
@@ -814,10 +811,9 @@ audiocpp_add_model(hviske_asr
         src/models/hviske_asr/encoder.cpp
         src/models/hviske_asr/decoder.cpp
         src/models/hviske_asr/session.cpp
-        src/models/hviske_asr/loader.cpp
         src/models/hviske_asr/weights.cpp
     INCLUDES
-        engine/models/hviske_asr/loader.h
+        engine/models/hviske_asr/session.h
     LOADERS
         engine::models::hviske_asr::make_hviske_asr_loader
 )
@@ -828,12 +824,11 @@ audiocpp_add_model(irodori_tts
         src/models/irodori_tts/codec.cpp
         src/models/irodori_tts/condition_encoder.cpp
         src/models/irodori_tts/duration.cpp
-        src/models/irodori_tts/loader.cpp
         src/models/irodori_tts/rf_dit.cpp
         src/models/irodori_tts/session.cpp
         src/models/irodori_tts/tokenizer_text.cpp
     INCLUDES
-        engine/models/irodori_tts/loader.h
+        engine/models/irodori_tts/session.h
     LOADERS
         engine::models::irodori_tts::make_irodori_tts_loader
 )
@@ -951,10 +946,9 @@ audiocpp_add_model(sortformer_diar
         src/models/sortformer_diar/graph.cpp
         src/models/sortformer_diar/modules.cpp
         src/models/sortformer_diar/postprocess.cpp
-        src/models/sortformer_diar/loader.cpp
         src/models/sortformer_diar/session.cpp
     INCLUDES
-        engine/models/sortformer_diar/loader.h
+        engine/models/sortformer_diar/session.h
     LOADERS
         engine::models::sortformer_diar::make_sortformer_diar_loader
 )
@@ -1034,9 +1028,8 @@ audiocpp_add_model(seed_vc
         src/models/seed_vc/v1_cfm.cpp
         src/models/seed_vc/v2_cfm.cpp
         src/models/seed_vc/session.cpp
-        src/models/seed_vc/loader.cpp
     INCLUDES
-        engine/models/seed_vc/loader.h
+        engine/models/seed_vc/session.h
     LOADERS
         engine::models::seed_vc::make_seed_vc_loader
 )
@@ -1817,6 +1810,13 @@ if (ENGINE_BUILD_TESTS)
     add_test(
         NAME progress_callback_test
         COMMAND progress_callback_test
+    )
+
+    add_engine_unittest(midi_file_test tests/unittests/test_midi_file.cpp)
+
+    add_test(
+        NAME midi_file_test
+        COMMAND midi_file_test
     )
 
     add_engine_unittest(wav_reader_test tests/unittests/test_wav_reader.cpp)

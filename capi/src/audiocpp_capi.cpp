@@ -23,6 +23,8 @@
 #include "engine/framework/runtime/session.h"
 #include "engine/framework/audio/wav_writer.h"
 
+#include "engine/framework/io/json.h"
+
 #include "ggml-backend.h"
 
 #ifdef GGML_USE_CUDA
@@ -41,15 +43,20 @@
 #include "cJSON.h"
 // cJSON.h is under external/cJSON/ — add include path if needed
 
+#include "audiocpp_internal.h"
+
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <functional>
+#include <iomanip>
 #include <initializer_list>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -78,6 +85,30 @@ struct audiocpp_stream {
     // Sink-collected events for models that emit via callback (nemotron ASR)
     std::vector<engine::runtime::StreamEvent> sink_events;
 };
+
+/* ======================================================================== */
+/* Option number serialization (shared with unit tests)                      */
+/* ======================================================================== */
+
+namespace audiocpp::detail {
+
+std::string option_number_to_string(double value) {
+    // Integers within double's exact-integer range (< 2^53) render as plain
+    // integers so the stoll option path accepts them. Beyond 2^53 a double can't
+    // distinguish consecutive integers, so emit via the float serializer —
+    // stoll then rejects the value instead of silently rounding it. Mirrors
+    // app/cli/request.cpp json_option_string.
+    constexpr double kMaxExactJsonInteger = 9007199254740992.0;  // 2^53
+    if (std::isfinite(value) && std::trunc(value) == value
+        && std::fabs(value) < kMaxExactJsonInteger) {
+        std::ostringstream out;
+        out << std::fixed << std::setprecision(0) << value;
+        return out.str();
+    }
+    return engine::io::json::stringify_number(value);
+}
+
+}  // namespace audiocpp::detail
 
 /* ======================================================================== */
 /* Error helpers                                                             */
@@ -301,9 +332,13 @@ static void apply_options(engine::runtime::TaskRequest & req, const char * optio
         if (cJSON_IsString(item)) {
             req.options[key] = item->valuestring;
         }
-        // Number values
+        // Number values: cJSON stores every JSON number in valuedouble.
+        // Render via the shared helper so an integer like 2 becomes "2" (not
+        // "2.000000", which the stoll option path rejects), and values beyond
+        // double's exact-integer range aren't silently rounded. See
+        // option_number_to_string / audiocpp_internal.h.
         else if (cJSON_IsNumber(item)) {
-            req.options[key] = std::to_string(item->valuedouble);
+            req.options[key] = audiocpp::detail::option_number_to_string(item->valuedouble);
         }
         // Bool values → "true"/"false"
         else if (cJSON_IsBool(item)) {

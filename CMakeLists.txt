@@ -1575,6 +1575,40 @@ if (ENGINE_ENABLE_OPENMP)
     target_link_libraries(capi_test PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
+# ──────────────────────────────────────────────────────────────────────────
+# C API option-number serialization unit test.
+# Links engine_runtime directly (like capi_test above) and compiles
+# audiocpp_capi.cpp statically so the file-local helper
+# (audiocpp::detail::option_number_to_string, declared in capi/src/audiocpp_internal.h)
+# is reachable from the test TU. Covers the integer-vs-float rendering fix and
+# the 2^53 exact-integer boundary.
+# ──────────────────────────────────────────────────────────────────────────
+if (ENGINE_BUILD_TESTS)
+    add_executable(capi_option_number_test
+        tests/unittests/test_capi_option_number.cpp
+        capi/src/audiocpp_capi.cpp
+    )
+    set_target_properties(capi_option_number_test PROPERTIES CXX_VISIBILITY_PRESET default)
+    target_compile_definitions(capi_option_number_test PRIVATE AUDIOCPP_EXPORTS)
+    if (MSVC)
+        # audiocpp_capi.cpp has UTF-8 (CJK) comments; read as UTF-8 so non-ASCII
+        # bytes don't warn (C4819) on non-English system code pages.
+        target_compile_options(capi_option_number_test PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/utf-8>)
+    endif()
+    target_include_directories(capi_option_number_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/capi/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/capi/src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/external/cJSON"
+        "${CMAKE_CURRENT_BINARY_DIR}/generated"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests"
+    )
+    target_link_libraries(capi_option_number_test PRIVATE engine_runtime ggml cjson_vendor)
+    if (ENGINE_ENABLE_OPENMP)
+        target_link_libraries(capi_option_number_test PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    add_test(NAME capi_option_number_test COMMAND capi_option_number_test)
+endif()
+
 add_executable(audiocpp_cli
     app/cli/main.cpp
     app/cli/args.cpp

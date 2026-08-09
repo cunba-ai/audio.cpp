@@ -794,11 +794,9 @@ int audiocpp_asr_batch(
         if (!pcms || !n_samples || !out_texts || n <= 0 || n > 32) {
             throw std::runtime_error("invalid batch input (n must be 1..32)");
         }
-        // fun_asr_nano exposes run_batch; other ASR families fall back to
-        // serial runs so the API is uniform.
-        auto * fun_session =
-            dynamic_cast<engine::models::fun_asr_nano::FunAsrNanoSession *>(
-                model->session.get());
+        // All ASR families share the run_batch interface; sessions without a
+        // native batched path fall back to serial runs inside the default
+        // implementation, so the API is uniform across models.
         std::vector<engine::runtime::TaskRequest> requests;
         requests.reserve(static_cast<size_t>(n));
         for (int i = 0; i < n; ++i) {
@@ -816,15 +814,8 @@ int audiocpp_asr_batch(
         model->session->prepare(
             engine::runtime::build_preparation_request(requests.front()));
 
-        std::vector<engine::runtime::TaskResult> task_results;
-        if (fun_session != nullptr) {
-            task_results = fun_session->run_batch(requests);
-        } else {
-            task_results.reserve(static_cast<size_t>(n));
-            for (const auto &req : requests) {
-                task_results.push_back(model->offline->run(req));
-            }
-        }
+        const std::vector<engine::runtime::TaskResult> task_results =
+            model->offline->run_batch(requests);
         if (task_results.size() != static_cast<size_t>(n)) {
             throw std::runtime_error("batched ASR returned the wrong result count");
         }

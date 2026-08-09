@@ -259,6 +259,20 @@ public:
     ~IOfflineVoiceTaskSession() override = default;
 
     virtual TaskResult run(const TaskRequest & request) = 0;
+
+    // Batched offline inference (transcribe.cpp run_batch style). The default
+    // implementation runs requests serially; model sessions that can share
+    // graphs across utterances (batched prefill/decode) override this.
+    // Result[i] corresponds to requests[i].
+    virtual std::vector<TaskResult>
+    run_batch(const std::vector<TaskRequest> & requests) {
+        std::vector<TaskResult> results;
+        results.reserve(requests.size());
+        for (const auto & request : requests) {
+            results.push_back(run(request));
+        }
+        return results;
+    }
 };
 
 class IStreamingVoiceTaskSession : public virtual IVoiceTaskSession {

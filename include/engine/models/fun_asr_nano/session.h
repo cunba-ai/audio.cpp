@@ -34,7 +34,7 @@ public:
   // per-utterance, and the decoder steps all sequences in lockstep through one
   // shared batched graph. Result[i] corresponds to requests[i].
   std::vector<runtime::TaskResult>
-  run_batch(const std::vector<runtime::TaskRequest> &requests);
+  run_batch(const std::vector<runtime::TaskRequest> &requests) override;
 
 private:
   struct AudioChunkPlan {

@@ -486,6 +486,7 @@ FunAsrNanoSession::run_batch(const std::vector<runtime::TaskRequest> &requests) 
   std::vector<FunAsrNanoAdaptorEmbeddings> audio_embeddings(n);
   std::vector<FunAsrNanoPrompt> prompts(n);
   std::vector<AsrRequest> asr_requests(n);
+  const auto enc_start = Clock::now();
   for (size_t b = 0; b < n; ++b) {
     asr_requests[b] = make_request(requests[b]);
     const auto encoded = encoder_.encode(features[b]);
@@ -495,6 +496,8 @@ FunAsrNanoSession::run_batch(const std::vector<runtime::TaskRequest> &requests) 
     prompts[b] =
         prompt_builder_.build(asr_requests[b].prompt, audio_embeddings[b].tokens);
   }
+  debug::timing_log_scalar("fun_asr_nano.batch.encoder_ms",
+                           debug::elapsed_ms(enc_start, Clock::now()));
 
   // ---- Pass 2: batched decode (shared step graph, lockstep) ----
   std::vector<FunAsrNanoGeneratedTokens> token_sets =

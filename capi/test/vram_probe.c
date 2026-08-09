@@ -142,6 +142,9 @@ typedef struct {
     const float *audio_pcm;   /* ASR / VAD / DIAR / SEP / VC audio */
     int64_t audio_n;
     int audio_sr;
+    const float *const *audio_pcms;  /* batched ASR inputs */
+    const int64_t *audio_ns;
+    int n_batch;
     const char *options;
     const char *language;     /* align language code */
     const char *out_prefix;
@@ -205,7 +208,26 @@ static DWORD WINAPI infer_worker(LPVOID param) {
             audiocpp_free_vad(vad);
             return 0;
         }
-        case 1: {  /* ASR */
+        case 1: {  /* ASR (single or batched) */
+            if (t->n_batch > 1) {
+                audiocpp_text_t **texts = NULL;
+                if (audiocpp_asr_batch(t->session, t->audio_pcms, t->audio_ns,
+                                       t->audio_sr, t->n_batch, t->options,
+                                       &texts, &err) != 0) {
+                    break;
+                }
+                t->ok = 1;
+                size_t off = 0;
+                for (int i = 0; i < t->n_batch; ++i) {
+                    off += (size_t)snprintf(t->result_text + off,
+                                            sizeof(t->result_text) - off,
+                                            "%s%s", i > 0 ? " | " : "",
+                                            texts[i] && texts[i]->text ? texts[i]->text : "");
+                    audiocpp_free_text(texts[i]);
+                }
+                free(texts);
+                return 0;
+            }
             audiocpp_text_t *text = audiocpp_asr(t->session, t->audio_pcm, t->audio_n,
                                                  t->audio_sr, t->options, &err);
             if (!text) break;
@@ -330,17 +352,48 @@ int main(int argc, char **argv) {
         Sleep(200);
     }
 
-    /* Optional audio input for ASR/VAD/DIAR/SEP/VC/ALIGN */
+    /* Optional audio input for ASR/VAD/DIAR/SEP/VC/ALIGN. --audio accepts
+     * several paths separated by '|'; with --batch they feed one
+     * audiocpp_asr_batch call (fun_asr_nano batched decode). */
     float *audio_pcm = NULL;
     int64_t audio_n = 0;
     int audio_sr = 0;
+    float *audio_pcms[16] = {0};
+    int64_t audio_ns[16] = {0};
+    int n_audio = 0;
     if (audio_path && audio_path[0]) {
-        audiocpp_error_t err = {0};
-        if (audiocpp_read_wav(audio_path, &audio_pcm, &audio_n, &audio_sr) != 0) {
-            printf("failed to read --audio %s: %s\n", audio_path, err.message);
-            return 1;
-        }
-        printf("audio input: %.2fs %d Hz\n", (double)audio_n / (double)audio_sr, audio_sr);
+        char paths_copy[4096];
+        snprintf(paths_copy, sizeof(paths_copy), "%s", audio_path);
+        char *tok = paths_copy;
+        char *next;
+        do {
+            next = strchr(tok, '|');
+            if (next) *next = '\0';
+            audiocpp_error_t err = {0};
+            float *pcm = NULL;
+            int64_t n = 0;
+            int sr = 0;
+            if (audiocpp_read_wav(tok, &pcm, &n, &sr) != 0) {
+                printf("failed to read --audio %s: %s\n", tok, err.message);
+                return 1;
+            }
+            audio_pcms[n_audio] = pcm;
+            audio_ns[n_audio] = n;
+            if (n_audio == 0) {
+                audio_pcm = pcm;
+                audio_n = n;
+                audio_sr = sr;
+            } else if (sr != audio_sr) {
+                printf("--audio inputs must share one sample rate (%d vs %d)\n",
+                       sr, audio_sr);
+                return 1;
+            }
+            ++n_audio;
+            if (n_audio >= 16) break;
+            tok = next ? next + 1 : NULL;
+        } while (tok != NULL && *tok != '\0');
+        printf("audio input: %d clip(s), %.2fs %d Hz\n", n_audio,
+               (double)audio_n / (double)audio_sr, audio_sr);
     }
 
     const char *options = build_options(voice_ref, reference_text, speaker, user_json);
@@ -364,6 +417,7 @@ int main(int argc, char **argv) {
     }
     const char *out_prefix = arg_value(argc, argv, "--out-prefix");
     const char *language = arg_value(argc, argv, "--language");
+    const int batch = arg_flag(argc, argv, "--batch") ? n_audio : 1;
 
     infer_task tasks[16];
     memset(tasks, 0, sizeof(tasks));
@@ -372,9 +426,14 @@ int main(int argc, char **argv) {
         tasks[i].session = sessions[i];
         tasks[i].task = task;
         tasks[i].text = texts[i % (n_texts > 0 ? n_texts : 1)];
-        tasks[i].audio_pcm = audio_pcm;
-        tasks[i].audio_n = audio_n;
+        /* Serial multi-session runs: session i uses clip i (round-robin) so
+         * each utterance differs; --batch funnels all clips into one call. */
+        tasks[i].audio_pcm = n_audio > 1 ? audio_pcms[i % n_audio] : audio_pcm;
+        tasks[i].audio_n = n_audio > 1 ? audio_ns[i % n_audio] : audio_n;
         tasks[i].audio_sr = audio_sr;
+        tasks[i].audio_pcms = audio_pcms;
+        tasks[i].audio_ns = audio_ns;
+        tasks[i].n_batch = batch;
         tasks[i].options = options;
         tasks[i].language = language;
         tasks[i].out_prefix = out_prefix;

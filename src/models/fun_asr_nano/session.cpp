@@ -7,6 +7,8 @@
 #include "engine/framework/runtime/options.h"
 
 #include <algorithm>
+#include <atomic>
+#include <thread>
 #include <chrono>
 #include <cmath>
 #include <limits>
@@ -426,6 +428,96 @@ runtime::TaskResult FunAsrNanoSession::run_single(const AsrRequest &request) {
   debug::trace_log_scalar("fun_asr_nano.generated_tokens",
                           tokens.token_ids.size());
   return result;
+}
+
+std::vector<runtime::TaskResult>
+FunAsrNanoSession::run_batch(const std::vector<runtime::TaskRequest> &requests) {
+  const size_t n = requests.size();
+  if (n == 0) {
+    return {};
+  }
+  if (n > 32) {
+    throw std::runtime_error("Fun-ASR-Nano run_batch supports at most 32 utterances");
+  }
+  require_prepared("Fun-ASR-Nano run_batch()");
+  for (const auto &request : requests) {
+    validate_request_options(request.options);
+  }
+
+  // ---- Pass 0: per-utterance resample + frontend in parallel (host-only) ----
+  std::vector<std::vector<float>> monos(n);
+  std::vector<FunAsrNanoAudioFeatures> features(n);
+  {
+    const auto parallel_start = Clock::now();
+    std::atomic<size_t> next{0};
+    std::vector<std::thread> pool;
+    const size_t workers = std::min<size_t>(n, 4);
+    for (size_t w = 0; w < workers; ++w) {
+      pool.emplace_back([&]() {
+        for (;;) {
+          const size_t b = next.fetch_add(1);
+          if (b >= n) {
+            break;
+          }
+          const auto &request = requests[b];
+          if (!request.audio_input.has_value()) {
+            throw std::runtime_error(
+                "Fun-ASR-Nano run_batch() requires audio_input for every request");
+          }
+          monos[b] =
+              engine::audio::convert_interleaved_audio_to_mono_linear_resampled(
+                  request.audio_input->samples, request.audio_input->sample_rate,
+                  request.audio_input->channels,
+                  assets_->config.frontend.sample_rate);
+          features[b] =
+              frontend_.extract(monos[b], assets_->config.frontend.sample_rate);
+        }
+      });
+    }
+    for (auto &thread : pool) {
+      thread.join();
+    }
+    debug::timing_log_scalar(
+        "fun_asr_nano.batch.parallel_frontend_ms",
+        debug::elapsed_ms(parallel_start, Clock::now()));
+  }
+
+  // ---- Pass 1: per-utterance encoder + adaptor + prompt (serial) ----
+  std::vector<FunAsrNanoAdaptorEmbeddings> audio_embeddings(n);
+  std::vector<FunAsrNanoPrompt> prompts(n);
+  std::vector<AsrRequest> asr_requests(n);
+  for (size_t b = 0; b < n; ++b) {
+    asr_requests[b] = make_request(requests[b]);
+    const auto encoded = encoder_.encode(features[b]);
+    std::vector<int32_t> mask(static_cast<size_t>(encoded.frames), 0);
+    std::fill_n(mask.begin(), static_cast<size_t>(encoded.valid_frames), 1);
+    audio_embeddings[b] = adaptor_.adapt(encoded, mask);
+    prompts[b] =
+        prompt_builder_.build(asr_requests[b].prompt, audio_embeddings[b].tokens);
+  }
+
+  // ---- Pass 2: batched decode (shared step graph, lockstep) ----
+  std::vector<FunAsrNanoGeneratedTokens> token_sets =
+      decoder_.generate_batch(prompts, audio_embeddings,
+                              asr_requests.front().generation);
+
+  // ---- Pass 3: per-utterance token decode ----
+  std::vector<runtime::TaskResult> results(n);
+  for (size_t b = 0; b < n; ++b) {
+    auto text = engine::io::trim_ascii_whitespace(
+        tokenizer_.decode(token_sets[b].token_ids));
+    results[b].text_output =
+        runtime::Transcript{std::move(text),
+                            asr_requests[b].prompt.language == "auto"
+                                ? std::string{}
+                                : asr_requests[b].prompt.language};
+    debug::trace_log_scalar("fun_asr_nano.batch.generated_tokens_" +
+                                std::to_string(b),
+                            static_cast<int64_t>(token_sets[b].token_ids.size()));
+  }
+  debug::trace_log_scalar("fun_asr_nano.batch.utterances",
+                          static_cast<int64_t>(n));
+  return results;
 }
 
 } // namespace engine::models::fun_asr_nano

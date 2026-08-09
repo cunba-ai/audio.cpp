@@ -32,6 +32,18 @@ public:
            const FunAsrNanoGenerationOptions &options,
            const FunAsrNanoTokenCallback &token_callback = {});
 
+  // Batched decode (transcribe.cpp run_batch style): one prefill per
+  // utterance (reusing the cached prefill graph), then a shared batched
+  // step graph decodes all sequences in lockstep with per-sequence KV slots
+  // until each hits EOS / max_new_tokens. Result[i] corresponds to
+  // prompts[i]/audio_embeddings[i]. All sequences must share the same
+  // generation options.
+  std::vector<FunAsrNanoGeneratedTokens>
+  generate_batch(const std::vector<FunAsrNanoPrompt> &prompts,
+                 const std::vector<FunAsrNanoAdaptorEmbeddings> &audio_embeddings,
+                 const FunAsrNanoGenerationOptions &options,
+                 const std::vector<FunAsrNanoTokenCallback> &token_callbacks = {});
+
 private:
   std::unique_ptr<Impl> impl_;
 };

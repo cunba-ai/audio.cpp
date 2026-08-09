@@ -19,6 +19,7 @@
 #include "engine/framework/audio/wav_reader.h"
 #include "engine/framework/core/backend.h"
 #include "engine/framework/core/shared_weight_registry.h"
+#include "engine/models/fun_asr_nano/session.h"
 #include "engine/framework/runtime/model.h"
 #include "engine/framework/runtime/options.h"
 #include "engine/framework/runtime/registry.h"
@@ -771,6 +772,81 @@ audiocpp_text_t *audiocpp_asr(
         result->language = task_result.text_output && !task_result.text_output->language.empty()
             ? dup_cstr(task_result.text_output->language)
             : nullptr;
+    });
+    return result;
+}
+
+int audiocpp_asr_batch(
+    const audiocpp_model_t *model,
+    const float *const *pcms,
+    const int64_t *n_samples,
+    int sample_rate,
+    int n,
+    const char *options_json,
+    audiocpp_text_t ***out_texts,
+    audiocpp_error_t *err
+) {
+    int result = -1;
+    AUDIOCPP_CATCH(err, {
+        if (!model || !model->offline) {
+            throw std::runtime_error("invalid model handle");
+        }
+        if (!pcms || !n_samples || !out_texts || n <= 0 || n > 32) {
+            throw std::runtime_error("invalid batch input (n must be 1..32)");
+        }
+        // fun_asr_nano exposes run_batch; other ASR families fall back to
+        // serial runs so the API is uniform.
+        auto * fun_session =
+            dynamic_cast<engine::models::fun_asr_nano::FunAsrNanoSession *>(
+                model->session.get());
+        std::vector<engine::runtime::TaskRequest> requests;
+        requests.reserve(static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i) {
+            if (!pcms[i] || n_samples[i] <= 0) {
+                throw std::runtime_error("invalid audio input in batch");
+            }
+            engine::runtime::TaskRequest req;
+            req.audio_input = engine::runtime::AudioBuffer{};
+            req.audio_input->sample_rate = sample_rate;
+            req.audio_input->channels = 1;
+            req.audio_input->samples.assign(pcms[i], pcms[i] + n_samples[i]);
+            apply_options(req, options_json);
+            requests.push_back(std::move(req));
+        }
+        model->session->prepare(
+            engine::runtime::build_preparation_request(requests.front()));
+
+        std::vector<engine::runtime::TaskResult> task_results;
+        if (fun_session != nullptr) {
+            task_results = fun_session->run_batch(requests);
+        } else {
+            task_results.reserve(static_cast<size_t>(n));
+            for (const auto &req : requests) {
+                task_results.push_back(model->offline->run(req));
+            }
+        }
+        if (task_results.size() != static_cast<size_t>(n)) {
+            throw std::runtime_error("batched ASR returned the wrong result count");
+        }
+        auto *texts = static_cast<audiocpp_text_t **>(
+            calloc(static_cast<size_t>(n), sizeof(audiocpp_text_t *)));
+        if (texts == nullptr) {
+            throw std::runtime_error("out of memory allocating batch results");
+        }
+        for (int i = 0; i < n; ++i) {
+            auto *text = new audiocpp_text_t{};
+            text->text = dup_cstr(task_results[static_cast<size_t>(i)].text_output
+                                      ? task_results[static_cast<size_t>(i)].text_output->text
+                                      : "");
+            text->language =
+                task_results[static_cast<size_t>(i)].text_output &&
+                        !task_results[static_cast<size_t>(i)].text_output->language.empty()
+                    ? dup_cstr(task_results[static_cast<size_t>(i)].text_output->language)
+                    : nullptr;
+            texts[i] = text;
+        }
+        *out_texts = texts;
+        result = 0;
     });
     return result;
 }

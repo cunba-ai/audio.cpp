@@ -325,6 +325,35 @@ AUDIOCPP_API audiocpp_text_t *audiocpp_asr(
     audiocpp_error_t *err
 );
 
+/**
+ * Batched transcription (transcribe.cpp run_batch style): N utterances share
+ * one batched decoder graph with per-utterance KV slots; feature extraction
+ * runs in parallel. Results come back one text per input.
+ *
+ * @param model       Model handle (must be loaded with AUDIOCPP_TASK_ASR and
+ *                    support batched runs; fun_asr_nano does).
+ * @param pcms        Array of N mono f32 PCM buffers.
+ * @param n_samples   Array of N sample counts (pcms[i] has n_samples[i]).
+ * @param sample_rate Common sample rate for all inputs (e.g. 16000).
+ * @param n           Number of utterances (1..32).
+ * @param options     JSON string of model-specific options, applied to every
+ *                    utterance.
+ * @param out_texts   Receives N audiocpp_text_t*; caller MUST free each with
+ *                    audiocpp_free_text and the array with free().
+ * @param err         Optional error output.
+ * @return 0 on success, -1 on failure (err is filled).
+ */
+AUDIOCPP_API int audiocpp_asr_batch(
+    const audiocpp_model_t *model,
+    const float *const *pcms,
+    const int64_t *n_samples,
+    int sample_rate,
+    int n,
+    const char *options_json,
+    audiocpp_text_t ***out_texts,
+    audiocpp_error_t *err
+);
+
 /* ======================================================================== */
 /* Audio transform: audio → audio (SEP / VC)                                 */
 /* ======================================================================== */

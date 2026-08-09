@@ -46,6 +46,12 @@ struct QwenCausalDecoderStaticCacheOutputs {
     core::TensorValue hidden;
     core::TensorValue logits;
     runtime::TransformerKVCache cache;
+    // Per-layer K/V cache tensors. For the single-sequence path they are the
+    // same tensors wrapped by `cache`; the batched path fills them instead
+    // (TransformerKVCache stays empty because a batched static cache is owned
+    // by the caller's graph).
+    std::vector<core::TensorValue> cache_keys;
+    std::vector<core::TensorValue> cache_values;
 };
 
 class QwenCausalDecoderModule {
@@ -69,6 +75,24 @@ public:
         const core::TensorValue & positions,
         const QwenCausalDecoderWeights & weights,
         int64_t cache_steps,
+        const core::TensorValue & attention_mask,
+        const std::optional<core::TensorValue> & cache_slot = std::nullopt) const;
+
+    // Batched decode-step variant (n_seqs sequences in lockstep): input is
+    // [n_seqs, 1, hidden], positions is [n_seqs], cache_slot is [n_seqs] and
+    // attention_mask is [n_seqs, 1, 1, cache_steps] with a per-sequence
+    // visible prefix. Each returned cache tensor is [n_seqs, cache_steps,
+    // kv_heads, head_dim] and logits are [n_seqs, logits_size]. The output
+    // cache is a plain struct (not TransformerKVCache) because a batched
+    // static cache is owned by the caller's graph.
+    QwenCausalDecoderStaticCacheOutputs build_static_cache_tail_batched(
+        core::ModuleBuildContext & ctx,
+        ggml_cgraph * graph,
+        const core::TensorValue & input,
+        const core::TensorValue & positions,
+        const QwenCausalDecoderWeights & weights,
+        int64_t cache_steps,
+        int64_t n_seqs,
         const core::TensorValue & attention_mask,
         const std::optional<core::TensorValue> & cache_slot = std::nullopt) const;
 

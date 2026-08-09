@@ -29,6 +29,13 @@ public:
   void prepare(const runtime::SessionPreparationRequest &request) override;
   runtime::TaskResult run(const runtime::TaskRequest &request) override;
 
+  // Batched offline ASR (transcribe.cpp run_batch style): feature extraction
+  // runs in parallel across the requests, each encoder/adaptor/prefill runs
+  // per-utterance, and the decoder steps all sequences in lockstep through one
+  // shared batched graph. Result[i] corresponds to requests[i].
+  std::vector<runtime::TaskResult>
+  run_batch(const std::vector<runtime::TaskRequest> &requests);
+
 private:
   struct AudioChunkPlan {
     runtime::TimeSpan source_span;

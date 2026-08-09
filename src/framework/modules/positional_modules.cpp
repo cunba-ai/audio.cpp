@@ -59,7 +59,16 @@ core::TensorValue RoPEModule::build(
         throw std::runtime_error("ModuleBuildContext.ggml is null");
     }
     core::validate_rank_between(input, 2, core::kMaxTensorRank, "input");
-    core::validate_shape(positions, core::TensorShape::from_dims({input.shape.dims[1]}), "positions");
+    // positions: [steps] for a single sequence, or [steps * batch] (batch
+    // outermost, matching ggml_rope_ext's n_tokens * n_batch layout) when the
+    // input carries a batch dimension (rank >= 3 with dims[0] = batch).
+    const int64_t token_steps = input.shape.dims[1];
+    const int64_t expected = token_steps * (input.shape.rank >= 3 ? input.shape.dims[0] : 1);
+    if (positions.shape.rank != 1 ||
+        (positions.shape.dims[0] != token_steps && positions.shape.dims[0] != expected)) {
+        throw std::runtime_error(
+            "RoPE positions shape must be [steps] or [steps * batch]");
+    }
     if (positions.type != GGML_TYPE_I32) {
         throw std::runtime_error("RoPE positions must be GGML_TYPE_I32");
     }

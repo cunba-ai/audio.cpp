@@ -1902,6 +1902,13 @@ if (ENGINE_BUILD_TESTS)
         COMMAND backend_weight_store_commit_test
     )
 
+    add_engine_unittest(shared_weight_registry_test tests/unittests/test_shared_weight_registry.cpp)
+
+    add_test(
+        NAME shared_weight_registry_test
+        COMMAND shared_weight_registry_test
+    )
+
     add_engine_unittest(wav_reader_chunk_bounds_test tests/unittests/test_wav_reader_chunk_bounds.cpp)
 
     add_test(

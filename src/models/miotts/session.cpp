@@ -36,12 +36,18 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr size_t kDefaultLmWeightContextBytes = 512ull * 1024ull * 1024ull;
-constexpr size_t kDefaultLmPrefillGraphArenaBytes = 1024ull * 1024ull * 1024ull;
-constexpr size_t kDefaultLmDecodeGraphArenaBytes = 1024ull * 1024ull * 1024ull;
+// Graph metadata pool budgets. All these contexts run no_alloc (tensor DATA
+// lives in backend buffers), so ggml_init's pool only ever holds graph
+// metadata (ggml_tensor structs, a few MB for the largest graphs). ggml_init
+// commits the whole budget up front regardless (ggml.c), so the old 1-2 GB
+// defaults wasted gigabytes of host RAM per session. The 64 MB floor leaves
+// ~10x headroom over the measured metadata usage of the largest graphs here.
+constexpr size_t kDefaultLmPrefillGraphArenaBytes = 64ull * 1024ull * 1024ull;
+constexpr size_t kDefaultLmDecodeGraphArenaBytes = 64ull * 1024ull * 1024ull;
 constexpr size_t kDefaultCodecWeightContextBytes = 256ull * 1024ull * 1024ull;
-constexpr size_t kDefaultGlobalGraphArenaBytes = 256ull * 1024ull * 1024ull;
-constexpr size_t kDefaultWaveGraphArenaBytes = 512ull * 1024ull * 1024ull;
-constexpr size_t kDefaultCodecConstantContextBytes = 256ull * 1024ull * 1024ull;
+constexpr size_t kDefaultGlobalGraphArenaBytes = 64ull * 1024ull * 1024ull;
+constexpr size_t kDefaultWaveGraphArenaBytes = 64ull * 1024ull * 1024ull;
+constexpr size_t kDefaultCodecConstantContextBytes = 64ull * 1024ull * 1024ull;
 constexpr int64_t kMioTTSTokenRateHz = 25;
 constexpr int64_t kMioCodecWaveHeadBins = 394;
 constexpr double kBestOfNTokenRateHz = 25.0;

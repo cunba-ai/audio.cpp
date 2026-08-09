@@ -649,6 +649,7 @@ public:
         ggml_backend_tensor_set(candidate_ids_, candidate_ids.data(), 0, candidate_ids.size() * sizeof(int32_t));
         debug::timing_log_scalar("miotts.lm.prefill.graph.build_ms", engine::debug::elapsed_ms(build_start, Clock::now()));
         debug::trace_log_scalar("miotts.lm.prefill_prompt_steps", prompt_steps_);
+        debug::trace_log_scalar("miotts.lm.prefill.ctx_used_bytes", static_cast<int64_t>(ggml_used_mem(ctx_.get())));
     }
 
     ~PrefillGraph() {
@@ -797,6 +798,7 @@ public:
         attention_mask_values_.assign(static_cast<size_t>(cache_steps_), ggml_fp32_to_fp16(-INFINITY));
         debug::timing_log_scalar("miotts.lm.decode.graph.build_ms", engine::debug::elapsed_ms(build_start, Clock::now()));
         debug::trace_log_scalar("miotts.lm.decode_cache_steps", cache_steps_);
+        debug::trace_log_scalar("miotts.lm.decode.ctx_used_bytes", static_cast<int64_t>(ggml_used_mem(ctx_.get())));
     }
 
     ~DecodeGraph() {

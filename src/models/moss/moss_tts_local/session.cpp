@@ -23,15 +23,20 @@ namespace engine::models::moss_tts_local {
 namespace {
 
 constexpr size_t kBackboneWeightContextBytes = 64ull * 1024 * 1024;
-constexpr size_t kBackboneGraphArenaBytes = 1024ull * 1024 * 1024;
+// Graph metadata pool budgets (no_alloc: tensor data lives in backend
+// buffers, so ggml_init's pool only holds graph metadata; ggml_init commits
+// the whole budget up front regardless — see ggml.c). The old 1-2 GB defaults
+// wasted gigabytes of host RAM per session; 64 MB leaves ~10x headroom over
+// measured metadata usage.
+constexpr size_t kBackboneGraphArenaBytes = 64ull * 1024 * 1024;
 constexpr size_t kDepthWeightContextBytes = 16ull * 1024 * 1024;
 constexpr size_t kDepthGraphArenaBytes = 64ull * 1024 * 1024;
 constexpr size_t kGeneratorProjectionWeightContextBytes = 16ull * 1024 * 1024;
 constexpr size_t kGeneratorProjectionGraphArenaBytes = 16ull * 1024 * 1024;
 constexpr size_t kCodecWeightContextBytes = 256ull * 1024 * 1024;
-constexpr size_t kCodecGraphArenaBytes = 1536ull * 1024 * 1024;
+constexpr size_t kCodecGraphArenaBytes = 64ull * 1024 * 1024;
 constexpr size_t kEncoderWeightContextBytes = 256ull * 1024 * 1024;
-constexpr size_t kEncoderGraphArenaBytes = 2048ull * 1024 * 1024;
+constexpr size_t kEncoderGraphArenaBytes = 64ull * 1024 * 1024;
 constexpr int kCodecSampleRate = 48000;
 constexpr int64_t kDefaultTextChunkSize = 2048;
 

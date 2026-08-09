@@ -30,6 +30,13 @@ struct WavlmEncoderConfig {
     std::vector<int64_t> conv_stride{5, 2, 2, 2, 2, 2, 2};
     float layer_norm_eps = 1.0e-5F;
     assets::TensorStorageType weight_storage_type = assets::TensorStorageType::Native;
+    // Graph metadata pool for the encoder graph (no_alloc: tensor data lives
+    // in the backend buffer). ggml_init commits the whole pool up front
+    // regardless of no_alloc (see ggml.c ggml_init), so the old hardcoded
+    // 1.5 GB committed 1.5 GB of host RAM per WavLM instance for a few MB of
+    // metadata. The default is a generous metadata budget; callers that build
+    // exceptionally large graphs can raise it via session options.
+    size_t graph_arena_bytes = 64ull * 1024ull * 1024ull;
 };
 
 struct WavlmEncoderOutput {

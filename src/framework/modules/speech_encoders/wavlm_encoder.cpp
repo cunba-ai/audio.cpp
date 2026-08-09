@@ -737,7 +737,7 @@ private:
         const auto build_start = Clock::now();
         release_graph();
         ggml_init_params params{
-            1536ull * 1024ull * 1024ull,
+            weights_->config.graph_arena_bytes,
             nullptr,
             true,
         };
@@ -745,6 +745,9 @@ private:
         if (ggml_ == nullptr) {
             throw std::runtime_error("failed to initialize WavLM graph context");
         }
+        engine::debug::trace_log_scalar(
+            "framework.wavlm.graph.arena_bytes",
+            static_cast<int64_t>(weights_->config.graph_arena_bytes));
         core::ModuleBuildContext ctx{
             ggml_,
             "framework.wavlm.encode",
@@ -817,6 +820,7 @@ private:
         engine::debug::timing_log_scalar("framework.wavlm.graph.rebuilt", true);
         engine::debug::timing_log_scalar("framework.wavlm.graph.reused", false);
         engine::debug::timing_log_scalar("framework.wavlm.graph.build_ms", engine::debug::elapsed_ms(build_start));
+        engine::debug::timing_log_scalar("framework.wavlm.graph.ctx_used_bytes", static_cast<int64_t>(ggml_used_mem(ggml_)));
         engine::debug::timing_log_scalar("framework.wavlm.sample_capacity", sample_capacity_);
         engine::debug::timing_log_scalar("framework.wavlm.token_capacity", token_capacity_);
     }

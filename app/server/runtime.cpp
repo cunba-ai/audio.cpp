@@ -8,6 +8,7 @@
 
 #include "engine/framework/debug/trace.h"
 #include "engine/framework/io/json.h"
+#include "engine/framework/core/shared_weight_registry.h"
 #include "engine/framework/runtime/registry.h"
 
 #include <algorithm>
@@ -793,6 +794,10 @@ void ServerState::ensure_model_loaded_locked(LoadedModel & model) {
         engine::debug::trace_log_scalar("server.model.session_options." + key, value);
     }
 
+    // Weight sharing scope: sessions for the same model path on the same
+    // backend reuse one GPU weight buffer instead of uploading a copy per
+    // session (see engine::core::ScopedWeightShareKey).
+    engine::core::ScopedWeightShareKey weight_share(load_request.model_path.string());
     auto loaded_model = registry.load(load_request);
     auto session = loaded_model->create_task_session(model.task, session_options);
     auto * offline = dynamic_cast<engine::runtime::IOfflineVoiceTaskSession *>(session.get());

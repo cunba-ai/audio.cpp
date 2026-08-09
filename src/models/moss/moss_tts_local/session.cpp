@@ -3,6 +3,7 @@
 #include "engine/framework/assets/tensor_source.h"
 #include "engine/framework/audio/resampling.h"
 #include "engine/framework/core/backend.h"
+#include "engine/framework/core/shared_weight_registry.h"
 #include "engine/framework/debug/profiler.h"
 #include "engine/framework/runtime/options.h"
 #include "engine/framework/text/chunking.h"
@@ -236,7 +237,8 @@ MossTTSLocalSession::MossTTSLocalSession(
     : RuntimeSessionBase(options),
       task_(task),
       assets_(require_assets(std::move(assets))),
-      reference_voice_cache_(resolve_reference_cache_slots(this->options())) {
+      reference_voice_cache_(resolve_reference_cache_slots(this->options())),
+      weight_share_key_(engine::core::current_weight_share_key()) {
     backbone_ = std::make_unique<MossBackboneRuntime>(
         assets_,
         execution_context(),
@@ -285,6 +287,10 @@ void MossTTSLocalSession::prepare(const runtime::SessionPreparationRequest & req
 
 moss::MossAudioTokenizerEncoder & MossTTSLocalSession::encoder() {
     if (encoder_ == nullptr) {
+        // The encoder store is created lazily outside the load-time share
+        // scope; re-arm the scope from the construction snapshot so its
+        // weights join the shared buffer (see weight_share_key_).
+        engine::core::ScopedWeightShareKey share(weight_share_key_);
         reference_encoder_execution_context_ = std::make_unique<core::ExecutionContext>(options().backend);
         encoder_ = std::make_unique<moss::MossAudioTokenizerEncoder>(
             *assets_->audio_tokenizer_weights,

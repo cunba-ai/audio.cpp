@@ -11,6 +11,7 @@
 
 #include "engine/framework/audio/chunking.h"
 #include "engine/framework/audio/conversion.h"
+#include "engine/framework/core/shared_weight_registry.h"
 #include "engine/framework/debug/trace.h"
 #include "engine/framework/io/json.h"
 #include "engine/framework/runtime/registry.h"
@@ -818,6 +819,9 @@ int audiocpp_cli_main(int argc, char ** argv) {
         omp_set_num_threads(threads);
 #endif
         session_options.options = collect_key_value_args(argc, argv, "--session-option");
+        // Weight sharing scope: sessions for the same model path on the same
+        // backend reuse one GPU weight buffer (see ScopedWeightShareKey).
+        engine::core::ScopedWeightShareKey weight_share(load_request.model_path.string());
         auto model = registry.load(load_request);
         auto session = model->create_task_session(task_spec, session_options);
         const auto voice_state_out = optional_path_arg(argc, argv, "--voice-state-out");

@@ -5,6 +5,7 @@
 #include "../cli/request.h"
 
 #include "engine/framework/audio/activity.h"
+#include "engine/framework/core/shared_weight_registry.h"
 #include "engine/framework/audio/mixing.h"
 #include "engine/framework/audio/output.h"
 #include "engine/framework/audio/wav_reader.h"
@@ -618,6 +619,9 @@ void run_model_step_impl(
         throw std::runtime_error("workflow model steps currently require offline mode: " + id);
     }
 
+    // Weight sharing scope: sessions for the same model path on the same
+    // backend reuse one GPU weight buffer (see ScopedWeightShareKey).
+    engine::core::ScopedWeightShareKey weight_share(load_request.model_path.string());
     auto model = registry.load(load_request);
     auto session = model->create_task_session(task_spec, session_options);
     auto * offline = dynamic_cast<engine::runtime::IOfflineVoiceTaskSession *>(session.get());
@@ -791,6 +795,9 @@ void run_chunked_model_step(
     if (task_spec.mode != engine::runtime::RunMode::Offline) {
         throw std::runtime_error("chunked_model steps require offline mode: " + id);
     }
+    // Weight sharing scope: sessions for the same model path on the same
+    // backend reuse one GPU weight buffer (see ScopedWeightShareKey).
+    engine::core::ScopedWeightShareKey weight_share(load_request.model_path.string());
     auto model = registry.load(load_request);
     auto session = model->create_task_session(task_spec, session_options);
     auto * offline = dynamic_cast<engine::runtime::IOfflineVoiceTaskSession *>(session.get());
@@ -1011,6 +1018,9 @@ void run_model_step_foreach(
         throw std::runtime_error("workflow model steps currently require offline mode: " + id);
     }
 
+    // Weight sharing scope: sessions for the same model path on the same
+    // backend reuse one GPU weight buffer (see ScopedWeightShareKey).
+    engine::core::ScopedWeightShareKey weight_share(load_request.model_path.string());
     auto model = registry.load(load_request);
     auto session = model->create_task_session(task_spec, session_options);
     auto * offline = dynamic_cast<engine::runtime::IOfflineVoiceTaskSession *>(session.get());

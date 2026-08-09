@@ -1,6 +1,7 @@
 #include "engine/models/moss/moss_tts_nano/session.h"
 
 #include "engine/framework/audio/resampling.h"
+#include "engine/framework/core/shared_weight_registry.h"
 #include "engine/framework/debug/profiler.h"
 #include "engine/framework/runtime/options.h"
 #include "engine/framework/text/chunking.h"
@@ -173,6 +174,7 @@ MossTTSNanoSession::MossTTSNanoSession(
     : RuntimeSessionBase(options),
       task_(task),
       assets_(require_assets(std::move(assets))),
+      weight_share_key_(engine::core::current_weight_share_key()),
       global_prefill_graph_arena_bytes_(runtime::parse_size_mb_option(options.options, {"moss_tts_nano.global_prefill_graph_arena_mb"}, kDefaultGlobalPrefillGraphArenaBytes)),
       global_decode_graph_arena_bytes_(runtime::parse_size_mb_option(options.options, {"moss_tts_nano.global_decode_graph_arena_mb"}, kDefaultGlobalDecodeGraphArenaBytes)),
       global_weight_context_bytes_(runtime::parse_size_mb_option(options.options, {"moss_tts_nano.global_weight_context_mb"}, kDefaultGlobalWeightContextBytes)),
@@ -269,6 +271,10 @@ void MossTTSNanoSession::prepare(const runtime::SessionPreparationRequest & requ
 
 moss::MossAudioTokenizerEncoder & MossTTSNanoSession::encoder() {
     if (encoder_ == nullptr) {
+        // The encoder store is created lazily outside the load-time share
+        // scope; re-arm the scope from the construction snapshot so its
+        // weights join the shared buffer (see weight_share_key_).
+        engine::core::ScopedWeightShareKey share(weight_share_key_);
         reference_encoder_execution_context_ = std::make_unique<core::ExecutionContext>(options().backend);
         encoder_ = std::make_unique<moss::MossAudioTokenizerEncoder>(
             *assets_->audio_tokenizer_weights,

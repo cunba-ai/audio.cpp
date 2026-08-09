@@ -18,6 +18,7 @@
 #include "engine/framework/audio/zipenhancer.h"
 #include "engine/framework/audio/wav_reader.h"
 #include "engine/framework/core/backend.h"
+#include "engine/framework/core/shared_weight_registry.h"
 #include "engine/framework/runtime/model.h"
 #include "engine/framework/runtime/registry.h"
 #include "engine/framework/runtime/session.h"
@@ -73,6 +74,9 @@ struct audiocpp_model {
     // Backend config the model was loaded with — reused when creating streaming
     // sessions so they run on the same device the caller selected at load time.
     engine::core::BackendConfig backend_config;
+    // Model path as loaded — lets streaming sessions join the same weight
+    // sharing scope as the offline session (see ScopedWeightShareKey).
+    std::string model_path;
     // Progress callback (installed once, persists across runs until replaced/cleared)
     audiocpp_progress_fn progress_fn = nullptr;
     void *progress_user = nullptr;
@@ -265,6 +269,10 @@ audiocpp_model_t *audiocpp_load_model_ex(
         if (!hint.empty()) {
             req.family_hint = hint;
         }
+        // Weight sharing scope: any session created from this model (here, and
+        // later streaming sessions) reuses the model's GPU weights instead of
+        // uploading a second copy. See engine::core::ScopedWeightShareKey.
+        engine::core::ScopedWeightShareKey weight_share(req.model_path.string());
         auto loaded = registry.load(req);
         if (!loaded) {
             throw std::runtime_error("failed to load model: " + std::string(model_path));
@@ -283,6 +291,7 @@ audiocpp_model_t *audiocpp_load_model_ex(
         result->loaded_model = std::move(loaded);
         result->session = std::move(session);
         result->backend_config = opts.backend;
+        result->model_path = req.model_path.string();
         result->offline = dynamic_cast<engine::runtime::IOfflineVoiceTaskSession *>(
             result->session.get());
         if (!result->offline) {
@@ -1726,6 +1735,9 @@ audiocpp_stream_t *audiocpp_stream_start(
         engine::runtime::SessionOptions opts;
         opts.backend = model->backend_config;
 
+        // Streaming sessions share the model's GPU weights with the offline
+        // session (same share key), so a second session only adds graph arenas.
+        engine::core::ScopedWeightShareKey weight_share(model->model_path);
         auto session = model->loaded_model->create_task_session(task_spec, opts);
         if (!session) {
             throw std::runtime_error("failed to create streaming task session");

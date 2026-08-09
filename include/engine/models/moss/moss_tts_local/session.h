@@ -67,6 +67,11 @@ private:
     // Lazily built the first time a speaker reference is provided (voice cloning).
     std::unique_ptr<core::ExecutionContext> reference_encoder_execution_context_;
     std::unique_ptr<moss::MossAudioTokenizerEncoder> encoder_;
+    // Weight-share key captured at session construction (inside the load
+    // scope). The lazy encoder() below builds its own weight store outside
+    // that scope; re-arming the scope with this snapshot lets it share the
+    // tokenizer weights across sessions instead of uploading a copy each time.
+    std::string weight_share_key_;
     runtime::CacheSlots<ReferenceAudioCacheKey, ReferenceVoiceCacheEntry, ReferenceAudioCacheKeyEqual>
         reference_voice_cache_;
 };

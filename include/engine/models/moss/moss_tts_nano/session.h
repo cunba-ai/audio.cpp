@@ -59,6 +59,11 @@ private:
     moss::MossAudioTokenizerDecoder decoder_;
     std::unique_ptr<core::ExecutionContext> reference_encoder_execution_context_;
     std::unique_ptr<moss::MossAudioTokenizerEncoder> encoder_;
+    // Weight-share key captured at session construction (inside the load
+    // scope). The lazy encoder() builds its own weight store outside that
+    // scope; re-arming the scope with this snapshot lets it share the
+    // tokenizer weights across sessions (see moss_tts_local for the same).
+    std::string weight_share_key_;
     std::optional<runtime::AudioBuffer> prepared_prompt_audio_;
     std::optional<MossTTSNanoAudioCodes> prepared_reference_codes_;
 };

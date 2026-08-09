@@ -483,7 +483,7 @@ class TitaNetRuntime::Graph {
         if (backend_ == nullptr) {
             throw std::runtime_error("TitaNet execution backend is not initialized");
         }
-        ggml_init_params params{256ull * 1024ull * 1024ull, nullptr, true};
+        ggml_init_params params{64ull * 1024ull * 1024ull, nullptr, true};
         ctx_.reset(ggml_init(params));
         if (ctx_ == nullptr) {
             throw std::runtime_error("failed to initialize ggml context");

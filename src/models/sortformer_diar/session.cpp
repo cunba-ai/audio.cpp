@@ -18,7 +18,7 @@ namespace {
 using engine::debug::measure_ms;
 
 constexpr const char * kFamily = "sortformer_diar";
-constexpr size_t kDefaultGraphArenaBytes = 512ull * 1024ull * 1024ull;
+constexpr size_t kDefaultGraphArenaBytes = 64ull * 1024ull * 1024ull;
 constexpr size_t kDefaultWeightContextBytes = 128ull * 1024ull * 1024ull;
 
 int64_t context_sample_capacity(

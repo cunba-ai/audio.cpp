@@ -28,7 +28,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr size_t kVaeDecoderWeightContextBytes = 900ull * 1024ull * 1024ull;
-constexpr size_t kVaeGraphContextBytes = 384ull * 1024ull * 1024ull;
+constexpr size_t kVaeGraphContextBytes = 64ull * 1024ull * 1024ull;
 constexpr size_t kVaeGraphNodeCapacity = 65536;
 constexpr float kPixelNormEps = 1.0e-6F;
 

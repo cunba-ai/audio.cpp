@@ -187,7 +187,7 @@ public:
     private:
         void build() {
             const auto & config = assets_->config.diffusion;
-            ggml_init_params params{96ull * 1024ull * 1024ull, nullptr, true};
+            ggml_init_params params{64ull * 1024ull * 1024ull, nullptr, true};
             ctx_.reset(ggml_init(params));
             if (ctx_ == nullptr) {
                 throw std::runtime_error("ACE-Step detokenizer ggml context initialization failed");

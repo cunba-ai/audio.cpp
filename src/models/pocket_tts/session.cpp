@@ -601,11 +601,11 @@ PocketTTSGraphCapacityConfig PocketTTSSession::resolve_graph_capacity_config() c
     config.flow_step_graph_context_bytes = static_cast<size_t>(runtime::parse_positive_i64_option(
         options().options,
         {"pocket_tts.flow_step_graph_context_mb"},
-        256)) * 1024ull * 1024ull;
+        64)) * 1024ull * 1024ull;
     config.mimi_encoder_graph_context_bytes = static_cast<size_t>(runtime::parse_positive_i64_option(
         options().options,
         {"pocket_tts.mimi_encoder_graph_context_mb"},
-        512)) * 1024ull * 1024ull;
+        64)) * 1024ull * 1024ull;
     config.mimi_conv_graph_context_bytes = static_cast<size_t>(runtime::parse_positive_i64_option(
         options().options,
         {"pocket_tts.mimi_conv_graph_context_mb"},

@@ -16,8 +16,8 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr size_t kDefaultWeightContextBytes = 3072ull * 1024ull * 1024ull;
-constexpr size_t kDefaultEncoderGraphArenaBytes = 1024ull * 1024ull * 1024ull;
-constexpr size_t kDefaultDecoderGraphArenaBytes = 256ull * 1024ull * 1024ull;
+constexpr size_t kDefaultEncoderGraphArenaBytes = 64ull * 1024ull * 1024ull;
+constexpr size_t kDefaultDecoderGraphArenaBytes = 64ull * 1024ull * 1024ull;
 
 std::shared_ptr<const NemotronASRAssets> require_assets(std::shared_ptr<const NemotronASRAssets> assets) {
     if (assets == nullptr) {

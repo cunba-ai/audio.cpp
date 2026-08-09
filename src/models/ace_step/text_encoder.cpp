@@ -459,7 +459,7 @@ private:
         graph_ = nullptr;
         encode_capacity_ = tokens;
 
-        ggml_init_params params{128ull * 1024ull * 1024ull, nullptr, true};
+        ggml_init_params params{64ull * 1024ull * 1024ull, nullptr, true};
         ctx_.reset(ggml_init(params));
         if (ctx_ == nullptr) {
             throw std::runtime_error("ACE-Step text encoder ggml context initialization failed");

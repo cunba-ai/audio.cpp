@@ -743,10 +743,10 @@ private:
         }
         release_graph();
         ggml_init_params params{
-            1024ull * 1024ull * 1024ull,
-            nullptr,
-            true,
-        };
+             64ull * 1024ull * 1024ull,
+             nullptr,
+             true,
+            };
         ggml_ = ggml_init(params);
         if (ggml_ == nullptr) {
             throw std::runtime_error("failed to initialize BigVGAN graph context");

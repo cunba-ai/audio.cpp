@@ -1459,7 +1459,7 @@ public:
         cached_attention_mask_values_.clear();
 
         ggml_init_params params = {};
-        params.mem_size = 512ull * 1024ull * 1024ull;
+        params.mem_size = 64ull * 1024ull * 1024ull;
         params.mem_buffer = nullptr;
         params.no_alloc = true;
         graph_ggml_ = ggml_init(params);

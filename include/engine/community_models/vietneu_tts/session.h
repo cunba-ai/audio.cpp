@@ -60,7 +60,7 @@ private:
 
     runtime::TaskSpec task_;
     std::shared_ptr<const VietneuTTSAssets> assets_;
-    size_t talker_graph_arena_bytes_ = 256ull * 1024ull * 1024ull;
+    size_t talker_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
     size_t speech_encoder_graph_arena_bytes_ = 32ull * 1024ull * 1024ull;
     size_t speech_decoder_graph_arena_bytes_ = 32ull * 1024ull * 1024ull;
     size_t speaker_encoder_graph_arena_bytes_ = 32ull * 1024ull * 1024ull;

@@ -38,7 +38,7 @@ private:
     std::shared_ptr<const HeartMuLaAssets> assets_;
     std::shared_ptr<const engine::model_spec::ModelContract> contract_;
     size_t generator_weight_context_bytes_ = 32ull * 1024ull * 1024ull;
-    size_t generator_constant_context_bytes_ = 256ull * 1024ull * 1024ull;
+    size_t generator_constant_context_bytes_ = 64ull * 1024ull * 1024ull;
     size_t generator_backbone_prefill_graph_arena_bytes_ = 1536ull * 1024ull * 1024ull;
     size_t generator_backbone_step_graph_arena_bytes_ = 1536ull * 1024ull * 1024ull;
     size_t generator_decoder_prefill_graph_arena_bytes_ = 512ull * 1024ull * 1024ull;

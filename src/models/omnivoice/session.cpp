@@ -16,8 +16,8 @@ namespace engine::models::omnivoice {
 namespace {
 
 constexpr size_t kDefaultAudioTokenizerGraphArenaBytes = 128ull * 1024ull * 1024ull;
-constexpr size_t kDefaultGeneratorPrefillGraphArenaBytes = 256ull * 1024ull * 1024ull;
-constexpr size_t kDefaultGeneratorDecodeGraphArenaBytes = 256ull * 1024ull * 1024ull;
+constexpr size_t kDefaultGeneratorPrefillGraphArenaBytes = 64ull * 1024ull * 1024ull;
+constexpr size_t kDefaultGeneratorDecodeGraphArenaBytes = 64ull * 1024ull * 1024ull;
 constexpr size_t kDefaultAudioTokenizerWeightContextBytes = 128ull * 1024ull * 1024ull;
 constexpr size_t kDefaultGeneratorWeightContextBytes = 256ull * 1024ull * 1024ull;
 

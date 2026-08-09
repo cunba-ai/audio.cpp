@@ -1093,7 +1093,7 @@ public:
         if (ctx_ == nullptr) {
             throw std::runtime_error("failed to initialize Confucius4-TTS T2S decode graph context");
         }
-        ggml_init_params state_params{512ull * 1024ull * 1024ull, nullptr, true};
+        ggml_init_params state_params{64ull * 1024ull * 1024ull, nullptr, true};
         state_ctx_.reset(ggml_init(state_params));
         if (state_ctx_ == nullptr) {
             throw std::runtime_error("failed to initialize Confucius4-TTS T2S decode state context");

@@ -15,10 +15,10 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-constexpr size_t kDefaultAudioEncoderGraphArenaBytes = 512ull * 1024ull * 1024ull;
+constexpr size_t kDefaultAudioEncoderGraphArenaBytes = 64ull * 1024ull * 1024ull;
 constexpr size_t kDefaultAudioEncoderWeightContextBytes = 128ull * 1024ull * 1024ull;
-constexpr size_t kDefaultTextPrefillGraphArenaBytes = 512ull * 1024ull * 1024ull;
-constexpr size_t kDefaultTextDecodeGraphArenaBytes = 512ull * 1024ull * 1024ull;
+constexpr size_t kDefaultTextPrefillGraphArenaBytes = 64ull * 1024ull * 1024ull;
+constexpr size_t kDefaultTextDecodeGraphArenaBytes = 64ull * 1024ull * 1024ull;
 constexpr size_t kDefaultTextWeightContextBytes = 128ull * 1024ull * 1024ull;
 // 1024 steps of 80 ms = ~82 s of decoder attention context, held in one graph for the whole
 // session so a live stream never pays a cache-growth rebuild.

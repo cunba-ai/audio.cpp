@@ -444,7 +444,7 @@ private:
     void build() {
         const auto build_start = Clock::now();
         const auto & config = assets_->config;
-        ggml_init_params params{512ull * 1024ull * 1024ull, nullptr, true};
+        ggml_init_params params{64ull * 1024ull * 1024ull, nullptr, true};
         ctx_.reset(ggml_init(params));
         if (ctx_ == nullptr) {
             throw std::runtime_error("DramaBox prompt connector ggml context initialization failed");

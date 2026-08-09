@@ -530,7 +530,7 @@ OuteTTSSession::OuteTTSSession(runtime::TaskSpec task,
            runtime::parse_size_mb_option(options.options,
                                          {"outetts.dac_graph_arena_mb",
                                           "outetts.dac_graph_context_mb"},
-                                         1536ull * 1024ull * 1024ull),
+                                         64ull * 1024ull * 1024ull),
            assets::TensorStorageType::F32),
       mem_saver_(mem_saver_from_options(options)),
       reference_profile_cache_(reference_cache_slots(options)) {
@@ -566,7 +566,7 @@ OuteTTSLlamaRuntime &OuteTTSSession::llama(bool voice_cloning) {
                                       4096ull * 1024ull * 1024ull),
         runtime::parse_size_mb_option(options().options,
                                       {"outetts.constant_context_mb"},
-                                      256ull * 1024ull * 1024ull),
+                                      64ull * 1024ull * 1024ull),
         storage_type);
     llama_storage_type_ = storage_type;
   }

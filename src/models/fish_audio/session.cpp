@@ -26,8 +26,8 @@ namespace {
 using Clock = std::chrono::steady_clock;
 namespace fs = std::filesystem;
 
-constexpr size_t kDefaultArGraphArenaBytes = 512ull * 1024ull * 1024ull;
-constexpr size_t kDefaultCodecGraphArenaBytes = 512ull * 1024ull * 1024ull;
+constexpr size_t kDefaultArGraphArenaBytes = 64ull * 1024ull * 1024ull;
+constexpr size_t kDefaultCodecGraphArenaBytes = 64ull * 1024ull * 1024ull;
 constexpr size_t kDefaultArWeightContextBytes = 512ull * 1024ull * 1024ull;
 constexpr size_t kDefaultCodecWeightContextBytes = 512ull * 1024ull * 1024ull;
 constexpr int64_t kDefaultReferenceCacheSlots = 1;

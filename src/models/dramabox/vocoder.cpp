@@ -23,7 +23,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr size_t kVocoderWeightContextBytes = 1536ull * 1024ull * 1024ull;
-constexpr size_t kVocoderGraphContextBytes = 384ull * 1024ull * 1024ull;
+constexpr size_t kVocoderGraphContextBytes = 64ull * 1024ull * 1024ull;
 constexpr size_t kVocoderGraphNodeCapacity = 65536;
 
 struct GgmlContextDeleter {

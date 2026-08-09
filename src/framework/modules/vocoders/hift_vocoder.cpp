@@ -605,7 +605,7 @@ class F0Runner {
 public:
     F0Runner(const HiftVocoderWeights & weights, int64_t frames)
         : weights_(&weights), capacity_frames_(frames) {
-        ggml_init_params params{128ull * 1024ull * 1024ull, nullptr, true};
+        ggml_init_params params{64ull * 1024ull * 1024ull, nullptr, true};
         ctx_ = ggml_init(params);
         if (ctx_ == nullptr) {
             throw std::runtime_error("failed to initialize HiFT F0 graph context");
@@ -675,7 +675,7 @@ public:
     BackendRunner(const HiftVocoderWeights & weights, int64_t frames, int64_t stft_frames)
         : weights_(&weights), capacity_frames_(frames), capacity_stft_frames_(stft_frames) {
         ggml_init_params params{
-            512ull * 1024ull * 1024ull +
+             64ull * 1024ull * 1024ull +
                 static_cast<size_t>(std::max<int64_t>(frames, 1)) * 4ull * 1024ull * 1024ull,
             nullptr,
             true,

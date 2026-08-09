@@ -23,7 +23,7 @@ using Clock = std::chrono::steady_clock;
 
 constexpr int64_t kDefaultTextChunkSize = 256;
 
-constexpr size_t kDefaultGlobalPrefillGraphArenaBytes = 256ull * 1024ull * 1024ull;
+constexpr size_t kDefaultGlobalPrefillGraphArenaBytes = 64ull * 1024ull * 1024ull;
 constexpr size_t kDefaultGlobalDecodeGraphArenaBytes = 128ull * 1024ull * 1024ull;
 constexpr size_t kDefaultGlobalWeightContextBytes = 512ull * 1024ull * 1024ull;
 constexpr size_t kDefaultLocalFrameGraphArenaBytes = 64ull * 1024ull * 1024ull;

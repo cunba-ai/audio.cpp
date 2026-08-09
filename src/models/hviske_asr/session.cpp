@@ -20,9 +20,9 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr size_t kDefaultWeightContextBytes = 32ull * 1024ull * 1024ull;
-constexpr size_t kDefaultEncoderGraphArenaBytes = 512ull * 1024ull * 1024ull;
-constexpr size_t kDefaultDecoderPrefillGraphArenaBytes = 512ull * 1024ull * 1024ull;
-constexpr size_t kDefaultDecoderDecodeGraphArenaBytes = 512ull * 1024ull * 1024ull;
+constexpr size_t kDefaultEncoderGraphArenaBytes = 64ull * 1024ull * 1024ull;
+constexpr size_t kDefaultDecoderPrefillGraphArenaBytes = 64ull * 1024ull * 1024ull;
+constexpr size_t kDefaultDecoderDecodeGraphArenaBytes = 64ull * 1024ull * 1024ull;
 
 constexpr const char * kFamily = "hviske_asr";
 

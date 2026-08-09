@@ -430,7 +430,7 @@ public:
         : config_(config), weights_(&weights), constants_(&constants),
           backend_(backend), threads_(threads), capacity_(capacity),
           projection_(projection) {
-        ggml_init_params params{1536ull * 1024ull * 1024ull, nullptr, true};
+        ggml_init_params params{64ull * 1024ull * 1024ull, nullptr, true};
         ctx_.reset(ggml_init(params));
         if (!ctx_) throw std::runtime_error("failed to create OuteTTS cached-step context");
         core::ModuleBuildContext build{ctx_.get(), "outetts.llama.cached_step"};
@@ -580,9 +580,12 @@ struct OuteTTSLlamaRuntime::Impl {
         const int64_t steps = static_cast<int64_t>(ids.size());
         // This correctness-first graph uses full-sequence prefill. A cached-step
         // graph can replace it without changing weights, sampling, or package layout.
+        // The pool is no_alloc (metadata only), so the floor is a metadata
+        // budget; the steps^2 term covers attention-graph metadata growing with
+        // sequence length.
         const size_t arena = std::max<size_t>(
-            1024ull * 1024ull * 1024ull,
-            static_cast<size_t>(steps) * static_cast<size_t>(steps) * 256ull + 512ull * 1024ull * 1024ull);
+            64ull * 1024ull * 1024ull,
+            static_cast<size_t>(steps) * static_cast<size_t>(steps) * 256ull + 64ull * 1024ull * 1024ull);
         ggml_init_params params{arena, nullptr, true};
         std::unique_ptr<ggml_context, GgmlContextDeleter> ctx(ggml_init(params));
         if (!ctx) {

@@ -726,7 +726,7 @@ struct RmvpePitchExtractorComponent::State {
         if (weights.execution_context == nullptr) {
             throw std::runtime_error("RMVPE requires execution context");
         }
-        ggml_init_params params{512ull * 1024ull * 1024ull, nullptr, true};
+        ggml_init_params params{64ull * 1024ull * 1024ull, nullptr, true};
         feature.ctx = ggml_init(params);
         if (feature.ctx == nullptr) {
             throw std::runtime_error("failed to initialize RMVPE feature graph context");
@@ -763,7 +763,7 @@ struct RmvpePitchExtractorComponent::State {
         if (weights.execution_context == nullptr) {
             throw std::runtime_error("RMVPE requires execution context");
         }
-        ggml_init_params params{128ull * 1024ull * 1024ull, nullptr, true};
+        ggml_init_params params{64ull * 1024ull * 1024ull, nullptr, true};
         target.ctx = ggml_init(params);
         if (target.ctx == nullptr) {
             throw std::runtime_error("failed to initialize RMVPE GRU graph context");

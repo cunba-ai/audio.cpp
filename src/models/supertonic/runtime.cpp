@@ -63,10 +63,10 @@ struct SupertonicChunkOutput {
     float duration_seconds = 0.0F;
 };
 
-constexpr size_t kSupertonicDurationArenaBytes = 256ull * 1024ull * 1024ull;
-constexpr size_t kSupertonicTextArenaBytes = 1024ull * 1024ull * 1024ull;
-constexpr size_t kSupertonicVectorArenaBytes = 8192ull * 1024ull * 1024ull;
-constexpr size_t kSupertonicVocoderArenaBytes = 2048ull * 1024ull * 1024ull;
+constexpr size_t kSupertonicDurationArenaBytes = 64ull * 1024ull * 1024ull;
+constexpr size_t kSupertonicTextArenaBytes = 64ull * 1024ull * 1024ull;
+constexpr size_t kSupertonicVectorArenaBytes = 64ull * 1024ull * 1024ull;
+constexpr size_t kSupertonicVocoderArenaBytes = 64ull * 1024ull * 1024ull;
 constexpr size_t kSupertonicIoArenaBytes = 64ull * 1024ull * 1024ull;
 constexpr int kSupertonicVectorStepsPerGraph = 1;
 constexpr size_t kSupertonicSmallGraphCacheSlots = 4;

@@ -886,7 +886,7 @@ private:
         }
         release_graph();
         ggml_init_params params{
-            1024ull * 1024ull * 1024ull, nullptr, true};
+             64ull * 1024ull * 1024ull, nullptr, true};
         ctx_ = ggml_init(params);
         if (ctx_ == nullptr) {
             throw std::runtime_error(

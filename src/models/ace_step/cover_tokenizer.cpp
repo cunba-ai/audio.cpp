@@ -274,7 +274,7 @@ public:
         void build() {
             const auto & config = assets_->config.diffusion;
             const int64_t patch_tokens = config.pool_window_size + 1;
-            ggml_init_params params{128ull * 1024ull * 1024ull, nullptr, true};
+            ggml_init_params params{64ull * 1024ull * 1024ull, nullptr, true};
             ctx_.reset(ggml_init(params));
             if (ctx_ == nullptr) {
                 throw std::runtime_error("ACE-Step cover tokenizer ggml context initialization failed");

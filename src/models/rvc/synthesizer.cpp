@@ -793,7 +793,7 @@ RvcSynthesizerOutput RvcSynthesizer::infer(const RvcSynthesizerInput & input) co
         state_->frames = input.frames;
         state_->feature_dim = input.feature_dim;
         state_->speaker_id = input.speaker_id;
-        state_->graph_ctx = ggml_init({4096ull * 1024ull * 1024ull, nullptr, true});
+        state_->graph_ctx = ggml_init({64ull * 1024ull * 1024ull, nullptr, true});
         if (state_->graph_ctx == nullptr) {
             throw std::runtime_error("failed to initialize RVC synthesizer graph context");
         }

@@ -14,8 +14,8 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr size_t kDefaultAudioEncoderGraphArenaBytes = 128ull * 1024ull * 1024ull;
-constexpr size_t kDefaultThinkerPrefillGraphArenaBytes = 256ull * 1024ull * 1024ull;
-constexpr size_t kDefaultThinkerDecodeGraphArenaBytes = 256ull * 1024ull * 1024ull;
+constexpr size_t kDefaultThinkerPrefillGraphArenaBytes = 64ull * 1024ull * 1024ull;
+constexpr size_t kDefaultThinkerDecodeGraphArenaBytes = 64ull * 1024ull * 1024ull;
 constexpr size_t kDefaultThinkerWeightContextBytes = 64ull * 1024ull * 1024ull;
 
 std::shared_ptr<const engine::models::qwen3_asr::Qwen3ASRAssets> require_assets(

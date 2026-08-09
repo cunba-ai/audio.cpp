@@ -800,6 +800,292 @@ private:
   ggml_backend_buffer_t buffer_ = nullptr;
 };
 
+// Batched prefill (transcribe.cpp build_prefill_graph_batched style): all
+// sequences' prompts are packed into one [n_seqs, max_steps, hidden] graph.
+// Audio embeddings are injected elementwise (x = x*keep + audio_dense, no
+// set_rows, so quantized token embeddings never straddle the CPU/CUDA split),
+// the causal mask is per-sequence (padding beyond each utterance's prompt is
+// masked out), and per-sequence last-step logits are gathered with
+// ggml_get_rows (batch-outer indices). Per-layer K/V is read back to host for
+// import into the batched decode cache.
+class BatchedPrefillGraph {
+public:
+  BatchedPrefillGraph(std::shared_ptr<TextDecoderWeightsRuntime> runtime,
+                      int64_t max_steps, int64_t n_seqs,
+                      size_t graph_arena_bytes)
+      : runtime_(std::move(runtime)), max_steps_(max_steps),
+        n_seqs_(n_seqs) {
+    if (max_steps_ <= 0) {
+      throw std::runtime_error(
+          "Fun-ASR-Nano batched prefill requires positive max steps");
+    }
+    if (n_seqs_ <= 0) {
+      throw std::runtime_error(
+          "Fun-ASR-Nano batched prefill requires positive n_seqs");
+    }
+    const auto build_start = Clock::now();
+    ggml_init_params params{graph_arena_bytes, nullptr, true};
+    ctx_.reset(ggml_init(params));
+    if (ctx_ == nullptr) {
+      throw std::runtime_error(
+          "failed to initialize Fun-ASR-Nano batched prefill graph context");
+    }
+    const auto &config = runtime_->assets().config.text;
+    const auto &weights = runtime_->weights();
+    core::ModuleBuildContext ctx{ctx_.get(),
+                                 "fun_asr_nano.decoder.prefill.batched",
+                                 runtime_->backend_type()};
+    token_ids_ = ggml_new_tensor_2d(ctx_.get(), GGML_TYPE_I32, max_steps_,
+                                    n_seqs_);
+    ggml_set_input(token_ids_);
+    auto token_ids = core::wrap_tensor(
+        token_ids_, core::TensorShape::from_dims({n_seqs_, max_steps_}),
+        GGML_TYPE_I32);
+    audio_dense_ = ggml_new_tensor_3d(ctx_.get(), GGML_TYPE_F32,
+                                      config.hidden_size, max_steps_, n_seqs_);
+    ggml_set_input(audio_dense_);
+    auto audio_dense = core::wrap_tensor(
+        audio_dense_,
+        core::TensorShape::from_dims({n_seqs_, max_steps_, config.hidden_size}),
+        GGML_TYPE_F32);
+    keep_mask_ = ggml_new_tensor_3d(ctx_.get(), GGML_TYPE_F32, 1, max_steps_,
+                                    n_seqs_);
+    ggml_set_input(keep_mask_);
+    auto keep_mask = core::wrap_tensor(
+        keep_mask_, core::TensorShape::from_dims({n_seqs_, max_steps_, 1}),
+        GGML_TYPE_F32);
+    positions_ = ggml_new_tensor_1d(ctx_.get(), GGML_TYPE_I32, max_steps_);
+    ggml_set_input(positions_);
+    auto positions = core::wrap_tensor(
+        positions_, core::TensorShape::from_dims({max_steps_}), GGML_TYPE_I32);
+    last_idx_ = ggml_new_tensor_2d(ctx_.get(), GGML_TYPE_I32, 1, n_seqs_);
+    ggml_set_input(last_idx_);
+    auto last_idx = core::wrap_tensor(
+        last_idx_, core::TensorShape::from_dims({n_seqs_, 1}), GGML_TYPE_I32);
+    attention_mask_ = ggml_new_tensor_4d(ctx_.get(), GGML_TYPE_F16,
+                                         max_steps_, max_steps_, 1, n_seqs_);
+    ggml_set_input(attention_mask_);
+    auto attention_mask = core::wrap_tensor(
+        attention_mask_,
+        core::TensorShape::from_dims({n_seqs_, 1, max_steps_, max_steps_}),
+        GGML_TYPE_F16);
+
+    auto x = modules::EmbeddingModule({config.vocab_size, config.hidden_size})
+                 .build(ctx, token_ids, weights.token_embedding);
+    x = core::wrap_tensor(
+        ggml_add(ctx.ggml, ggml_mul(ctx.ggml, x.tensor, keep_mask.tensor),
+                 audio_dense.tensor),
+        x.shape, GGML_TYPE_F32);
+
+    graph_ = ggml_new_graph_custom(ctx_.get(), 65536, false);
+    auto decoder_out =
+        modules::QwenCausalDecoderModule(make_qwen_decoder_config(config))
+            .build(ctx, x, positions, make_qwen_decoder_weights(weights),
+                   std::nullopt, attention_mask);
+    for (const auto &layer : decoder_out.state.layers) {
+      if (!layer.key.has_value() || !layer.value.has_value()) {
+        throw std::runtime_error(
+            "Fun-ASR-Nano batched prefill decoder did not return K/V state");
+      }
+      auto *key_readback =
+          ggml_cpy(ctx_.get(), layer.key->tensor,
+                   ggml_dup_tensor(ctx_.get(), layer.key->tensor));
+      auto *value_readback =
+          ggml_cpy(ctx_.get(), layer.value->tensor,
+                   ggml_dup_tensor(ctx_.get(), layer.value->tensor));
+      ggml_set_output(key_readback);
+      ggml_set_output(value_readback);
+      keys_.push_back(key_readback);
+      values_.push_back(value_readback);
+    }
+    // Gather each sequence's last valid hidden state, then project to logits.
+    auto hidden_last = core::wrap_tensor(
+        ggml_get_rows(ctx.ggml, decoder_out.sequence.tensor, last_idx.tensor),
+        core::TensorShape::from_dims({n_seqs_, 1, config.hidden_size}),
+        decoder_out.sequence.type);
+    hidden_last = modules::RMSNormModule(
+                      {config.hidden_size, config.rms_norm_eps, true, false})
+                      .build(ctx, hidden_last,
+                             modules::NormWeights{weights.norm, std::nullopt});
+    hidden_last = core::reshape_tensor(
+        ctx, hidden_last,
+        core::TensorShape::from_dims({n_seqs_, config.hidden_size}));
+    logits_ = modules::LinearModule({config.hidden_size, config.vocab_size,
+                                     false, GGML_PREC_DEFAULT})
+                  .build(ctx, hidden_last,
+                         modules::LinearWeights{weights.lm_head, std::nullopt});
+    ggml_set_output(logits_.tensor);
+    for (auto *key : keys_) {
+      ggml_build_forward_expand(graph_, key);
+    }
+    for (auto *value : values_) {
+      ggml_build_forward_expand(graph_, value);
+    }
+    ggml_build_forward_expand(graph_, logits_.tensor);
+    gallocr_ = ggml_gallocr_new(
+        ggml_backend_get_default_buffer_type(runtime_->backend()));
+    if (gallocr_ == nullptr || !ggml_gallocr_reserve(gallocr_, graph_) ||
+        !ggml_gallocr_alloc_graph(gallocr_, graph_)) {
+      throw std::runtime_error(
+          "failed to allocate Fun-ASR-Nano batched prefill graph");
+    }
+    const auto pos = modules::qwen_position_ids(max_steps_);
+    ggml_backend_tensor_set(positions_, pos.data(), 0,
+                            pos.size() * sizeof(int32_t));
+    debug::timing_log_scalar(
+        "fun_asr_nano.decoder.prefill_batched.graph.build_ms",
+        engine::debug::elapsed_ms(build_start, Clock::now()));
+    debug::trace_log_scalar("fun_asr_nano.decoder.prefill_batched_max_steps",
+                            max_steps_);
+  }
+
+  ~BatchedPrefillGraph() {
+    engine::core::release_backend_graph_resources(runtime_->backend(), graph_);
+    if (gallocr_ != nullptr) {
+      ggml_gallocr_free(gallocr_);
+    }
+  }
+
+  struct Result {
+    std::vector<float> logits;  // [n_seqs, vocab], per-sequence last step
+    std::vector<runtime::TransformerKVState> kv_states;  // per-sequence
+  };
+
+  Result run(const std::vector<std::vector<int32_t>> &token_ids,
+             const std::vector<int64_t> &prompt_steps,
+             const std::vector<std::vector<int32_t>> &audio_positions,
+             const std::vector<std::vector<float>> &audio_embeddings) {
+    const auto &config = runtime_->assets().config.text;
+    const int64_t hidden = config.hidden_size;
+    // Flat token ids [max_steps * n_seqs] (batch-outer, matching ne layout).
+    std::vector<int32_t> ids(static_cast<size_t>(max_steps_) *
+                             static_cast<size_t>(n_seqs_), 0);
+    std::vector<float> dense(static_cast<size_t>(max_steps_) *
+                                 static_cast<size_t>(n_seqs_) *
+                                 static_cast<size_t>(hidden),
+                             0.0F);
+    std::vector<float> keep(static_cast<size_t>(max_steps_) *
+                                static_cast<size_t>(n_seqs_),
+                            1.0F);
+    std::vector<int32_t> last_idx(static_cast<size_t>(n_seqs_), 0);
+    std::vector<ggml_fp16_t> mask(
+        static_cast<size_t>(max_steps_) * static_cast<size_t>(max_steps_) *
+            static_cast<size_t>(n_seqs_),
+        ggml_fp32_to_fp16(-INFINITY));
+    for (int64_t b = 0; b < n_seqs_; ++b) {
+      const int64_t steps = prompt_steps[static_cast<size_t>(b)];
+      const auto &ids_b = token_ids[static_cast<size_t>(b)];
+      if (static_cast<int64_t>(ids_b.size()) != steps) {
+        throw std::runtime_error(
+            "Fun-ASR-Nano batched prefill prompt length mismatch");
+      }
+      std::copy(ids_b.begin(), ids_b.end(),
+                ids.begin() + static_cast<size_t>(b) * static_cast<size_t>(max_steps_));
+      // Audio blend: audio positions get the embeddings, everything else keeps
+      // the token embedding.
+      const auto &apos = audio_positions[static_cast<size_t>(b)];
+      const auto &emb = audio_embeddings[static_cast<size_t>(b)];
+      if (static_cast<int64_t>(apos.size()) * hidden !=
+          static_cast<int64_t>(emb.size())) {
+        throw std::runtime_error(
+            "Fun-ASR-Nano batched prefill audio embedding size mismatch");
+      }
+      for (size_t a = 0; a < apos.size(); ++a) {
+        const int64_t t = apos[a];
+        if (t < 0 || t >= steps) {
+          throw std::runtime_error(
+              "Fun-ASR-Nano batched prefill audio position out of range");
+        }
+        const size_t base =
+            (static_cast<size_t>(b) * static_cast<size_t>(max_steps_) +
+             static_cast<size_t>(t)) *
+            static_cast<size_t>(hidden);
+        std::copy(emb.begin() + static_cast<ptrdiff_t>(a) * hidden,
+                  emb.begin() + static_cast<ptrdiff_t>(a + 1) * hidden,
+                  dense.begin() + static_cast<ptrdiff_t>(base));
+        keep[static_cast<size_t>(b) * static_cast<size_t>(max_steps_) +
+             static_cast<size_t>(t)] = 0.0F;
+      }
+      // Causal mask over the valid prefix; padding is fully masked.
+      for (int64_t q = 0; q < max_steps_; ++q) {
+        auto *row = mask.data() +
+                    (static_cast<size_t>(b) * static_cast<size_t>(max_steps_) +
+                     static_cast<size_t>(q)) *
+                        static_cast<size_t>(max_steps_);
+        for (int64_t k = 0; k <= q && k < steps; ++k) {
+          row[k] = ggml_fp32_to_fp16(0.0F);
+        }
+      }
+      last_idx[static_cast<size_t>(b)] =
+          static_cast<int32_t>(std::max<int64_t>(steps - 1, 0));
+    }
+    ggml_backend_tensor_set(token_ids_, ids.data(), 0,
+                            ids.size() * sizeof(int32_t));
+    ggml_backend_tensor_set(audio_dense_, dense.data(), 0,
+                            dense.size() * sizeof(float));
+    ggml_backend_tensor_set(keep_mask_, keep.data(), 0,
+                            keep.size() * sizeof(float));
+    ggml_backend_tensor_set(last_idx_, last_idx.data(), 0,
+                            last_idx.size() * sizeof(int32_t));
+    ggml_backend_tensor_set(attention_mask_, mask.data(), 0,
+                            mask.size() * sizeof(ggml_fp16_t));
+    core::set_backend_threads(runtime_->backend(), runtime_->threads());
+    const ggml_status status =
+        engine::core::compute_backend_graph(runtime_->backend(), graph_);
+    ggml_backend_synchronize(runtime_->backend());
+    if (status != GGML_STATUS_SUCCESS) {
+      throw std::runtime_error(
+          "Fun-ASR-Nano batched prefill graph compute failed");
+    }
+    Result out;
+    out.logits.resize(static_cast<size_t>(n_seqs_) *
+                      static_cast<size_t>(config.vocab_size));
+    ggml_backend_tensor_get(logits_.tensor, out.logits.data(), 0,
+                            out.logits.size() * sizeof(float));
+    const int64_t step_elems = config.key_value_heads * head_dim(config);
+    out.kv_states.resize(static_cast<size_t>(n_seqs_));
+    for (int64_t b = 0; b < n_seqs_; ++b) {
+      const int64_t steps = prompt_steps[static_cast<size_t>(b)];
+      auto &state = out.kv_states[static_cast<size_t>(b)];
+      state.current_end = steps;
+      state.layers.resize(keys_.size());
+      for (size_t layer = 0; layer < keys_.size(); ++layer) {
+        auto &layer_state = state.layers[layer];
+        layer_state.valid_steps = steps;
+        layer_state.key.resize(static_cast<size_t>(steps * step_elems));
+        layer_state.value.resize(static_cast<size_t>(steps * step_elems));
+        // Slice sequence b's slab out of the [n_seqs, max_steps, kv_heads,
+        // head_dim] readback (offset b*max_steps*step_elems).
+        const size_t slab =
+            static_cast<size_t>(b) * static_cast<size_t>(max_steps_) *
+            static_cast<size_t>(step_elems) * sizeof(float);
+        ggml_backend_tensor_get(keys_[layer], layer_state.key.data(), slab,
+                                layer_state.key.size() * sizeof(float));
+        ggml_backend_tensor_get(values_[layer], layer_state.value.data(), slab,
+                                layer_state.value.size() * sizeof(float));
+      }
+    }
+    return out;
+  }
+
+private:
+  std::shared_ptr<TextDecoderWeightsRuntime> runtime_;
+  int64_t max_steps_ = 0;
+  int64_t n_seqs_ = 0;
+  std::unique_ptr<ggml_context, GgmlContextDeleter> ctx_;
+  ggml_tensor *token_ids_ = nullptr;
+  ggml_tensor *audio_dense_ = nullptr;
+  ggml_tensor *keep_mask_ = nullptr;
+  ggml_tensor *positions_ = nullptr;
+  ggml_tensor *last_idx_ = nullptr;
+  ggml_tensor *attention_mask_ = nullptr;
+  core::TensorValue logits_;
+  std::vector<ggml_tensor *> keys_;
+  std::vector<ggml_tensor *> values_;
+  ggml_cgraph *graph_ = nullptr;
+  ggml_gallocr_t gallocr_ = nullptr;
+};
+
 } // namespace
 
 struct FunAsrNanoDecoderRuntime::Impl {
@@ -960,10 +1246,11 @@ struct FunAsrNanoDecoderRuntime::Impl {
     const auto &config = weights->assets().config.text;
     const size_t vocab = static_cast<size_t>(config.vocab_size);
 
-    // ---- Per-utterance prefill (serial; reuses the cached prefill graph) ----
+    // ---- Batched prefill (one packed graph, transcribe.cpp style) ----
     std::vector<runtime::TransformerKVState> kv_states(n);
     std::vector<std::vector<float>> first_logits(n);
     std::vector<int64_t> prompt_steps(n);
+    int64_t max_prompt_steps = 0;
     int64_t max_cache_steps = 0;
     for (size_t b = 0; b < n; ++b) {
       const auto &prompt = prompts[b];
@@ -978,18 +1265,33 @@ struct FunAsrNanoDecoderRuntime::Impl {
             "Fun-ASR-Nano batched decoder request exceeds max_position_embeddings");
       }
       validate_prompt_audio(prompt, audio);
-      if (prefill_graph == nullptr ||
-          !prefill_graph->matches(*weights, steps, audio.tokens)) {
-        prefill_graph = std::make_unique<PrefillGraph>(
-            weights, steps, audio.tokens, prefill_graph_arena_bytes);
-      }
-      auto prefill = prefill_graph->run(prompt.input_ids, audio.values,
-                                        prompt.audio_token_positions);
-      kv_states[b] = std::move(prefill.kv_state);
-      first_logits[b] = std::move(prefill.logits);
       prompt_steps[b] = steps;
+      max_prompt_steps = std::max(max_prompt_steps, steps);
       max_cache_steps = std::max(max_cache_steps,
                                  steps + std::max<int64_t>(options.max_new_tokens - 1, 0));
+    }
+    {
+      std::vector<std::vector<int32_t>> ids(n);
+      std::vector<std::vector<float>> dense(n);
+      std::vector<std::vector<int32_t>> audio_positions(n);
+      std::vector<std::vector<float>> audio_values(n);
+      for (size_t b = 0; b < n; ++b) {
+        ids[b] = prompts[b].input_ids;
+        audio_positions[b] = prompts[b].audio_token_positions;
+        audio_values[b] = audio_embeddings[b].values;
+      }
+      BatchedPrefillGraph prefill(weights, max_prompt_steps,
+                                  static_cast<int64_t>(n),
+                                  prefill_graph_arena_bytes);
+      auto result = prefill.run(ids, prompt_steps, audio_positions,
+                                audio_values);
+      const size_t vocab = static_cast<size_t>(config.vocab_size);
+      for (size_t b = 0; b < n; ++b) {
+        first_logits[b].assign(
+            result.logits.begin() + static_cast<ptrdiff_t>(b * vocab),
+            result.logits.begin() + static_cast<ptrdiff_t>((b + 1) * vocab));
+        kv_states[b] = std::move(result.kv_states[b]);
+      }
     }
 
     // ---- Shared batched step graph ----

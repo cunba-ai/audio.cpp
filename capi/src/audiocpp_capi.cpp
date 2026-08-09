@@ -278,6 +278,33 @@ void audiocpp_set_progress_callback(audiocpp_model_t *model,
         });
 }
 
+namespace audiocpp::detail {
+
+// Pack an engine audio buffer into an owned audiocpp_audio_t, preserving the
+// channel count. The engine may emit interleaved multi-channel audio (e.g.
+// dramabox outputs stereo); dropping buf.channels here used to make callers
+// write stereo data into mono WAVs (garbled playback) — the original bug.
+// n_samples is the TOTAL sample count (channels * frames), matching the
+// engine's AudioBuffer. Throws on allocation failure.
+audiocpp_audio_t *pack_audio_output(const engine::runtime::AudioBuffer & buf) {
+    auto * out = new audiocpp_audio_t{};
+    out->n_samples = static_cast<int64_t>(buf.samples.size());
+    out->sample_rate = buf.sample_rate;
+    out->channels = std::max(1, buf.channels);
+    if (buf.samples.empty()) {
+        return out;
+    }
+    out->samples = static_cast<float *>(malloc(buf.samples.size() * sizeof(float)));
+    if (!out->samples) {
+        delete out;
+        throw std::runtime_error("out of memory allocating audio output");
+    }
+    std::memcpy(out->samples, buf.samples.data(), buf.samples.size() * sizeof(float));
+    return out;
+}
+
+}  // namespace audiocpp::detail
+
 /* ======================================================================== */
 /* TTS                                                                       */
 /* ======================================================================== */
@@ -373,16 +400,7 @@ audiocpp_audio_t *audiocpp_tts(
         if (!task_result.audio_output || task_result.audio_output->samples.empty()) {
             throw std::runtime_error("TTS produced no audio output");
         }
-        const auto &buf = *task_result.audio_output;
-        result = new audiocpp_audio_t{};
-        result->n_samples = static_cast<int64_t>(buf.samples.size());
-        result->sample_rate = buf.sample_rate;
-        result->samples = static_cast<float *>(malloc(buf.samples.size() * sizeof(float)));
-        if (!result->samples) {
-            delete result;
-            throw std::runtime_error("out of memory allocating audio output");
-        }
-        std::memcpy(result->samples, buf.samples.data(), buf.samples.size() * sizeof(float));
+        result = audiocpp::detail::pack_audio_output(*task_result.audio_output);
     });
     return result;
 }
@@ -426,16 +444,7 @@ audiocpp_audio_t *audiocpp_tts_with_voice_ref(
         if (!task_result.audio_output || task_result.audio_output->samples.empty()) {
             throw std::runtime_error("TTS produced no audio output");
         }
-        const auto &buf = *task_result.audio_output;
-        result = new audiocpp_audio_t{};
-        result->n_samples = static_cast<int64_t>(buf.samples.size());
-        result->sample_rate = buf.sample_rate;
-        result->samples = static_cast<float *>(malloc(buf.samples.size() * sizeof(float)));
-        if (!result->samples) {
-            delete result;
-            throw std::runtime_error("out of memory allocating audio output");
-        }
-        std::memcpy(result->samples, buf.samples.data(), buf.samples.size() * sizeof(float));
+        result = audiocpp::detail::pack_audio_output(*task_result.audio_output);
     });
     return result;
 }
@@ -590,6 +599,7 @@ audiocpp_audio_batch_t *audiocpp_tts_batch(
             // All texts' audio lives in items[0]; the rest stay empty.
             result->items[0].n_samples = static_cast<int64_t>(merged.size());
             result->items[0].sample_rate = sample_rate;
+            result->items[0].channels = channels;
             result->items[0].samples = static_cast<float *>(
                 malloc(merged.size() * sizeof(float)));
             if (!result->items[0].samples) {
@@ -612,6 +622,7 @@ audiocpp_audio_batch_t *audiocpp_tts_batch(
                 const auto &buf = *tr.audio_output;
                 result->items[i].n_samples = static_cast<int64_t>(buf.samples.size());
                 result->items[i].sample_rate = buf.sample_rate;
+                result->items[i].channels = std::max(1, buf.channels);
                 result->items[i].samples = static_cast<float *>(
                     malloc(buf.samples.size() * sizeof(float)));
                 if (!result->items[i].samples) {
@@ -724,16 +735,7 @@ audiocpp_audio_t *audiocpp_audio_transform(
         if (!buf_ptr) {
             throw std::runtime_error("audio transform produced no audio output");
         }
-        const auto &buf = *buf_ptr;
-        result = new audiocpp_audio_t{};
-        result->n_samples = static_cast<int64_t>(buf.samples.size());
-        result->sample_rate = buf.sample_rate;
-        result->samples = static_cast<float *>(malloc(buf.samples.size() * sizeof(float)));
-        if (!result->samples) {
-            delete result;
-            throw std::runtime_error("out of memory allocating audio output");
-        }
-        std::memcpy(result->samples, buf.samples.data(), buf.samples.size() * sizeof(float));
+        result = audiocpp::detail::pack_audio_output(*buf_ptr);
     });
     return result;
 }
@@ -788,16 +790,7 @@ audiocpp_audio_t *audiocpp_audio_transform_with_voice_ref(
         if (!buf_ptr) {
             throw std::runtime_error("audio transform produced no audio output");
         }
-        const auto &buf = *buf_ptr;
-        result = new audiocpp_audio_t{};
-        result->n_samples = static_cast<int64_t>(buf.samples.size());
-        result->sample_rate = buf.sample_rate;
-        result->samples = static_cast<float *>(malloc(buf.samples.size() * sizeof(float)));
-        if (!result->samples) {
-            delete result;
-            throw std::runtime_error("out of memory allocating audio output");
-        }
-        std::memcpy(result->samples, buf.samples.data(), buf.samples.size() * sizeof(float));
+        result = audiocpp::detail::pack_audio_output(*buf_ptr);
     });
     return result;
 }
@@ -1104,10 +1097,13 @@ std::string utility_model_cache_key(
 
 // Pack a mono PCM vector + sample rate into an owned audiocpp_audio_t (or
 // nullptr on OOM). Throws on allocation failure so AUDIOCPP_CATCH reports it.
+// (The AudioBuffer overload used by the exported TTS/transform entry points
+// lives at file scope above the TTS section.)
 audiocpp_audio_t *pack_audio_output(const std::vector<float> & samples, int sample_rate) {
     auto * out = new audiocpp_audio_t{};
     out->n_samples = static_cast<int64_t>(samples.size());
     out->sample_rate = sample_rate;
+    out->channels = 1;  // enhanced/utility outputs are mono
     if (samples.empty()) {
         return out;
     }
@@ -1399,6 +1395,7 @@ audiocpp_stems_t *audiocpp_transform_stems(
             audiocpp_stem_t stem;
             stem.name = dup_cstr(name);
             stem.sample_rate = buf.sample_rate;
+            stem.channels = std::max(1, buf.channels);
             stem.n_samples = static_cast<int64_t>(buf.samples.size());
             stem.samples = static_cast<float *>(
                 malloc(buf.samples.size() * sizeof(float)));
@@ -1531,24 +1528,36 @@ int audiocpp_read_wav(
     }
 }
 
+int audiocpp_write_wav_ex(
+    const char *path,
+    const float *samples,
+    int64_t n_samples,
+    int sample_rate,
+    int channels
+) {
+    if (!path || !samples || n_samples <= 0 || channels <= 0) return -1;
+    // Interleaved data must hold a whole number of frames per channel.
+    if (n_samples % channels != 0) return -1;
+    try {
+        std::vector<float> vec(samples, samples + n_samples);
+        engine::audio::write_pcm16_wav(
+            std::filesystem::path(path),
+            sample_rate,
+            channels,
+            vec);
+        return 0;
+    } catch (...) {
+        return -1;
+    }
+}
+
 int audiocpp_write_wav(
     const char *path,
     const float *samples,
     int64_t n_samples,
     int sample_rate
 ) {
-    if (!path || !samples || n_samples <= 0) return -1;
-    try {
-        std::vector<float> vec(samples, samples + n_samples);
-        engine::audio::write_pcm16_wav(
-            std::filesystem::path(path),
-            sample_rate,
-            1,
-            vec);
-        return 0;
-    } catch (...) {
-        return -1;
-    }
+    return audiocpp_write_wav_ex(path, samples, n_samples, sample_rate, 1);
 }
 
 /* ======================================================================== */

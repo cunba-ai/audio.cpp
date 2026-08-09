@@ -3,7 +3,16 @@
 // Internal helpers shared between the C ABI translation unit and its unit
 // tests. NOT part of the public ABI (capi/include/audiocpp.h); do not export.
 
+#include "audiocpp.h"
+
 #include <string>
+#include <unordered_map>
+
+struct cJSON;
+
+namespace engine::runtime {
+struct AudioBuffer;
+}
 
 namespace audiocpp::detail {
 
@@ -19,5 +28,23 @@ namespace audiocpp::detail {
 // then rejects them rather than silently rounding a value the caller never sent.
 // This matches the CLI's app/cli/request.cpp json_option_string behavior.
 std::string option_number_to_string(double value);
+
+// Collect every string/number/bool member of a parsed JSON object into an
+// options map, rendering values exactly like the request-options path:
+// numbers via option_number_to_string, booleans as "true"/"false", strings
+// passed through. Used by audiocpp_load_model_ex for session options.
+void collect_option_fields(const cJSON * root, std::unordered_map<std::string, std::string> & options);
+
+// Parse a session-options JSON string into a string map. NULL/"" yields an
+// empty map (defaults). Malformed JSON or a non-object root returns false —
+// load-time configuration must never be silently dropped.
+bool parse_session_options_json(const char * options_json, std::unordered_map<std::string, std::string> & options);
+
+// Pack an engine audio buffer into an owned audiocpp_audio_t, preserving the
+// channel count (the stereo-output fix). File-local in audiocpp_capi.cpp (not
+// exported); declared here so unit tests can verify channel propagation.
+// n_samples is the total sample count (channels * frames). Caller owns the
+// result (free with audiocpp_free_audio). Throws on allocation failure.
+audiocpp_audio_t * pack_audio_output(const engine::runtime::AudioBuffer & buf);
 
 }  // namespace audiocpp::detail

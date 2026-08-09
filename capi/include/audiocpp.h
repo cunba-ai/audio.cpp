@@ -52,9 +52,13 @@ typedef struct audiocpp_model audiocpp_model_t;
 
 /** Audio output (PCM f32 samples). Caller owns; free with audiocpp_free_audio. */
 typedef struct {
-    float *samples;      /**< PCM samples, mono, [-1.0, 1.0] */
-    int64_t n_samples;   /**< Number of samples */
+    float *samples;      /**< PCM samples, interleaved when channels > 1, [-1.0, 1.0] */
+    int64_t n_samples;   /**< Total number of samples (channels * frames) */
     int sample_rate;     /**< Sample rate in Hz (e.g. 24000) */
+    int channels;        /**< Channel count (1 = mono; 2 = stereo, L/R interleaved).
+                              Most TTS models emit mono; a few (e.g. dramabox) emit
+                              stereo. Write with audiocpp_write_wav_ex so the WAV
+                              header matches the data. */
 } audiocpp_audio_t;
 
 /** Text output. Caller owns; free with audiocpp_free_text. */
@@ -557,9 +561,10 @@ AUDIOCPP_API void audiocpp_free_align(audiocpp_align_t *align);
 /** Named audio stem (e.g. "vocals", "drums", "bass", "other", "instrumental"). */
 typedef struct {
     char *name;             /**< Stem name (owned by result) */
-    float *samples;         /**< PCM samples, mono, [-1.0, 1.0] (owned) */
-    int64_t n_samples;      /**< Number of samples */
+    float *samples;         /**< PCM samples, interleaved when channels > 1, [-1.0, 1.0] (owned) */
+    int64_t n_samples;      /**< Total number of samples (channels * frames) */
     int sample_rate;        /**< Sample rate in Hz */
+    int channels;           /**< Channel count (1 = mono; 2 = stereo, L/R interleaved) */
 } audiocpp_stem_t;
 
 /** Multi-stem audio result. Caller owns; free with audiocpp_free_stems. */
@@ -671,7 +676,7 @@ AUDIOCPP_API int audiocpp_read_wav(
 /**
  * Write mono f32 PCM samples to a 16-bit WAV file.
  * @param path         Output WAV path.
- * @param samples      PCM samples [-1.0, 1.0].
+ * @param samples      PCM samples [-1.0, 1.0] (mono).
  * @param n_samples    Number of samples.
  * @param sample_rate  Sample rate.
  * @return 0 on success, -1 on error.
@@ -681,6 +686,29 @@ AUDIOCPP_API int audiocpp_write_wav(
     const float *samples,
     int64_t n_samples,
     int sample_rate
+);
+
+/**
+ * Write f32 PCM samples to a 16-bit WAV file with an explicit channel count.
+ *
+ * Use this for results whose audiocpp_audio_t.channels > 1 (interleaved
+ * multi-channel data): it writes a WAV header matching the data, so the file
+ * plays back at the correct speed. audiocpp_write_wav is equivalent to calling
+ * this with channels = 1.
+ *
+ * @param path         Output WAV path.
+ * @param samples      PCM samples, interleaved for channels > 1, [-1.0, 1.0].
+ * @param n_samples    Total number of samples (channels * frames).
+ * @param sample_rate  Sample rate.
+ * @param channels     Channel count (>= 1).
+ * @return 0 on success, -1 on error.
+ */
+AUDIOCPP_API int audiocpp_write_wav_ex(
+    const char *path,
+    const float *samples,
+    int64_t n_samples,
+    int sample_rate,
+    int channels
 );
 
 /* ======================================================================== */

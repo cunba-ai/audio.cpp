@@ -90,7 +90,7 @@ private:
     runtime::StreamEventCallback stream_sink_;
     size_t streaming_segment_index_ = 0;
     uint64_t streaming_rng_offset_blocks_ = 0;
-    size_t graph_arena_bytes_ = 512ull * 1024ull * 1024ull;
+    size_t graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
     size_t weight_context_bytes_ = 1024ull * 1024ull * 1024ull;
     engine::assets::TensorStorageType matmul_weight_storage_type_ = engine::assets::TensorStorageType::Native;
     engine::assets::TensorStorageType conv_weight_storage_type_ = engine::assets::TensorStorageType::Native;

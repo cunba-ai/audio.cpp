@@ -47,9 +47,9 @@ private:
 
   runtime::TaskSpec task_;
   std::shared_ptr<const FunAsrNanoAssets> assets_;
-  size_t encoder_graph_arena_bytes_ = 512ull * 1024ull * 1024ull;
+  size_t encoder_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
   size_t adaptor_graph_arena_bytes_ = 128ull * 1024ull * 1024ull;
-  size_t decoder_prefill_graph_arena_bytes_ = 256ull * 1024ull * 1024ull;
+  size_t decoder_prefill_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
   size_t decoder_decode_graph_arena_bytes_ = 128ull * 1024ull * 1024ull;
   size_t decoder_weight_context_bytes_ = 32ull * 1024ull * 1024ull;
   assets::TensorStorageType encoder_weight_storage_type_ =

@@ -179,9 +179,9 @@ private:
     mutable std::unique_ptr<HeartCodecConditioningGraph> conditioning_graph_;
     mutable std::unique_ptr<HeartCodecScalarDecoderGraph> scalar_decoder_graph_;
     core::ExecutionContext * execution_context_ = nullptr;
-    size_t flow_estimator_graph_arena_bytes_ = 2048ull * 1024ull * 1024ull;
-    size_t conditioning_graph_arena_bytes_ = 512ull * 1024ull * 1024ull;
-    size_t scalar_decoder_graph_arena_bytes_ = 1536ull * 1024ull * 1024ull;
+    size_t flow_estimator_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
+    size_t conditioning_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
+    size_t scalar_decoder_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
 };
 
 HeartCodecWeights load_heartcodec_weights(

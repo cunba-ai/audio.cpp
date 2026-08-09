@@ -53,10 +53,10 @@ private:
 
     runtime::TaskSpec task_;
     std::shared_ptr<const VoxtralRealtimeAssets> assets_;
-    size_t audio_encoder_graph_arena_bytes_ = 512ull * 1024ull * 1024ull;
+    size_t audio_encoder_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
     size_t audio_encoder_weight_context_bytes_ = 128ull * 1024ull * 1024ull;
-    size_t text_decoder_prefill_graph_arena_bytes_ = 512ull * 1024ull * 1024ull;
-    size_t text_decoder_decode_graph_arena_bytes_ = 512ull * 1024ull * 1024ull;
+    size_t text_decoder_prefill_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
+    size_t text_decoder_decode_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
     size_t text_decoder_weight_context_bytes_ = 128ull * 1024ull * 1024ull;
     assets::TensorStorageType audio_encoder_weight_storage_type_ = assets::TensorStorageType::Native;
     assets::TensorStorageType text_decoder_weight_storage_type_ = assets::TensorStorageType::Native;

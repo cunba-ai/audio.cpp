@@ -244,11 +244,11 @@ private:
     core::BackendType backend_type_ = core::BackendType::Cpu;
     int device_ = 0;
     int threads_ = 1;
-    size_t backbone_prefill_graph_arena_bytes_ = 1536ull * 1024ull * 1024ull;
-    size_t backbone_step_graph_arena_bytes_ = 1536ull * 1024ull * 1024ull;
-    size_t decoder_prefill_graph_arena_bytes_ = 512ull * 1024ull * 1024ull;
-    size_t decoder_step_graph_arena_bytes_ = 512ull * 1024ull * 1024ull;
-    size_t frame_embedding_graph_arena_bytes_ = 512ull * 1024ull * 1024ull;
+    size_t backbone_prefill_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
+    size_t backbone_step_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
+    size_t decoder_prefill_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
+    size_t decoder_step_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
+    size_t frame_embedding_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
 };
 
 HeartMuLaWeights load_heartmula_weights(

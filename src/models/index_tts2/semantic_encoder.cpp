@@ -367,7 +367,7 @@ public:
         if (ctx_ == nullptr) {
             throw std::runtime_error("failed to initialize IndexTTS2 Wav2Vec2-BERT graph context");
         }
-        ggml_init_params input_params{64ull * 1024ull * 1024ull, nullptr, true};
+        ggml_init_params input_params{256ull * 1024ull * 1024ull, nullptr, true};
         input_ctx_.reset(ggml_init(input_params));
         if (input_ctx_ == nullptr) {
             throw std::runtime_error("failed to initialize IndexTTS2 Wav2Vec2-BERT input context");

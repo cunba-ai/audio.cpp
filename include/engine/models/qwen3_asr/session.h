@@ -68,8 +68,8 @@ private:
     runtime::TaskSpec task_;
     std::shared_ptr<const Qwen3ASRAssets> assets_;
     size_t audio_encoder_graph_arena_bytes_ = 128ull * 1024ull * 1024ull;
-    size_t thinker_prefill_graph_arena_bytes_ = 256ull * 1024ull * 1024ull;
-    size_t thinker_decode_graph_arena_bytes_ = 256ull * 1024ull * 1024ull;
+    size_t thinker_prefill_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
+    size_t thinker_decode_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
     size_t thinker_weight_context_bytes_ = 64ull * 1024ull * 1024ull;
     engine::assets::TensorStorageType audio_encoder_weight_storage_type_ = engine::assets::TensorStorageType::Native;
     engine::assets::TensorStorageType thinker_weight_storage_type_ = engine::assets::TensorStorageType::Native;

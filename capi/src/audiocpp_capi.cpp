@@ -20,6 +20,7 @@
 #include "engine/framework/core/backend.h"
 #include "engine/framework/core/shared_weight_registry.h"
 #include "engine/framework/runtime/model.h"
+#include "engine/framework/runtime/options.h"
 #include "engine/framework/runtime/registry.h"
 #include "engine/framework/runtime/session.h"
 #include "engine/framework/audio/wav_writer.h"
@@ -268,6 +269,12 @@ audiocpp_model_t *audiocpp_load_model_ex(
         req.model_path = empty_path ? std::filesystem::path{} : std::filesystem::path(model_path);
         if (!hint.empty()) {
             req.family_hint = hint;
+        }
+        // model_spec_override: path to a model_specs/<family>.json for GGUF
+        // packages that do not embed a spec (spec-backed families like
+        // htdemucs / sortformer_diar require one).
+        if (const auto value = engine::runtime::find_option(opts.options, {"model_spec_override"})) {
+            req.model_spec_override = std::filesystem::path(*value);
         }
         // Weight sharing scope: any session created from this model (here, and
         // later streaming sessions) reuses the model's GPU weights instead of

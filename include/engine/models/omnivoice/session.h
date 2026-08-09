@@ -79,8 +79,8 @@ private:
     runtime::TaskSpec task_;
     std::shared_ptr<const OmniVoiceAssets> assets_;
     size_t audio_tokenizer_graph_arena_bytes_ = 128ull * 1024ull * 1024ull;
-    size_t generator_prefill_graph_arena_bytes_ = 256ull * 1024ull * 1024ull;
-    size_t generator_decode_graph_arena_bytes_ = 256ull * 1024ull * 1024ull;
+    size_t generator_prefill_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
+    size_t generator_decode_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
     size_t audio_tokenizer_weight_context_bytes_ = 128ull * 1024ull * 1024ull;
     size_t generator_weight_context_bytes_ = 256ull * 1024ull * 1024ull;
     engine::assets::TensorStorageType audio_tokenizer_weight_storage_type_ = engine::assets::TensorStorageType::Native;

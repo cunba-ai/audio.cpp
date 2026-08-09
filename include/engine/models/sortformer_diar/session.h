@@ -46,7 +46,7 @@ private:
     std::shared_ptr<const engine::model_spec::ModelContract> contract_;
     std::shared_ptr<const SortformerDiarWeights> weights_;
     SortformerPostprocessConfig default_postprocess_;
-    size_t graph_arena_bytes_ = 512ull * 1024ull * 1024ull;
+    size_t graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
     size_t weight_context_bytes_ = 128ull * 1024ull * 1024ull;
     assets::TensorStorageType matmul_weight_storage_type_ = assets::TensorStorageType::Native;
     assets::TensorStorageType conv_weight_storage_type_ = assets::TensorStorageType::Native;

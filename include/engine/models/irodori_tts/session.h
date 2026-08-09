@@ -62,9 +62,9 @@ private:
   std::shared_ptr<const IrodoriTTSAssets> assets_;
   std::shared_ptr<const engine::model_spec::ModelContract> contract_;
   IrodoriTextTokenizer tokenizer_;
-  size_t condition_graph_arena_bytes_ = 256ull * 1024ull * 1024ull;
+  size_t condition_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
   size_t rf_graph_arena_bytes_ = 768ull * 1024ull * 1024ull;
-  size_t codec_graph_arena_bytes_ = 512ull * 1024ull * 1024ull;
+  size_t codec_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
   size_t condition_weight_context_bytes_ = 32ull * 1024ull * 1024ull;
   size_t rf_weight_context_bytes_ = 32ull * 1024ull * 1024ull;
   size_t codec_weight_context_bytes_ = 32ull * 1024ull * 1024ull;

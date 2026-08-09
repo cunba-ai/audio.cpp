@@ -41,7 +41,7 @@ private:
 
     runtime::TaskSpec task_;
     std::shared_ptr<const MossTTSNanoAssets> assets_;
-    size_t global_prefill_graph_arena_bytes_ = 256ull * 1024ull * 1024ull;
+    size_t global_prefill_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
     size_t global_decode_graph_arena_bytes_ = 128ull * 1024ull * 1024ull;
     size_t global_weight_context_bytes_ = 512ull * 1024ull * 1024ull;
     size_t local_frame_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;

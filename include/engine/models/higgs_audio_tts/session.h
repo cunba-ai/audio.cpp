@@ -64,9 +64,9 @@ private:
     std::shared_ptr<const HiggsAssets> assets_;
     size_t ar_weight_context_bytes_ = 4096ull * 1024ull * 1024ull;
     size_t codec_weight_context_bytes_ = 1536ull * 1024ull * 1024ull;
-    size_t ar_decode_graph_arena_bytes_ = 512ull * 1024ull * 1024ull;
+    size_t ar_decode_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
     size_t codec_decode_graph_arena_bytes_ = 128ull * 1024ull * 1024ull;
-    size_t codec_encode_graph_arena_bytes_ = 256ull * 1024ull * 1024ull;
+    size_t codec_encode_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
     assets::TensorStorageType ar_weight_storage_type_ = assets::TensorStorageType::Native;
     assets::TensorStorageType codec_weight_storage_type_ = assets::TensorStorageType::Native;
     std::shared_ptr<HiggsARRuntime> ar_;

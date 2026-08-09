@@ -56,9 +56,9 @@ private:
     std::shared_ptr<const engine::model_spec::ModelContract> contract_;
     std::shared_ptr<const HviskeWeights> weights_;
     size_t weight_context_bytes_ = 32ull * 1024ull * 1024ull;
-    size_t encoder_graph_arena_bytes_ = 512ull * 1024ull * 1024ull;
-    size_t decoder_prefill_graph_arena_bytes_ = 512ull * 1024ull * 1024ull;
-    size_t decoder_decode_graph_arena_bytes_ = 512ull * 1024ull * 1024ull;
+    size_t encoder_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
+    size_t decoder_prefill_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
+    size_t decoder_decode_graph_arena_bytes_ = 64ull * 1024ull * 1024ull;
     engine::assets::TensorStorageType matmul_weight_storage_type_ = engine::assets::TensorStorageType::Native;
     engine::assets::TensorStorageType conv_weight_storage_type_ = engine::assets::TensorStorageType::Native;
     HviskeFrontend frontend_;

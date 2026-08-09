@@ -108,6 +108,47 @@ std::string option_number_to_string(double value) {
     return engine::io::json::stringify_number(value);
 }
 
+void collect_option_fields(
+    const cJSON * root,
+    std::unordered_map<std::string, std::string> & options) {
+    if (root == nullptr) {
+        return;
+    }
+    for (const cJSON * item = root->child; item; item = item->next) {
+        if (item->string == nullptr) {
+            continue;
+        }
+        const std::string key = item->string;
+        // Same value rendering as the request-options path (apply_options):
+        // numbers via option_number_to_string, booleans as "true"/"false".
+        if (cJSON_IsString(item)) {
+            options[key] = item->valuestring;
+        } else if (cJSON_IsNumber(item)) {
+            options[key] = option_number_to_string(item->valuedouble);
+        } else if (cJSON_IsBool(item)) {
+            options[key] = cJSON_IsTrue(item) ? "true" : "false";
+        }
+    }
+}
+
+bool parse_session_options_json(
+    const char * options_json,
+    std::unordered_map<std::string, std::string> & options) {
+    if (options_json == nullptr || options_json[0] == '\0') {
+        return true;  // defaults
+    }
+    cJSON * root = cJSON_Parse(options_json);
+    if (root == nullptr || !cJSON_IsObject(root)) {
+        if (root != nullptr) {
+            cJSON_Delete(root);
+        }
+        return false;
+    }
+    collect_option_fields(root, options);
+    cJSON_Delete(root);
+    return true;
+}
+
 }  // namespace audiocpp::detail
 
 /* ======================================================================== */
@@ -184,17 +225,28 @@ static engine::runtime::VoiceTaskKind map_task(int task) {
 /* Lifecycle                                                                 */
 /* ======================================================================== */
 
-audiocpp_model_t *audiocpp_load_model(
+audiocpp_model_t *audiocpp_load_model_ex(
     const char *model_path,
     const char *family_hint,
     int task,
     int backend,
     int device_id,
     int n_threads,
+    const char *options_json,
     audiocpp_error_t *err
 ) {
     audiocpp_model_t *result = nullptr;
     AUDIOCPP_CATCH(err, {
+        // Session options are fixed at session creation and cannot change per
+        // request. A malformed options JSON must fail loudly here — silently
+        // falling back to defaults would surface later as confusing
+        // "requires X" errors (e.g. miotts missing its codec model path).
+        engine::runtime::SessionOptions opts;
+        if (!audiocpp::detail::parse_session_options_json(options_json, opts.options)) {
+            throw std::runtime_error(
+                "failed to parse session options JSON (expected a JSON object, "
+                "e.g. {\"miotts.codec_model_path\": \"...\"})");
+        }
         const std::string hint = (family_hint && family_hint[0] != '\0') ? std::string(family_hint) : std::string{};
         const bool empty_path = (model_path == nullptr || model_path[0] == '\0');
         // Empty model_path is allowed ONLY for VAD families when the binary
@@ -220,7 +272,6 @@ audiocpp_model_t *audiocpp_load_model(
         engine::runtime::TaskSpec task_spec;
         task_spec.task = map_task(task);
         task_spec.mode = engine::runtime::RunMode::Offline;
-        engine::runtime::SessionOptions opts;
         opts.backend.type = map_backend(backend);
         opts.backend.device = device_id;
         opts.backend.threads = n_threads > 0 ? n_threads : 0;
@@ -239,6 +290,19 @@ audiocpp_model_t *audiocpp_load_model(
         }
     });
     return result;
+}
+
+audiocpp_model_t *audiocpp_load_model(
+    const char *model_path,
+    const char *family_hint,
+    int task,
+    int backend,
+    int device_id,
+    int n_threads,
+    audiocpp_error_t *err
+) {
+    return audiocpp_load_model_ex(
+        model_path, family_hint, task, backend, device_id, n_threads, nullptr, err);
 }
 
 void audiocpp_free_model(audiocpp_model_t *model) {

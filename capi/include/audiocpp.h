@@ -152,6 +152,38 @@ AUDIOCPP_API audiocpp_model_t *audiocpp_load_model(
     audiocpp_error_t *err
 );
 
+/**
+ * Load a model with session-level options (see audiocpp_load_model for the
+ * base contract; this variant additionally configures the created session).
+ *
+ * Session options are fixed at session creation and apply to every request on
+ * the returned handle — unlike request options, which are passed per call to
+ * audiocpp_tts/audiocpp_asr/... Recognized keys are model-family specific, e.g.:
+ *   {"miotts.codec_model_path": "D:/models/miocodec-25hz-44khz-v2-q8_0.gguf",
+ *    "miotts.best_of_n_enabled": "false",
+ *    "qwen3_tts.perf_mode": "flash_attention",
+ *    "qwen3_tts.mem_saver": "true",
+ *    "moss_tts_nano.audio_tokenizer_decoder_graph_arena_mb": 512}
+ * Values are rendered like request options: JSON integers become "123",
+ * floats keep their fraction, booleans become "true"/"false".
+ *
+ * Pass NULL or "" for defaults. Malformed JSON is a hard error (the options
+ * would otherwise be silently dropped and surface later as confusing
+ * "requires X" failures).
+ *
+ * @param options_json JSON object of session options (NULL/"" = defaults).
+ */
+AUDIOCPP_API audiocpp_model_t *audiocpp_load_model_ex(
+    const char *model_path,
+    const char *family_hint,
+    int task,
+    int backend,
+    int device_id,
+    int n_threads,
+    const char *options_json,
+    audiocpp_error_t *err
+);
+
 /** Free a model handle. Safe to call with NULL. */
 AUDIOCPP_API void audiocpp_free_model(audiocpp_model_t *model);
 

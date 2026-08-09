@@ -1609,6 +1609,41 @@ if (ENGINE_BUILD_TESTS)
     add_test(NAME capi_option_number_test COMMAND capi_option_number_test)
 endif()
 
+# ──────────────────────────────────────────────────────────────────────────
+# C API session-options unit test.
+# Same static-link pattern as capi_option_number_test: compiles
+# audiocpp_capi.cpp into the test TU so the file-local helpers
+# (pack_audio_output, audiocpp::detail::collect_option_fields /
+# parse_session_options_json) are reachable. Covers the stereo-channels fix
+# (pack_audio_output preserves AudioBuffer.channels), the load_model_ex
+# session-options JSON path, and write_wav_ex stereo WAV round-trip.
+# ──────────────────────────────────────────────────────────────────────────
+if (ENGINE_BUILD_TESTS)
+    add_executable(capi_session_options_test
+        tests/unittests/test_capi_session_options.cpp
+        capi/src/audiocpp_capi.cpp
+    )
+    set_target_properties(capi_session_options_test PROPERTIES CXX_VISIBILITY_PRESET default)
+    target_compile_definitions(capi_session_options_test PRIVATE AUDIOCPP_EXPORTS)
+    if (MSVC)
+        # audiocpp_capi.cpp has UTF-8 (CJK) comments; read as UTF-8 so non-ASCII
+        # bytes don't warn (C4819) on non-English system code pages.
+        target_compile_options(capi_session_options_test PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/utf-8>)
+    endif()
+    target_include_directories(capi_session_options_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/capi/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/capi/src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/external/cJSON"
+        "${CMAKE_CURRENT_BINARY_DIR}/generated"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests"
+    )
+    target_link_libraries(capi_session_options_test PRIVATE engine_runtime ggml cjson_vendor)
+    if (ENGINE_ENABLE_OPENMP)
+        target_link_libraries(capi_session_options_test PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    add_test(NAME capi_session_options_test COMMAND capi_session_options_test)
+endif()
+
 add_executable(audiocpp_cli
     app/cli/main.cpp
     app/cli/args.cpp

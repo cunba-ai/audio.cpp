@@ -163,6 +163,28 @@ audiocpp_model_t *audiocpp_load_model(
 void audiocpp_free_model(audiocpp_model_t *model);
 ```
 
+**Session options**: `audiocpp_load_model_ex` is the same call plus a
+session-options JSON argument. Session options are fixed at session creation
+and apply to every request on the handle — unlike request options (per-call
+`{"voice_ref": ...}` passed to `audiocpp_tts`). Use them for model-family
+configuration that the engine reads at load time, e.g.:
+
+```c
+audiocpp_model_t *model = audiocpp_load_model_ex(
+    "D:/models/miotts-1.7b-q8_0.gguf", "miotts", AUDIOCPP_TASK_TTS,
+    AUDIOCPP_BACKEND_CUDA, 0, 8,
+    "{\"miotts.codec_model_path\": \"D:/models/miocodec-25hz-44khz-v2-q8_0.gguf\"}",
+    &err);
+```
+
+Recognized keys are family-specific: `miotts.codec_model_path`,
+`miotts.best_of_n_asr_model_path`, `qwen3_asr.vad_model_path` (model
+dependency paths), `*.weight_type` / `*.mem_saver` / `*.perf_mode` /
+`*.audio_tokenizer_*_graph_arena_mb` (weight precision and memory/performance
+policy). Values render like request options: JSON integers become `"123"`,
+floats keep their fraction, booleans become `"true"`/`"false"`. Malformed
+JSON is a hard load error (never silently ignored).
+
 **Important**: Always pass `family_hint` when known. Without it, the loader
 iterates all 35 loaders' `can_load` probes, which is slower and may hit
 side effects from incompatible models probing the same directory.
@@ -465,6 +487,11 @@ free(samples);
 
 // Write mono f32 PCM → 16-bit WAV
 audiocpp_write_wav("output.wav", samples, n, rate);
+
+// Multi-channel results (check `audio->channels`, e.g. dramabox emits
+// stereo) must be written with audiocpp_write_wav_ex so the WAV header
+// matches the interleaved data:
+audiocpp_write_wav_ex("stereo.wav", samples, n, rate, 2);
 ```
 
 ---

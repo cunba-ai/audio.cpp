@@ -292,6 +292,31 @@ int main(int argc, char **argv) {
     const char *model = arg_value(argc, argv, "--model");
     const char *codec = arg_value(argc, argv, "--codec");
     const char *text = arg_value(argc, argv, "--synth-text");
+    {
+        /* --text-file <path>: read the synth text from a UTF-8 file instead
+         * of the command line (avoids shell/console encoding mangling). */
+        const char *text_file = arg_value(argc, argv, "--text-file");
+        if (text_file && text_file[0]) {
+            FILE *tf = fopen(text_file, "rb");
+            if (tf == NULL) {
+                fprintf(stderr, "failed to open --text-file %s\n", text_file);
+                return 2;
+            }
+            fseek(tf, 0, SEEK_END);
+            const long tlen = ftell(tf);
+            fseek(tf, 0, SEEK_SET);
+            if (tlen <= 0 || tlen > 4 * 1024 * 1024) {
+                fprintf(stderr, "--text-file size out of range\n");
+                fclose(tf);
+                return 2;
+            }
+            static char text_buf[4 * 1024 * 1024 + 1];
+            const size_t got = fread(text_buf, 1, (size_t)tlen, tf);
+            fclose(tf);
+            text_buf[got] = '\0';
+            text = text_buf;
+        }
+    }
     const char *audio_path = arg_value(argc, argv, "--audio");
     const char *voice_ref = arg_value(argc, argv, "--voice-ref");
     const char *reference_text = arg_value(argc, argv, "--reference-text");
@@ -399,7 +424,7 @@ int main(int argc, char **argv) {
     const char *options = build_options(voice_ref, reference_text, speaker, user_json);
 
     /* Split --synth-text on '|' so session i gets its own text */
-    char texts_copy[2048];
+    char texts_copy[65536];
     char *texts[16] = {0};
     int n_texts = 0;
     if (text) {
@@ -422,10 +447,14 @@ int main(int argc, char **argv) {
     infer_task tasks[16];
     memset(tasks, 0, sizeof(tasks));
     const int n_run = n_max < 16 ? n_max : 16;
+    fprintf(stderr, "[probe] n_texts=%d text_len=%d\n", n_texts,
+            text ? (int)strlen(text) : -1);
     for (int i = 0; i < n_run; ++i) {
         tasks[i].session = sessions[i];
         tasks[i].task = task;
         tasks[i].text = texts[i % (n_texts > 0 ? n_texts : 1)];
+        fprintf(stderr, "[probe] task %d text_len=%d\n", i,
+                tasks[i].text ? (int)strlen(tasks[i].text) : -1);
         /* Serial multi-session runs: session i uses clip i (round-robin) so
          * each utterance differs; --batch funnels all clips into one call. */
         tasks[i].audio_pcm = n_audio > 1 ? audio_pcms[i % n_audio] : audio_pcm;

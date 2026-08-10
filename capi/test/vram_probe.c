@@ -351,9 +351,36 @@ int main(int argc, char **argv) {
         if (spec && spec[0]) {
             json_escape_path(spec_json, sizeof(spec_json), spec);
         }
+        /* Merge --options (user_json) into the session options so
+         * constructor-time options (graph arenas etc.) can be set too. */
+        const char *user_json = arg_value(argc, argv, "--options");
+        const char *inner = NULL;
+        size_t inner_len = 0;
+        if (user_json && user_json[0] == '{') {
+            inner = user_json + 1;
+            inner_len = strlen(inner);
+            while (inner_len > 0 && (inner[inner_len - 1] == '}' ||
+                                     inner[inner_len - 1] == ' ' ||
+                                     inner[inner_len - 1] == '\t' ||
+                                     inner[inner_len - 1] == '\n')) {
+                --inner_len;
+            }
+        }
         snprintf(session_options, sizeof(session_options),
-                 "{\"miotts.codec_model_path\":\"%s\",\"model_spec_override\":\"%s\"}",
-                 codec_json, spec_json);
+                 "{\"miotts.codec_model_path\":\"%s\",\"model_spec_override\":\"%s\"%.*s%s}",
+                 codec_json, spec_json,
+                 inner && inner_len > 0 ? 1 : 0,
+                 inner && inner_len > 0 ? "," : "",
+                 inner && inner_len > 0 ? "" : "");
+        if (inner && inner_len > 0) {
+            const size_t base = strlen(session_options) - 1;
+            const size_t room = sizeof(session_options) - base - 1;
+            if (inner_len < room) {
+                memcpy(session_options + base, inner, inner_len);
+                session_options[base + inner_len] = '}';
+                session_options[base + inner_len + 1] = '\0';
+            }
+        }
     }
     const char *family = arg_value(argc, argv, "--family") ? arg_value(argc, argv, "--family") : "miotts";
 

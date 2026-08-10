@@ -513,10 +513,14 @@ public:
     // bytes are COPIED into an owned vector so release_storage()/discard_range
     // stay safe regardless of where the source buffer lives (embedded .rodata
     // is read-only on some platforms; copying 1-2 MB of VAD weights is cheap).
+    // Unlike a file-backed source there is no backing path to re-read, so the
+    // buffer must survive release_storage(): sessions created from the same
+    // loaded weights (offline + streaming) each re-upload the tensors.
     explicit SafeTensorSource(const std::byte * data, size_t size)
         : index_(engine::io::load_safetensors_index_from_bytes(data, size)),
           bytes_(engine::io::BinaryBlob::from_owned(
-              std::vector<std::byte>(data, data + size))) {}
+              std::vector<std::byte>(data, data + size))),
+          memory_backed_(true) {}
 
     const std::filesystem::path & source_path() const noexcept override {
         return index_.source_path;
@@ -546,8 +550,16 @@ public:
         return out;
     }
 
+    // File-backed sources drop their bytes and lazily re-read from disk on the
+    // next require. Memory-backed (embedded) sources have no backing path — the
+    // buffer IS the storage — so release_storage() must keep it. The weights
+    // are typically shared by several sessions (offline + streaming) that each
+    // upload the tensors; clearing here would make the next load attempt to
+    // open the "<embedded>" marker as a file path.
     void release_storage() const override {
-        bytes_ = engine::io::BinaryBlob();
+        if (!memory_backed_) {
+            bytes_ = engine::io::BinaryBlob();
+        }
     }
 
     RawTensorData require_tensor_data(std::string_view name) const override {
@@ -645,6 +657,14 @@ private:
 
     std::pair<const std::byte *, size_t> require_data_range(const engine::io::SafeTensorInfo & info) const {
         if (bytes_.empty()) {
+            if (memory_backed_) {
+                // Should not happen: release_storage() keeps embedded bytes.
+                // Fail loudly instead of attempting to open "<embedded>" as a
+                // file path (read_binary_blob would produce a misleading
+                // "failed to open binary file: <embedded>").
+                throw std::runtime_error(
+                    "embedded tensor source data has been released and cannot be re-read: " + info.name);
+            }
             bytes_ = engine::io::read_binary_blob(index_.source_path);
         }
         const size_t byte_size = info.data_end - info.data_begin;
@@ -669,6 +689,7 @@ private:
 
     engine::io::SafeTensorIndex index_;
     mutable engine::io::BinaryBlob bytes_;
+    bool memory_backed_ = false;
 };
 
 struct GgufTensorInfo {

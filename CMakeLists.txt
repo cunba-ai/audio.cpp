@@ -1923,6 +1923,13 @@ if (ENGINE_BUILD_TESTS)
         COMMAND safetensors_offsets_test
     )
 
+    add_engine_unittest(tensor_source_memory_backed_test tests/unittests/test_tensor_source_memory_backed.cpp)
+
+    add_test(
+        NAME tensor_source_memory_backed_test
+        COMMAND tensor_source_memory_backed_test
+    )
+
     add_engine_unittest(audio_chunking_test tests/unittests/test_audio_chunking.cpp)
 
     add_test(

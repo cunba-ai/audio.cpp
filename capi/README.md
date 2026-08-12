@@ -232,10 +232,62 @@ and must free it with the matching `audiocpp_free_*` function.
 | `audiocpp_audio_transform` | SEP/VC | audio PCM | single audio output | `free_audio` |
 | `audiocpp_audio_transform_with_voice_ref` | VC | audio PCM + inline voice ref | audio | `free_audio` |
 | `audiocpp_transform_stems` | SEP/GEN | audio PCM (+ voice ref) | **all** named stems (vocals/drums/bass/...) | `free_stems` |
+| `audiocpp_generate` | GEN | text prompt | audio and/or artifacts (video) | `free_gen_result` |
+| `audiocpp_midi` | MIDI | audio PCM | artifacts (MIDI / event JSON) | `free_artifacts` |
+| `audiocpp_midi_from_wav` | MIDI | WAV file bytes | artifacts (MIDI / event JSON) | `free_artifacts` |
 
 **`audiocpp_transform_stems`** returns all named audio outputs (unlike
 `audiocpp_audio_transform` which only returns the first). Use this for
 source separation models (demucs, roformer) that emit multiple stems.
+
+**Text → audio generation** — `audiocpp_generate(model, prompt, options, err)`
+runs a text-conditioned generator and returns the audio output **and** any
+artifacts together in one `audiocpp_gen_result_t` (free with
+`audiocpp_free_gen_result`). Either field may be NULL; generation is expensive
+and may be non-deterministic, so audio and artifacts are produced by a single
+`run()` rather than two calls.
+
+- **MiniMax-H3** (load with `AUDIOCPP_TASK_GEN`, family `"minimax_h3"`): emits
+  audio (`res->audio`) and, when options set `"return_video": true`, an RGB24
+  video artifact (`AUDIOCPP_ARTIFACT_CUSTOM`, id `minimax_h3_video_rgb24`; meta
+  `width`/`height`/`frames`/`fps` as decimal strings). Options: `width`,
+  `height`, `num_frames`, `num_inference_steps`, `guidance_scale`, `seed`, ...
+- Also drives `stable_audio` / `ace_step` (text → audio).
+
+**Audio → MIDI transcription** — `audiocpp_midi(model, pcm, n, sr, options, err)`
+feeds input audio to **MuScriptor** (an audio→MIDI transcriber — it does *not*
+consume text; a text-only call throws `"requires audio_input"`) and returns the
+produced artifacts (free with `audiocpp_free_artifacts`). Load MuScriptor with
+`AUDIOCPP_TASK_MIDI`, family `"muscriptor"`. The default artifact is
+`AUDIOCPP_ARTIFACT_MIDI` (mime `audio/midi`, extension `mid`); set
+`"output_format":"json"` for event JSON. Options: `temperature`,
+`guidance_scale`, `max_tokens`, `instruments` (comma-separated group names),
+`seed`, ...
+
+`audiocpp_midi_from_wav(model, wav_bytes, wav_size, options, err)` is a
+convenience that takes the **raw bytes of a .wav file** (RIFF header + PCM)
+instead of decoded PCM — no temp file. The bytes are decoded in-memory (PCM16 /
+PCM24 / IEEE float32) and downmixed to mono. Use it when the caller already has
+the WAV in memory (e.g. an HTTP upload):
+
+```c
+/* MuScriptor from WAV bytes (e.g. read from a request body) */
+uint8_t *wav = <the .wav bytes>;  size_t wav_n = <byte count>;
+audiocpp_model_t *m = audiocpp_load_model_ex(
+    model_path, "muscriptor", AUDIOCPP_TASK_MIDI, backend, 0, 0, "{}", err);
+audiocpp_artifacts_t *arts = audiocpp_midi_from_wav(
+    m, wav, (int64_t)wav_n, "{\"output_format\":\"midi\"}", err);
+if (arts) {                                       /* arts->artifacts[0] */
+    audiocpp_artifact_t *a = &arts->artifacts[0]; /* a->payload = .mid bytes */
+    FILE *f = fopen("out.mid", "wb");
+    fwrite(a->payload, 1, (size_t)a->payload_size, f); fclose(f);
+}
+audiocpp_free_artifacts(arts);
+audiocpp_free_model(m);
+
+/* Or, if you already have decoded PCM (e.g. via audiocpp_read_wav): */
+/* audiocpp_midi(m, pcm, n_samples, sample_rate, options, err); */
+```
 
 **Energy VAD (model-free)** — `audiocpp_vad_energy(pcm, n, rate, options, err)`
 segments audio by signal energy only (no model load, no weights). It splits the
@@ -496,25 +548,39 @@ audiocpp_write_wav_ex("stereo.wav", samples, n, rate, 2);
 
 ---
 
-### 9. Artifacts (Reserved)
+### 9. Artifacts
 
-VoiceArtifact types for passing opaque data (embeddings, tokens) between
-models. **Currently no shipping model produces or consumes artifacts.**
-These types exist for forward compatibility.
+`audiocpp_artifact_t` carries opaque byte payloads + metadata (mime, format,
+extension, dimensions, ...) — MIDI bytes, RGB24 video buffers, embeddings,
+tokens, model state. Some shipping models **produce** artifacts: MuScriptor →
+`AUDIOCPP_ARTIFACT_MIDI` (via `audiocpp_midi`, audio→MIDI); MiniMax-H3 → RGB24
+video `AUDIOCPP_ARTIFACT_CUSTOM` (via `audiocpp_generate`, when
+`return_video`). You may also **build** artifacts as inputs for forward
+compatibility.
 
 ```c
+/* Input: build one yourself (reserved — no current model consumes it) */
 audiocpp_artifact_t *art = audiocpp_artifact_create(
     AUDIOCPP_ARTIFACT_SPEAKER_EMBEDDING, "spk_001",
     embedding_bytes, embedding_size);
 audiocpp_artifact_set_meta(art, "dim", "256");
 audiocpp_artifact_free(art);
+
+/* Output: read what audiocpp_generate produced (see §4 for the full example) */
+audiocpp_artifacts_t *arts = res->artifacts;      /* owned by res */
+for (int64_t i = 0; i < arts->n_artifacts; ++i) {
+    audiocpp_artifact_t *a = &arts->artifacts[i]; /* a->payload, a->payload_size */
+    /* kind AUDIOCPP_ARTIFACT_MIDI → write .mid; CUSTOM video → meta width/height/... */
+}
+/* do NOT free individual output elements — freed by audiocpp_free_gen_result */
 ```
 
 | Function | Description |
 |---|---|
-| `audiocpp_artifact_create` | Create artifact with kind/id/payload |
+| `audiocpp_artifact_create` | Create input artifact with kind/id/payload |
 | `audiocpp_artifact_set_meta` | Set metadata key-value pair |
-| `audiocpp_artifact_free` | Free artifact |
+| `audiocpp_artifact_free` | Free a single input artifact |
+| `audiocpp_free_artifacts` | Free an artifact collection (output of `audiocpp_generate`) |
 
 ---
 
@@ -536,6 +602,8 @@ All result handles are owned by the caller. Free with the matching function:
 | `audiocpp_model_info_t` | `audiocpp_free_model_info` |
 | `audiocpp_model_capabilities_t` | `audiocpp_free_capabilities` |
 | `audiocpp_artifact_t` | `audiocpp_artifact_free` |
+| `audiocpp_artifacts_t` | `audiocpp_free_artifacts` |
+| `audiocpp_gen_result_t` | `audiocpp_free_gen_result` |
 | `char *` (from error.message) | `audiocpp_free_string` |
 
 ### Error Handling

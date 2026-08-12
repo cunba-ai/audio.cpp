@@ -51,7 +51,7 @@ void print_task_list_help() {
     std::cout
         << "audiocpp_cli --task <task> --family <family> --model <path> --backend <backend> [options]\n"
         << "  Global:\n"
-        << "    --task vad|asr|diar|sep|gen|tts|clon|vc|s2s|align|vdes|spk|svc\n"
+        << "    --task vad|asr|diar|sep|gen|tts|clon|vc|s2s|align|vdes|spk|svc|midi\n"
         << "    --family <name>\n"
         << "    --model <path>\n"
         << "    --backend cpu|cuda|hip|rocm|vulkan|metal|best  (rocm is an alias for hip)\n"
@@ -141,7 +141,7 @@ void print_task_list_help() {
         << "    --energy-scale <float>\n"
         << "    --style-tag key=value\n"
         << "  Outputs:\n"
-        << "    --out <wav>\n"
+        << "    --out <file>\n"
         << "    --out-dir <dir>  Write named multi-audio outputs or batch request outputs\n"
         << "    --text-out <txt>\n"
         << "    --segments-out <json>\n"
@@ -171,7 +171,8 @@ void print_task_list_help() {
         << "    align  forced alignment\n"
         << "    vdes   voice design\n"
         << "    spk    speaker embedding/recognition\n"
-        << "    svc    singing voice conversion\n";
+        << "    svc    singing voice conversion\n"
+        << "    midi   audio-to-symbolic MIDI/event transcription\n";
 }
 
 void print_option_group(const char * title, const std::vector<engine::runtime::CliOptionInfo> & options) {
@@ -271,6 +272,7 @@ void print_model_common_options(const engine::runtime::ModelInspection & inspect
         model_supports_task(inspection, engine::runtime::VoiceTaskKind::Vad) ||
         model_supports_task(inspection, engine::runtime::VoiceTaskKind::Diarization) ||
         model_supports_task(inspection, engine::runtime::VoiceTaskKind::SourceSeparation) ||
+        model_supports_task(inspection, engine::runtime::VoiceTaskKind::Midi) ||
         model_supports_task(inspection, engine::runtime::VoiceTaskKind::SpeakerRecognition)) {
         std::cout
             << "    --audio <wav>\n"
@@ -315,7 +317,7 @@ void print_model_help(const engine::runtime::ModelInspection & inspection) {
     print_option_group("Model session options", inspection.cli.session_options);
     print_option_group("Model load options", inspection.cli.load_options);
     std::cout << "  Common output options:\n"
-              << "    --out <wav>\n"
+              << "    --out <file>\n"
               << "    --out-dir <dir>\n"
               << "    --text-out <txt>\n"
               << "    --segments-out <json>\n"

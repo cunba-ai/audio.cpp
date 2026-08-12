@@ -164,6 +164,42 @@ static char *dup_cstr(const std::string &s) {
     return p;
 }
 
+// Free the owned members of one audiocpp_artifact_t, but NOT the struct itself
+// (elements may live inline in an array allocated as new[]). Leaves every field
+// in a clean, NULL/0 state so a partially filled element is always re-freeable.
+static void free_artifact_members(audiocpp_artifact_t *a) {
+    if (!a) return;
+    free(a->id);
+    free(a->payload);
+    if (a->meta_keys) {
+        for (int i = 0; i < a->n_meta; ++i) free(a->meta_keys[i]);
+        free(a->meta_keys);
+    }
+    if (a->meta_values) {
+        for (int i = 0; i < a->n_meta; ++i) free(a->meta_values[i]);
+        free(a->meta_values);
+    }
+    a->id = nullptr;
+    a->payload = nullptr;
+    a->payload_size = 0;
+    a->meta_keys = nullptr;
+    a->meta_values = nullptr;
+    a->n_meta = 0;
+}
+
+// Free an artifact collection wrapper plus every element's owned data plus the
+// element array. The array is allocated with new[] in collect_artifacts(). NULL-safe.
+static void release_artifacts(audiocpp_artifacts_t *c) {
+    if (!c) return;
+    if (c->artifacts) {
+        for (int64_t i = 0; i < c->n_artifacts; ++i) {
+            free_artifact_members(&c->artifacts[i]);
+        }
+        delete[] c->artifacts;
+    }
+    delete c;
+}
+
 static void set_error(audiocpp_error_t *err, int code, const char *msg) {
     if (!err) return;
     audiocpp_clear_error(err);
@@ -217,6 +253,7 @@ static engine::runtime::VoiceTaskKind map_task(int task) {
         case AUDIOCPP_TASK_VDES:  return engine::runtime::VoiceTaskKind::VoiceDesign;
         case AUDIOCPP_TASK_SPK:   return engine::runtime::VoiceTaskKind::SpeakerRecognition;
         case AUDIOCPP_TASK_SVC:   return engine::runtime::VoiceTaskKind::Svc;
+        case AUDIOCPP_TASK_MIDI:  return engine::runtime::VoiceTaskKind::Midi;
         default:                  return engine::runtime::VoiceTaskKind::Tts;
     }
 }
@@ -364,6 +401,90 @@ audiocpp_audio_t *pack_audio_output(const engine::runtime::AudioBuffer & buf) {
         throw std::runtime_error("out of memory allocating audio output");
     }
     std::memcpy(out->samples, buf.samples.data(), buf.samples.size() * sizeof(float));
+    return out;
+}
+
+// Map an engine ArtifactKind to the C ABI AUDIOCPP_ARTIFACT_* value. Kept in
+// 1:1 sync with include/engine/framework/runtime/session.h ArtifactKind; the
+// default falls back to CUSTOM so a future runtime enum value degrades safely.
+int map_artifact_kind(engine::runtime::ArtifactKind kind) {
+    switch (kind) {
+        using K = engine::runtime::ArtifactKind;
+        case K::SpeakerEmbedding:    return AUDIOCPP_ARTIFACT_SPEAKER_EMBEDDING;
+        case K::StyleEmbedding:      return AUDIOCPP_ARTIFACT_STYLE_EMBEDDING;
+        case K::PromptEmbedding:     return AUDIOCPP_ARTIFACT_PROMPT_EMBEDDING;
+        case K::AcousticTokens:      return AUDIOCPP_ARTIFACT_ACOUSTIC_TOKENS;
+        case K::Midi:                return AUDIOCPP_ARTIFACT_MIDI;
+        case K::TranscriptAlignment: return AUDIOCPP_ARTIFACT_ALIGNMENT;
+        case K::DiarizationState:    return AUDIOCPP_ARTIFACT_DIARIZATION_STATE;
+        case K::VadState:            return AUDIOCPP_ARTIFACT_VAD_STATE;
+        case K::Custom:              return AUDIOCPP_ARTIFACT_CUSTOM;
+    }
+    return AUDIOCPP_ARTIFACT_CUSTOM;
+}
+
+// Fill one audiocpp_artifact_t (already value-initialized, e.g. an array
+// element) from a runtime VoiceArtifact. Every owned member is malloc'd so the
+// element can later be freed by free_artifact_members(). On allocation failure
+// the element is left in a state free_artifact_members() can still handle, then
+// throws so AUDIOCPP_CATCH surfaces it. dup_cstr is NULL-on-OOM (no throw), so a
+// failed string copy degrades to a NULL pointer rather than crashing the free path.
+void pack_artifact_into(const engine::runtime::VoiceArtifact &src, audiocpp_artifact_t &dst) {
+    dst.kind = map_artifact_kind(src.kind);
+    dst.id = dup_cstr(src.id);
+    dst.payload = nullptr;
+    dst.payload_size = 0;
+    if (!src.payload.empty()) {
+        dst.payload = static_cast<uint8_t *>(malloc(src.payload.size()));
+        if (!dst.payload) {
+            throw std::runtime_error("out of memory allocating artifact payload");
+        }
+        std::memcpy(dst.payload, src.payload.data(), src.payload.size());
+        dst.payload_size = static_cast<int64_t>(src.payload.size());
+    }
+    dst.n_meta = static_cast<int>(src.meta.size());
+    dst.meta_keys = nullptr;
+    dst.meta_values = nullptr;
+    if (dst.n_meta > 0) {
+        dst.meta_keys = static_cast<char **>(calloc(static_cast<size_t>(dst.n_meta), sizeof(char *)));
+        dst.meta_values = static_cast<char **>(calloc(static_cast<size_t>(dst.n_meta), sizeof(char *)));
+        if (!dst.meta_keys || !dst.meta_values) {
+            throw std::runtime_error("out of memory allocating artifact metadata arrays");
+        }
+        int idx = 0;
+        for (const auto &kv : src.meta) {
+            dst.meta_keys[idx] = dup_cstr(kv.first);
+            dst.meta_values[idx] = dup_cstr(kv.second);
+            ++idx;
+        }
+    }
+}
+
+// Collect every artifact a run produced into one owned collection, mirroring
+// app/server/runtime.cpp's JSON serialization order: the single optional
+// artifact_output first, then the output_artifacts vector. Returns a non-NULL
+// collection (n_artifacts may be 0). On a mid-build allocation failure, whatever
+// was already packed is released before rethrowing.
+audiocpp_artifacts_t *collect_artifacts(const engine::runtime::TaskResult &result) {
+    auto *out = new audiocpp_artifacts_t{};
+    try {
+        const bool has_single = result.artifact_output.has_value();
+        const int64_t total = (has_single ? int64_t{1} : int64_t{0})
+            + static_cast<int64_t>(result.output_artifacts.size());
+        out->n_artifacts = total;
+        if (total == 0) return out;
+        out->artifacts = new audiocpp_artifact_t[static_cast<size_t>(total)]();
+        int64_t idx = 0;
+        if (has_single) {
+            pack_artifact_into(*result.artifact_output, out->artifacts[idx++]);
+        }
+        for (const auto &a : result.output_artifacts) {
+            pack_artifact_into(a, out->artifacts[idx++]);
+        }
+    } catch (...) {
+        release_artifacts(out);
+        throw;
+    }
     return out;
 }
 
@@ -1679,21 +1800,66 @@ int audiocpp_artifact_set_meta(
 
 void audiocpp_artifact_free(audiocpp_artifact_t *artifact) {
     if (!artifact) return;
-    free(artifact->id);
-    free(artifact->payload);
-    if (artifact->meta_keys) {
-        for (int i = 0; i < artifact->n_meta; ++i) {
-            free(artifact->meta_keys[i]);
-        }
-        free(artifact->meta_keys);
-    }
-    if (artifact->meta_values) {
-        for (int i = 0; i < artifact->n_meta; ++i) {
-            free(artifact->meta_values[i]);
-        }
-        free(artifact->meta_values);
-    }
+    free_artifact_members(artifact);
     delete artifact;
+}
+
+void audiocpp_free_artifacts(audiocpp_artifacts_t *artifacts) {
+    release_artifacts(artifacts);
+}
+
+/* ======================================================================== */
+/* Music / audio generation (text → audio and/or artifacts)                 */
+/* ======================================================================== */
+
+audiocpp_gen_result_t *audiocpp_generate(
+    const audiocpp_model_t *model,
+    const char *prompt,
+    const char *options_json,
+    audiocpp_error_t *err
+) {
+    audiocpp_gen_result_t *result = nullptr;
+    AUDIOCPP_CATCH(err, {
+        if (!model || !model->offline) {
+            throw std::runtime_error("invalid model handle");
+        }
+        engine::runtime::TaskRequest req;
+        if (prompt) {
+            req.text_input = engine::runtime::Transcript{};
+            req.text_input->text = prompt;
+        }
+        apply_options(req, options_json);
+        // Some models (e.g. Qwen-family) require prepare() before run().
+        model->session->prepare(engine::runtime::build_preparation_request(req));
+        auto task_result = model->offline->run(req);
+
+        result = new audiocpp_gen_result_t{};
+        // Audio generators (MiniMax-H3, stable_audio, ace_step) fill audio_output;
+        // MuScriptor produces none. Following the audio_transform convention, a
+        // present-but-empty buffer is treated as "no audio".
+        if (task_result.audio_output && !task_result.audio_output->samples.empty()) {
+            result->audio = audiocpp::detail::pack_audio_output(*task_result.audio_output);
+        }
+        // Artifacts: MuScriptor → MIDI bytes (artifact_output); MiniMax-H3 →
+        // optional RGB24 video (output_artifacts) when options set return_video.
+        // collect_artifacts merges both slots; surface a NULL pointer (not an
+        // empty collection) when nothing was produced so callers can simple-
+        // null-check res->artifacts.
+        auto *arts = audiocpp::detail::collect_artifacts(task_result);
+        if (arts->n_artifacts > 0) {
+            result->artifacts = arts;
+        } else {
+            audiocpp_free_artifacts(arts);
+        }
+    });
+    return result;
+}
+
+void audiocpp_free_gen_result(audiocpp_gen_result_t *res) {
+    if (!res) return;
+    audiocpp_free_audio(res->audio);
+    audiocpp_free_artifacts(res->artifacts);
+    delete res;
 }
 
 /* ======================================================================== */

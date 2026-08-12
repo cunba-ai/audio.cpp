@@ -121,6 +121,7 @@ enum {
     AUDIOCPP_TASK_VDES   = 10, /**< Voice Design (prompt-based voice creation) */
     AUDIOCPP_TASK_SPK    = 11, /**< Speaker Recognition (embeddings) */
     AUDIOCPP_TASK_SVC    = 12, /**< Singing Voice Conversion */
+    AUDIOCPP_TASK_MIDI   = 13, /**< Music Generation → MIDI/event output (e.g. MuScriptor) */
 };
 
 /* ======================================================================== */
@@ -744,12 +745,15 @@ AUDIOCPP_API int audiocpp_write_wav_ex(
 );
 
 /* ======================================================================== */
-/* Artifacts (reserved for future use)                                      */
+/* Artifacts                                                                 */
 /* ======================================================================== */
-/* VoiceArtifact types for passing opaque data (embeddings, tokens, state)
- * between models. Currently no shipping model produces or consumes
- * artifacts. These types exist so client code can be written against the
- * ABI surface before engine support lands. */
+/* VoiceArtifact types for passing opaque data (MIDI/event bytes, embeddings,
+ * tokens, model state, raw pixel buffers, ...) between models and callers.
+ * Some shipping models produce artifacts: MuScriptor emits MIDI bytes
+ * (AUDIOCPP_ARTIFACT_MIDI) and MiniMax-H3 may emit a raw RGB24 video
+ * buffer (AUDIOCPP_ARTIFACT_CUSTOM, id "minimax_h3_video_rgb24"). Artifacts
+ * produced by a run are surfaced via audiocpp_generate (see
+ * audiocpp_gen_result_t); inputs may be built with audiocpp_artifact_create. */
 
 /** Artifact kind (mirrors engine::runtime::ArtifactKind). */
 enum {
@@ -757,14 +761,19 @@ enum {
     AUDIOCPP_ARTIFACT_STYLE_EMBEDDING   = 1,
     AUDIOCPP_ARTIFACT_PROMPT_EMBEDDING  = 2,
     AUDIOCPP_ARTIFACT_ACOUSTIC_TOKENS   = 3,
-    AUDIOCPP_ARTIFACT_ALIGNMENT         = 4,
-    AUDIOCPP_ARTIFACT_DIARIZATION_STATE = 5,
-    AUDIOCPP_ARTIFACT_VAD_STATE         = 6,
-    AUDIOCPP_ARTIFACT_CUSTOM            = 7,
+    AUDIOCPP_ARTIFACT_MIDI              = 4,
+    AUDIOCPP_ARTIFACT_ALIGNMENT         = 5,
+    AUDIOCPP_ARTIFACT_DIARIZATION_STATE = 6,
+    AUDIOCPP_ARTIFACT_VAD_STATE         = 7,
+    AUDIOCPP_ARTIFACT_CUSTOM            = 8,
 };
 
-/** Opaque artifact (raw bytes + metadata key-value pairs).
- *  Built with audiocpp_artifact_create, freed with audiocpp_artifact_free. */
+/** Opaque artifact (raw bytes + metadata key-value pairs). Maps 1:1 to
+ *  engine::runtime::VoiceArtifact. As input: built with audiocpp_artifact_create
+ *  and freed with audiocpp_artifact_free. As output: produced as elements of
+ *  audiocpp_artifacts_t (from audiocpp_generate); free the whole collection
+ *  with audiocpp_free_artifacts — do not call audiocpp_artifact_free on
+ *  individual elements you did not create yourself. */
 typedef struct {
     int kind;                /**< AUDIOCPP_ARTIFACT_* */
     char *id;                /**< Artifact identifier (owned) */
@@ -774,6 +783,17 @@ typedef struct {
     char **meta_keys;        /**< Metadata keys array (owned) */
     char **meta_values;      /**< Metadata values array (owned) */
 } audiocpp_artifact_t;
+
+/** Collection of artifacts. Caller owns; free with audiocpp_free_artifacts.
+ *  Elements are contiguous audiocpp_artifact_t values (array-of-struct).
+ *  Well-known metadata keys: "mime", "format", "extension" (MuScriptor MIDI:
+ *  mime "audio/midi", extension "mid"); MiniMax-H3 video also carries
+ *  "width"/"height"/"frames"/"fps" as decimal strings alongside "format"
+ *  = "rgb24". Payload byte count is each element's payload_size. */
+typedef struct {
+    audiocpp_artifact_t *artifacts;  /**< Contiguous array (n_artifacts elements) */
+    int64_t n_artifacts;             /**< Number of artifacts (may be 0) */
+} audiocpp_artifacts_t;
 
 /**
  * Create an artifact (reserved for future use — no current model accepts it).
@@ -803,6 +823,56 @@ AUDIOCPP_API int audiocpp_artifact_set_meta(
 
 /** Free an artifact and all owned data. Safe to call with NULL. */
 AUDIOCPP_API void audiocpp_artifact_free(audiocpp_artifact_t *artifact);
+
+/** Free an artifact collection (and every element's owned data).
+ *  Safe to call with NULL. For collections returned by audiocpp_generate. */
+AUDIOCPP_API void audiocpp_free_artifacts(audiocpp_artifacts_t *artifacts);
+
+/* ======================================================================== */
+/* Music / audio generation (text → audio and/or artifacts)                 */
+/* ======================================================================== */
+
+/** Combined generation result: zero or one audio buffer plus zero or more
+ *  artifacts, all from a single run() (generation is expensive and may be
+ *  non-deterministic, so audio and artifacts are returned together rather
+ *  than via two calls). Caller owns; free with audiocpp_free_gen_result.
+ *  Either field may be NULL: MuScriptor yields artifacts only (MIDI bytes);
+ *  text→audio models (stable_audio, ace_step, MiniMax-H3) yield audio, and
+ *  MiniMax-H3 additionally yields a video artifact when options set
+ *  "return_video": true. */
+typedef struct {
+    audiocpp_audio_t *audio;         /**< PCM output, NULL if the model emits none */
+    audiocpp_artifacts_t *artifacts; /**< MIDI/video/etc., NULL if none */
+} audiocpp_gen_result_t;
+
+/**
+ * Run a text-conditioned generation task on a loaded model and return its
+ * audio output and/or artifacts in one shot.
+ *
+ * Load the model with the matching task: AUDIOCPP_TASK_GEN for audio/video
+ * generators (MiniMax-H3 family_hint "minimax_h3", stable_audio, ace_step),
+ * AUDIOCPP_TASK_MIDI for MuScriptor (family_hint "muscriptor"). Then call
+ * this entry with the text @p prompt; model-specific knobs flow through
+ * @p options_json (e.g. MuScriptor: {"output_format":"midi"|"json",
+ * "temperature":1.0, "max_tokens":2000, ...}; MiniMax-H3:
+ * {"return_video":true, "width":..., "height":..., "num_frames":...}).
+ *
+ * @param model        Model handle (loaded via audiocpp_load_model[_ex]).
+ * @param prompt       Text prompt (may be NULL if the model needs no text).
+ * @param options_json Optional JSON object of model options (NULL/"" = none).
+ * @param err          Optional error output (pass NULL to ignore).
+ * @return Generation result, or NULL on failure (check err).
+ *         Free with audiocpp_free_gen_result.
+ */
+AUDIOCPP_API audiocpp_gen_result_t *audiocpp_generate(
+    const audiocpp_model_t *model,
+    const char *prompt,
+    const char *options_json,
+    audiocpp_error_t *err
+);
+
+/** Free a generation result and both owned fields. Safe to call with NULL. */
+AUDIOCPP_API void audiocpp_free_gen_result(audiocpp_gen_result_t *res);
 
 /* ======================================================================== */
 /* Streaming (chunk-push model)                                             */

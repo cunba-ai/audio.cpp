@@ -829,33 +829,32 @@ AUDIOCPP_API void audiocpp_artifact_free(audiocpp_artifact_t *artifact);
 AUDIOCPP_API void audiocpp_free_artifacts(audiocpp_artifacts_t *artifacts);
 
 /* ======================================================================== */
-/* Music / audio generation (text → audio and/or artifacts)                 */
+/* Music / audio generation + MIDI transcription                            */
 /* ======================================================================== */
 
 /** Combined generation result: zero or one audio buffer plus zero or more
  *  artifacts, all from a single run() (generation is expensive and may be
  *  non-deterministic, so audio and artifacts are returned together rather
  *  than via two calls). Caller owns; free with audiocpp_free_gen_result.
- *  Either field may be NULL: MuScriptor yields artifacts only (MIDI bytes);
- *  text→audio models (stable_audio, ace_step, MiniMax-H3) yield audio, and
- *  MiniMax-H3 additionally yields a video artifact when options set
- *  "return_video": true. */
+ *  Either field may be NULL. Used by text→audio generators: MiniMax-H3
+ *  (audio + optional RGB24 video when "return_video": true), stable_audio,
+ *  ace_step (audio). MuScriptor does NOT use this — it is audio→MIDI, see
+ *  audiocpp_midi. */
 typedef struct {
     audiocpp_audio_t *audio;         /**< PCM output, NULL if the model emits none */
-    audiocpp_artifacts_t *artifacts; /**< MIDI/video/etc., NULL if none */
+    audiocpp_artifacts_t *artifacts; /**< video/etc., NULL if none */
 } audiocpp_gen_result_t;
 
 /**
- * Run a text-conditioned generation task on a loaded model and return its
- * audio output and/or artifacts in one shot.
+ * Run a text-conditioned generation task: text prompt → audio and/or artifacts.
  *
- * Load the model with the matching task: AUDIOCPP_TASK_GEN for audio/video
- * generators (MiniMax-H3 family_hint "minimax_h3", stable_audio, ace_step),
- * AUDIOCPP_TASK_MIDI for MuScriptor (family_hint "muscriptor"). Then call
- * this entry with the text @p prompt; model-specific knobs flow through
- * @p options_json (e.g. MuScriptor: {"output_format":"midi"|"json",
- * "temperature":1.0, "max_tokens":2000, ...}; MiniMax-H3:
+ * Load the model with AUDIOCPP_TASK_GEN and family_hint "minimax_h3"
+ * (or "stable_audio" / "ace_step"). Then call with the text @p prompt;
+ * model-specific knobs flow through @p options_json (e.g. MiniMax-H3:
  * {"return_video":true, "width":..., "height":..., "num_frames":...}).
+ *
+ * NOTE: this entry is text→output. MuScriptor is audio→MIDI transcription —
+ * use audiocpp_midi for it, not this entry.
  *
  * @param model        Model handle (loaded via audiocpp_load_model[_ex]).
  * @param prompt       Text prompt (may be NULL if the model needs no text).
@@ -873,6 +872,56 @@ AUDIOCPP_API audiocpp_gen_result_t *audiocpp_generate(
 
 /** Free a generation result and both owned fields. Safe to call with NULL. */
 AUDIOCPP_API void audiocpp_free_gen_result(audiocpp_gen_result_t *res);
+
+/**
+ * Transcribe audio → MIDI (or event JSON). For MuScriptor: load with
+ * AUDIOCPP_TASK_MIDI and family_hint "muscriptor", then feed the input audio
+ * PCM. The model is an audio→MIDI transcriber (it does not consume text).
+ * Returns the produced artifacts (MIDI bytes by default); free the collection
+ * with audiocpp_free_artifacts.
+ *
+ * @param model        Model handle (MuScriptor, loaded with AUDIOCPP_TASK_MIDI).
+ * @param pcm          Input audio PCM, mono, [-1.0, 1.0].
+ * @param n_samples    Number of PCM samples in @p pcm.
+ * @param sample_rate  Sample rate of @p pcm (the model resamples as needed).
+ * @param options_json Optional JSON: {"output_format":"midi"|"json",
+ *                     "temperature":1.0, "guidance_scale":1.0, "max_tokens":2000,
+ *                     "instruments":"...", "seed":N, ...}.
+ * @param err          Optional error output (pass NULL to ignore).
+ * @return Artifacts (index 0 is the MIDI/JSON payload), or NULL on failure.
+ *         Free with audiocpp_free_artifacts.
+ */
+AUDIOCPP_API audiocpp_artifacts_t *audiocpp_midi(
+    const audiocpp_model_t *model,
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    const char *options_json,
+    audiocpp_error_t *err
+);
+
+/**
+ * Same as audiocpp_midi but takes the input audio as a WAV file's raw bytes
+ * (RIFF header + PCM payload) instead of decoded PCM — no temp file needed.
+ * Convenient when the caller already holds the WAV in memory (e.g. an HTTP
+ * upload). The bytes are decoded in-memory (supports PCM16 / PCM24 / IEEE
+ * float32) and downmixed to mono; @p options_json is the same as audiocpp_midi.
+ *
+ * @param model        Model handle (MuScriptor, loaded with AUDIOCPP_TASK_MIDI).
+ * @param wav_data     Raw bytes of a .wav file.
+ * @param wav_size     Number of bytes in @p wav_data.
+ * @param options_json Optional JSON (see audiocpp_midi).
+ * @param err          Optional error output (pass NULL to ignore).
+ * @return Artifacts (index 0 is the MIDI/JSON payload), or NULL on failure
+ *         (including unparseable WAV). Free with audiocpp_free_artifacts.
+ */
+AUDIOCPP_API audiocpp_artifacts_t *audiocpp_midi_from_wav(
+    const audiocpp_model_t *model,
+    const uint8_t *wav_data,
+    int64_t wav_size,
+    const char *options_json,
+    audiocpp_error_t *err
+);
 
 /* ======================================================================== */
 /* Streaming (chunk-push model)                                             */

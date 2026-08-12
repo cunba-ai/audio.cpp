@@ -232,42 +232,61 @@ and must free it with the matching `audiocpp_free_*` function.
 | `audiocpp_audio_transform` | SEP/VC | audio PCM | single audio output | `free_audio` |
 | `audiocpp_audio_transform_with_voice_ref` | VC | audio PCM + inline voice ref | audio | `free_audio` |
 | `audiocpp_transform_stems` | SEP/GEN | audio PCM (+ voice ref) | **all** named stems (vocals/drums/bass/...) | `free_stems` |
-| `audiocpp_generate` | GEN/MIDI | text prompt | audio and/or artifacts (MIDI, video) | `free_gen_result` |
+| `audiocpp_generate` | GEN | text prompt | audio and/or artifacts (video) | `free_gen_result` |
+| `audiocpp_midi` | MIDI | audio PCM | artifacts (MIDI / event JSON) | `free_artifacts` |
+| `audiocpp_midi_from_wav` | MIDI | WAV file bytes | artifacts (MIDI / event JSON) | `free_artifacts` |
 
 **`audiocpp_transform_stems`** returns all named audio outputs (unlike
 `audiocpp_audio_transform` which only returns the first). Use this for
 source separation models (demucs, roformer) that emit multiple stems.
 
-**Music & audio generation** — `audiocpp_generate(model, prompt, options, err)`
+**Text → audio generation** — `audiocpp_generate(model, prompt, options, err)`
 runs a text-conditioned generator and returns the audio output **and** any
 artifacts together in one `audiocpp_gen_result_t` (free with
 `audiocpp_free_gen_result`). Either field may be NULL; generation is expensive
 and may be non-deterministic, so audio and artifacts are produced by a single
 `run()` rather than two calls.
 
-- **MuScriptor** (load with `AUDIOCPP_TASK_MIDI`, family `"muscriptor"`): emits
-  MIDI bytes as an artifact (`AUDIOCPP_ARTIFACT_MIDI`, mime `audio/midi`,
-  extension `mid`) — `res->audio` is NULL, `res->artifacts` holds the MIDI.
-  Options: `output_format` (`"midi"` default, or `"json"` for event JSON),
-  `temperature`, `guidance_scale`, `max_tokens`, `seed`, ...
 - **MiniMax-H3** (load with `AUDIOCPP_TASK_GEN`, family `"minimax_h3"`): emits
   audio (`res->audio`) and, when options set `"return_video": true`, an RGB24
   video artifact (`AUDIOCPP_ARTIFACT_CUSTOM`, id `minimax_h3_video_rgb24`; meta
   `width`/`height`/`frames`/`fps` as decimal strings). Options: `width`,
   `height`, `num_frames`, `num_inference_steps`, `guidance_scale`, `seed`, ...
+- Also drives `stable_audio` / `ace_step` (text → audio).
+
+**Audio → MIDI transcription** — `audiocpp_midi(model, pcm, n, sr, options, err)`
+feeds input audio to **MuScriptor** (an audio→MIDI transcriber — it does *not*
+consume text; a text-only call throws `"requires audio_input"`) and returns the
+produced artifacts (free with `audiocpp_free_artifacts`). Load MuScriptor with
+`AUDIOCPP_TASK_MIDI`, family `"muscriptor"`. The default artifact is
+`AUDIOCPP_ARTIFACT_MIDI` (mime `audio/midi`, extension `mid`); set
+`"output_format":"json"` for event JSON. Options: `temperature`,
+`guidance_scale`, `max_tokens`, `instruments` (comma-separated group names),
+`seed`, ...
+
+`audiocpp_midi_from_wav(model, wav_bytes, wav_size, options, err)` is a
+convenience that takes the **raw bytes of a .wav file** (RIFF header + PCM)
+instead of decoded PCM — no temp file. The bytes are decoded in-memory (PCM16 /
+PCM24 / IEEE float32) and downmixed to mono. Use it when the caller already has
+the WAV in memory (e.g. an HTTP upload):
 
 ```c
-/* MuScriptor: text -> MIDI bytes (.mid) */
+/* MuScriptor from WAV bytes (e.g. read from a request body) */
+uint8_t *wav = <the .wav bytes>;  size_t wav_n = <byte count>;
 audiocpp_model_t *m = audiocpp_load_model_ex(
-    path, "muscriptor", AUDIOCPP_TASK_MIDI, backend, 0, 0, "{}", err);
-audiocpp_gen_result_t *r = audiocpp_generate(
-    m, "upbeat piano jazz, 120 bpm", "{\"output_format\":\"midi\"}", err);
-if (r && r->artifacts) {            /* r->artifacts->artifacts[0].payload */
-    audiocpp_artifact_t *a = &r->artifacts->artifacts[0];
-    /* write a->payload (a->payload_size bytes) to out.mid */
+    model_path, "muscriptor", AUDIOCPP_TASK_MIDI, backend, 0, 0, "{}", err);
+audiocpp_artifacts_t *arts = audiocpp_midi_from_wav(
+    m, wav, (int64_t)wav_n, "{\"output_format\":\"midi\"}", err);
+if (arts) {                                       /* arts->artifacts[0] */
+    audiocpp_artifact_t *a = &arts->artifacts[0]; /* a->payload = .mid bytes */
+    FILE *f = fopen("out.mid", "wb");
+    fwrite(a->payload, 1, (size_t)a->payload_size, f); fclose(f);
 }
-audiocpp_free_gen_result(r);        /* frees audio + artifacts + wrapper */
+audiocpp_free_artifacts(arts);
 audiocpp_free_model(m);
+
+/* Or, if you already have decoded PCM (e.g. via audiocpp_read_wav): */
+/* audiocpp_midi(m, pcm, n_samples, sample_rate, options, err); */
 ```
 
 **Energy VAD (model-free)** — `audiocpp_vad_energy(pcm, n, rate, options, err)`
@@ -533,10 +552,11 @@ audiocpp_write_wav_ex("stereo.wav", samples, n, rate, 2);
 
 `audiocpp_artifact_t` carries opaque byte payloads + metadata (mime, format,
 extension, dimensions, ...) — MIDI bytes, RGB24 video buffers, embeddings,
-tokens, model state. Some shipping models **produce** artifacts via
-`audiocpp_generate` (MuScriptor → `AUDIOCPP_ARTIFACT_MIDI`; MiniMax-H3 →
-RGB24 video, `AUDIOCPP_ARTIFACT_CUSTOM`). You may also **build** artifacts as
-inputs for forward compatibility.
+tokens, model state. Some shipping models **produce** artifacts: MuScriptor →
+`AUDIOCPP_ARTIFACT_MIDI` (via `audiocpp_midi`, audio→MIDI); MiniMax-H3 → RGB24
+video `AUDIOCPP_ARTIFACT_CUSTOM` (via `audiocpp_generate`, when
+`return_video`). You may also **build** artifacts as inputs for forward
+compatibility.
 
 ```c
 /* Input: build one yourself (reserved — no current model consumes it) */

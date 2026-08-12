@@ -17,6 +17,7 @@
 #include "engine/framework/audio/rnnoise.h"
 #include "engine/framework/audio/zipenhancer.h"
 #include "engine/framework/audio/wav_reader.h"
+#include "engine/framework/audio/conversion.h"
 #include "engine/framework/core/backend.h"
 #include "engine/framework/runtime/model.h"
 #include "engine/framework/runtime/registry.h"
@@ -1860,6 +1861,90 @@ void audiocpp_free_gen_result(audiocpp_gen_result_t *res) {
     audiocpp_free_audio(res->audio);
     audiocpp_free_artifacts(res->artifacts);
     delete res;
+}
+
+// Shared core for the MIDI entries: run MuScriptor on a TaskRequest whose
+// audio_input is already populated, and collect the produced artifacts. Throws
+// on error so each entry's AUDIOCPP_CATCH surfaces it via err.
+static audiocpp_artifacts_t *run_midi_artifacts(
+    const audiocpp_model_t *model,
+    engine::runtime::TaskRequest &req) {
+    if (!model || !model->offline) {
+        throw std::runtime_error("invalid model handle");
+    }
+    // MuScriptor requires prepare() before run() (require_prepared).
+    model->session->prepare(engine::runtime::build_preparation_request(req));
+    auto task_result = model->offline->run(req);
+    // MuScriptor emits artifact_output (MIDI/JSON) + text_output, never
+    // audio_output. collect_artifacts merges both artifact slots; require at
+    // least one so a no-op run surfaces as an error rather than NULL.
+    auto *arts = audiocpp::detail::collect_artifacts(task_result);
+    if (arts->n_artifacts == 0) {
+        audiocpp_free_artifacts(arts);
+        throw std::runtime_error("MIDI transcription produced no artifact");
+    }
+    return arts;
+}
+
+// MuScriptor is an audio→MIDI transcriber (it ignores text_input and throws
+// "requires audio_input" without PCM). Unlike audiocpp_generate (text→audio),
+// the MIDI entries take input audio and return the MIDI/JSON artifacts only.
+audiocpp_artifacts_t *audiocpp_midi(
+    const audiocpp_model_t *model,
+    const float *pcm,
+    int64_t n_samples,
+    int sample_rate,
+    const char *options_json,
+    audiocpp_error_t *err
+) {
+    audiocpp_artifacts_t *result = nullptr;
+    AUDIOCPP_CATCH(err, {
+        if (!pcm || n_samples <= 0) {
+            throw std::runtime_error("invalid audio input");
+        }
+        engine::runtime::TaskRequest req;
+        req.audio_input = engine::runtime::AudioBuffer{};
+        req.audio_input->sample_rate = sample_rate;
+        req.audio_input->channels = 1;
+        req.audio_input->samples.assign(pcm, pcm + n_samples);
+        apply_options(req, options_json);
+        result = run_midi_artifacts(model, req);
+    });
+    return result;
+}
+
+audiocpp_artifacts_t *audiocpp_midi_from_wav(
+    const audiocpp_model_t *model,
+    const uint8_t *wav_data,
+    int64_t wav_size,
+    const char *options_json,
+    audiocpp_error_t *err
+) {
+    // Convenience over audiocpp_midi: decode a .wav file's bytes in-memory (no
+    // temp file) and downmix to mono, then run the same MuScriptor path. Lets a
+    // caller that already holds the WAV in memory (HTTP upload, etc.) skip the
+    // audiocpp_read_wav + deinterleave dance.
+    audiocpp_artifacts_t *result = nullptr;
+    AUDIOCPP_CATCH(err, {
+        if (!wav_data || wav_size <= 0) {
+            throw std::runtime_error("invalid WAV data");
+        }
+        // read_wav_f32(string_view) parses RIFF from the byte buffer directly
+        // (supports PCM16 / PCM24 / IEEE float32; throws on anything else).
+        const auto wav = engine::audio::read_wav_f32(std::string_view(
+            reinterpret_cast<const char *>(wav_data), static_cast<size_t>(wav_size)));
+        engine::runtime::TaskRequest req;
+        req.audio_input = engine::runtime::AudioBuffer{};
+        req.audio_input->sample_rate = wav.sample_rate;
+        req.audio_input->channels = 1;
+        // target = native rate → pure downmix, no resample (MuScriptor resamples
+        // internally). Averages all channels per frame for stereo/mono input.
+        req.audio_input->samples =
+            engine::audio::convert_wav_to_mono_linear_resampled(wav, wav.sample_rate);
+        apply_options(req, options_json);
+        result = run_midi_artifacts(model, req);
+    });
+    return result;
 }
 
 /* ======================================================================== */

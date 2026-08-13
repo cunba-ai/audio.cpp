@@ -113,6 +113,38 @@ on (see CONTRIBUTING.md "Framework Modules (High Risk)"); for new model PRs
 include exact build/run commands, model paths/ids, generated outputs, and
 parity/path-test results.
 
+## Known pitfalls
+
+### qwen3-tts Base voice clone: reference transcript must cover the reference audio
+
+Symptom: with ICL voice cloning, generation probabilistically stops early —
+0.16–0.4s near-silence (2–5 codec frames), truncated speech, or wandering
+durations. Looks like a "short text" bug but is **not** text-length related.
+
+Root cause (verified on V100, 2026-08): the reference **transcript** must
+describe everything the reference **audio** says. The streaming ICL prompt
+interleaves transcript tokens with the audio codec frames; when the transcript
+runs out while the audio continues (e.g. a looped/concat clip transcribed with
+one token, or a truncated transcript), the prompt ends in a long
+`tts_pad + audio` stretch and the model loses its generation anchor. With a
+matched transcript, 2–417-char texts are all stable.
+
+Not a port bug: the prompt layout matches official HF
+`generate_icl_prompt` (streaming mode). The `c99436f` runaway guard fixes the
+**opposite** failure (EOS never emitted, runs to `max_new_tokens`); it does not
+cover premature EOS.
+
+Tried and invalid (do not retry): `trailing_text` = target text in
+`build_prompt_state` (no effect on any setup, no regression) and a
+`min_tokens` EOS-suppression option (only pads with low-energy frames; silence
+trajectories are still truncated by the runaway guard). Both reverted.
+
+Rule: reference text must fully transcribe the reference audio; never use
+looped/concat audio as a clone reference. Applies to the ICL-type families:
+`qwen3_tts` Base, `fish_audio`, `moss_tts_nano` (text+audio pair);
+`higgs_audio_tts`/`omnivoice`/`vevo2`/`voxcpm2` accept both but the text is
+auxiliary.
+
 ## Code exploration
 
 symgraph is wired for this repo (`.zcode/config.json`). After big changes,

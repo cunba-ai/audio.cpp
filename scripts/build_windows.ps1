@@ -502,7 +502,13 @@ $configureArgs = @(
     "-DENGINE_BUILD_TESTS=$($settings.BuildTests)",
     "-DAUDIOCPP_DEPLOYMENT_BUILD=$deploymentBuildValue",
     "-DAUDIOCPP_MODEL_SET=$ModelSet",
-    "-DAUDIOCPP_MODELS=$Models"
+    "-DAUDIOCPP_MODELS=$Models",
+    # Pin model embedding ON for all local builds (dll consumers rely on it:
+    # embedded silero_vad/marblenet_vad + denoise/super-resolve weights work
+    # with no external asset files). CMake defaults are ON, but an existing
+    # build cache that was configured OFF would silently strip the embeds.
+    "-DAUDIOCPP_EMBED_VAD_ASSETS=ON",
+    "-DAUDIOCPP_EMBED_AUDIO_UTILITIES=ON"
 )
 $configureArgs += $cpuArchSettings.CMakeArgs
 if ($settings.CFlagsDebug -ne "") {

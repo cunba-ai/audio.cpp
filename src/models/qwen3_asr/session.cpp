@@ -1,5 +1,6 @@
 #include "engine/models/qwen3_asr/session.h"
 
+#include "engine/framework/assets/embedded.h"
 #include "engine/framework/audio/chunking.h"
 #include "engine/framework/debug/profiler.h"
 #include "engine/framework/runtime/options.h"
@@ -12,6 +13,7 @@
 #include <filesystem>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 
 namespace engine::models::qwen3_asr {
@@ -64,6 +66,22 @@ std::filesystem::path default_vad_model_path() {
     return std::filesystem::path("assets") / "framework" / "models" / "silero_vad";
 }
 
+// Prefer baked-in silero weights (AUDIOCPP_EMBED_VAD_ASSETS) so the internal
+// VAD session works with no external asset files; load_silero_vad_model
+// treats an empty model_path as "use embedded". An explicit
+// qwen3_asr.vad_model_path option always wins, and builds without embedded
+// assets fall back to the on-disk default.
+std::filesystem::path resolve_vad_model_path(
+    const std::unordered_map<std::string, std::string> &options) {
+    const auto explicit_path =
+        runtime::find_option(options, {"qwen3_asr.vad_model_path"});
+    if (!explicit_path.has_value() &&
+        engine::assets::embedded::has_embedded_asset("silero_vad")) {
+        return {};
+    }
+    return explicit_path.value_or(default_vad_model_path().string());
+}
+
 int64_t audio_frame_count(const runtime::AudioBuffer & audio) {
     if (audio.channels <= 0) {
         throw std::runtime_error("Qwen3 ASR audio chunking requires positive audio channels");
@@ -111,7 +129,7 @@ Qwen3ASRSession::Qwen3ASRSession(
           thinker_weight_storage_type_),
       prompt_builder_(tokenizer_),
       postprocessor_(tokenizer_),
-      vad_model_path_(runtime::find_option(options.options, {"qwen3_asr.vad_model_path"}).value_or(default_vad_model_path().string())) {
+      vad_model_path_(resolve_vad_model_path(options.options)) {
     if (task_.task != runtime::VoiceTaskKind::Asr) {
         throw std::runtime_error("Qwen3 ASR only supports VoiceTaskKind::Asr");
     }

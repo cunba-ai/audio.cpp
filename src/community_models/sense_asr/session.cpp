@@ -1,5 +1,6 @@
 #include "engine/community_models/sense_asr/session.h"
 
+#include "engine/framework/assets/embedded.h"
 #include "engine/framework/audio/chunking.h"
 #include "engine/framework/audio/conversion.h"
 #include "engine/framework/debug/profiler.h"
@@ -17,6 +18,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -281,6 +283,23 @@ std::filesystem::path default_vad_model_path() {
          "silero_vad";
 }
 
+// Resolve where the internal VAD session loads its silero weights from.
+// When this build embeds the VAD assets (AUDIOCPP_EMBED_VAD_ASSETS), prefer
+// the baked-in weights so sense_asr works with no external asset files;
+// load_silero_vad_model treats an empty model_path as "use embedded".
+// An explicit sense_asr.vad_model_path option always wins, and builds
+// without embedded assets fall back to the on-disk default.
+std::filesystem::path resolve_vad_model_path(
+    const std::unordered_map<std::string, std::string> &options) {
+  const auto explicit_path =
+      runtime::find_option(options, {"sense_asr.vad_model_path"});
+  if (!explicit_path.has_value() &&
+      engine::assets::embedded::has_embedded_asset("silero_vad")) {
+    return {};
+  }
+  return explicit_path.value_or(default_vad_model_path().string());
+}
+
 } // namespace
 
 SenseAsrSession::SenseAsrSession(
@@ -299,9 +318,7 @@ SenseAsrSession::SenseAsrSession(
       frontend_(assets_->config.frontend),
       encoder_(assets_, execution_context(), encoder_graph_arena_bytes_,
                weight_storage_type_),
-      vad_model_path_(
-          runtime::find_option(options.options, {"sense_asr.vad_model_path"})
-              .value_or(default_vad_model_path().string())) {
+      vad_model_path_(resolve_vad_model_path(options.options)) {
   encoder_.set_query_tokens(assets_->config.encoder.query_tokens);
   assets_->model_weights->release_storage();
 }

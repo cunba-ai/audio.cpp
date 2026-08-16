@@ -219,7 +219,9 @@ demo_01_man|okay,I'm Cemo and what you just heard wasn't a human voice.
 demo_02_woman|以前我对这句话一知半解，现在好像有点懂了。因为你我开始留意很多以前不曾关心的事，开始对这个世界有了更多的好奇和善意。
 ```
 
-Relative `voice_dir` paths resolve against the config file's directory. When a request sends `"voice"` that is not a configured model preset, the server checks `<voice_dir>/<name>.wav`; if the file exists it is loaded as the cloning reference, and the `<name>` transcript from `prompt_text` is injected as `reference_text` unless the request already provides one.
+Relative `voice_dir` paths resolve against the config file's directory. The command-line option `--voice-dir <directory>` overrides the configured value, which is useful when a process manager launches multiple single-model server configurations against one shared voice library. Relative command-line paths resolve against the process working directory.
+
+When a request sends `"voice"` that is not a configured model preset, the server checks `<voice_dir>/<name>.wav`; if the file exists it is loaded as the cloning reference, and the `<name>` transcript from `prompt_text` is injected as `reference_text` unless the request already provides one.
 
 Resolution precedence for a TTS request's voice fields:
 
@@ -236,10 +238,11 @@ Resolution precedence for a TTS request's voice fields:
 build/bin/audiocpp_server --config server.json
 ```
 
-You can override the configured backend at startup:
+You can override configured server settings at startup, including the backend and shared voice library:
 
 ```bash
 build/bin/audiocpp_server --config server.json --backend vulkan
+build/bin/audiocpp_server --config server.json --voice-dir /absolute/path/to/voice
 ```
 
 ## Endpoints
@@ -273,6 +276,26 @@ below `2^53` are accepted, but larger JSON numbers may lose precision before
 option parsing.
 
 If no request voice is provided and the configured model has `default_voice_preset`, the server injects that preset automatically. Request-level `voice`, `voice_ref`, and `reference_text` override the configured default.
+
+`voice_ref` accepts either a plain path string (server-side file) or an object with a `type`:
+
+```json
+"voice_ref": { "type": "path", "path": "voices/alice.wav" }
+```
+
+With `"type": "base64"`, the `data` field carries a base64-encoded WAV payload (a `data:audio/wav;base64,...` URI is also accepted), so cloning clients can inline the reference audio instead of staging a file on the server first. The decoded payload is limited to 5 MiB; larger references must use a path:
+
+```bash
+curl http://127.0.0.1:8080/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  -o out.wav \
+  -d '{
+    "model": "indextts2",
+    "input": "Cloned from an inline reference.",
+    "voice_ref": { "type": "base64", "data": "UklGRh..." },
+    "reference_text": "Transcript of the reference audio."
+  }'
+```
 
 Set `"response_format": "json"` to receive base64 WAV in a JSON response.
 

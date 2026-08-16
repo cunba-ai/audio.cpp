@@ -399,6 +399,7 @@ add_library(engine_core OBJECT
     src/framework/modules/attention/transformer_blocks.cpp
     src/framework/modules/conditioning_modules.cpp
     src/framework/modules/conformer_modules.cpp
+    src/framework/modules/flow_sampler_runtime.cpp
     src/framework/modules/predictor_modules.cpp
     src/framework/modules/positional_modules.cpp
     src/framework/modules/text_encoders/t5_base_encoder.cpp
@@ -429,6 +430,7 @@ add_library(engine_core OBJECT
     src/framework/audio/wav_reader.cpp
     src/framework/audio/wav_writer.cpp
     src/framework/audio/zipenhancer.cpp
+    src/framework/runtime/flow_kv_cache.cpp
     src/framework/modules/speaker_encoders/ecapa_tdnn_runtime.cpp
     src/framework/modules/speaker_encoders/titanet_runtime.cpp
     src/framework/codecs/fsq_audio_codec_runtime.cpp
@@ -1851,6 +1853,7 @@ configure_file(
 
 add_executable(audiocpp_server
     app/server/main.cpp
+    app/server/base64.cpp
     app/server/config.cpp
     app/server/http.cpp
     app/server/model_installer.cpp
@@ -2616,6 +2619,17 @@ if (ENGINE_BUILD_TESTS)
     add_test(
         NAME server_multipart_test
         COMMAND server_multipart_test
+    )
+
+    add_executable(server_base64_test
+        tests/unittests/test_server_base64.cpp
+        app/server/base64.cpp
+    )
+    target_include_directories(server_base64_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/app/server)
+
+    add_test(
+        NAME server_base64_test
+        COMMAND server_base64_test
     )
 
     add_executable(server_busy_guard_test

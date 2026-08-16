@@ -61,7 +61,7 @@ void print_help() {
     std::cout
         << "audiocpp_server [--config <server.json>] [--ui] [--host <ip>] [--port <port>] [--backend <backend>]\n"
         << "                [--device <id>] [--threads <n>] [--busy-timeout-ms <ms>]\n"
-        << "                [--model-spec-override <json-or-directory>]\n"
+        << "                [--model-spec-override <json-or-directory>] [--voice-dir <directory>]\n"
         << "                [--log] [--log-file <path>]\n"
         << "                [--cors-origins <origins>]\n"
         << "  --ui                             serve the embedded WebUI; without --config, start\n"
@@ -71,6 +71,7 @@ void print_help() {
         << "  --backend cpu|cuda|hip|rocm|vulkan|metal  default cuda (rocm is an alias for hip)\n"
         << "  --busy-timeout-ms <ms>           fail a request with 503 when the model has been\n"
         << "                                   busy this long; default 300000, 0 disables\n"
+        << "  --voice-dir <directory>          override the shared reference voice library directory\n"
         << "  --cors-origins \"*\"              experimental; disabled by default. Allows browser\n"
         << "                                   requests from any origin for trusted local demos only\n"
         << "\n"
@@ -80,7 +81,7 @@ void print_help() {
         << "  GET  /v1/models\n"
         << "  POST /v1/models/load             available with --ui-management\n"
         << "  POST /v1/models/unload           available with --ui-management\n"
-        << "  POST /v1/ui/upload               available with --ui-management\n"
+        << "  POST /v1/ui/upload               temporary browser upload for WebUI requests\n"
         << "  POST /v1/ui/models/install       background package download/preparation\n"
         << "  POST /v1/ui/models/install/stop  stop one active package download\n"
         << "  POST /v1/ui/models/clean-partial remove abandoned package staging files\n"
@@ -167,6 +168,9 @@ int main(int argc, char ** argv) {
         }
         if (const auto model_spec = arg_value(argc, argv, "--model-spec-override")) {
             config.model_spec_override = std::filesystem::path(*model_spec);
+        }
+        if (const auto voice_dir = arg_value(argc, argv, "--voice-dir")) {
+            config.voice_dir = std::filesystem::path(*voice_dir);
         }
         if (!(config.cors_origins == "*" || config.cors_origins == "")) {
             throw std::runtime_error("--cors-origins must be '*' (allow all origins) or '' (disabled)");

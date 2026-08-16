@@ -7,6 +7,8 @@
 Tired of juggling a dozen Conda environments, hundreds of Python packages, and dependency conflicts just to try a few audio models? audio.cpp gives those paths a shared native runtime instead. Runs on Windows, Linux, and macOS, with support for NVIDIA, AMD, Apple Silicon, and CPU-only machines.
 
 > [!IMPORTANT]
+> **2026-08-14 - MiniMax Music3 preview release:** MiniMax Music3 text-to-music with lyrics conditioning is now available for preview on the [preview/minimax-music-3 branch](https://github.com/0xShug0/audio.cpp/tree/preview/minimax-music-3). Please try the branch and share feedback while the performance/quality package choices are still being finalized.
+>
 > **CUDA performance headline:** multiple TTS paths already run **1.8x to up to 8x faster than their Python reference paths** while cutting end-to-end latency by **45%-85%**.
 >
 > **GGUF performance:** all released model families support GGUF loading, and tested Q8 packages can run up to **1.53x faster** while reducing peak VRAM by up to about **37%** on routes such as Higgs Audio, Fish Audio, and Voxtral. See the [GGUF guide](docs/gguf.md) for support status and the [Q8 performance report](docs/reports/gguf_q8_performance.md) for 16-bit vs Q8 measurements.
@@ -42,7 +44,7 @@ audio.cpp would not be moving this quickly without generous contributors bringin
 ## News
 
 > [!IMPORTANT]
-> **2026-08-11 - Release 0.6 WIP:** the next release is taking shape with **5** new model families - DotTTS, NeuTTS, MuScriptor, MiniMax-H3, and SenseVoice - bringing audio.cpp to **49** total model families and **70+** model variants, alongside the new native WebUI, expanded GGUF packaging, and more shared framework runtime pieces.
+> **2026-08-13 - Release 0.6:** This release adds **5** new model families - DotTTS, NeuTTS, MuScriptor, MiniMax-H3, and SenseVoice - bringing audio.cpp to **49** total model families and **70+** model variants, alongside the new native WebUI, expanded GGUF packaging, and more shared framework runtime pieces.
 >
 > **2026-07-31 - Release 0.5:** audio.cpp grows to **44 model families** with **9 new additions**: DramaBox, Confucius4-TTS, RVC, BS-RoFormer, GLM-TTS, Kroko ASR, Parakeet-TDT, Inflect v2, and Fun-ASR-Nano.
 >
@@ -163,14 +165,14 @@ audiocpp_server --ui --backend cuda
 
 Open `http://127.0.0.1:8080`. Starting with `--ui` and no server config enables on-demand model
 load/unload and temporary browser uploads. Existing static server configurations also expose the UI by default;
-add `--ui-management` when that instance should permit model switching.
+in that mode the UI only offers models declared by the server config. Add `--ui-management` when that instance
+should permit catalog browsing, downloads, temporary uploads, and dynamic model switching.
 
 The native UI also exposes background model download/preparation, long-text split-and-merge synthesis, a
 browser-local saved voice library, microphone recording, and near-live ASR input. Some model preparation jobs invoke
 the repository's Python model manager because those packages require Hugging Face download or checkpoint conversion;
-model inference and the embedded UI remain Python-free. The previous Python/Gradio interface remains available for
-compatibility. See [webui/README.md](webui/README.md) for native and legacy launch commands, model notes, and frontend
-development instructions.
+model inference and the embedded UI remain Python-free. See [webui/README.md](webui/README.md) for launch commands,
+model notes, and frontend development instructions.
 
 Huge thanks to [@kigner](https://github.com/kigner) for the original [audio.cpp-webui](https://github.com/kigner/audio.cpp-webui), and to [@patrickjchen](https://github.com/patrickjchen) for porting and integrating it into audio.cpp.
 
@@ -184,8 +186,8 @@ Huge thanks to [@kigner](https://github.com/kigner) for the original [audio.cpp-
 | OS | Requirements |
 |---|---|
 | Linux | GCC 13 or newer, CMake, plus the backend toolchain for the build you want: NVIDIA CUDA Toolkit for CUDA, Vulkan SDK for Vulkan, ROCm for HIP |
-| Windows | Visual Studio Build Tools 2022 or newer with C++ desktop workload, MSVC x64 compiler, Windows SDK, CMake, Ninja, MSVC OpenMP components; official NVIDIA CUDA Toolkit for CUDA builds, AMD HIP SDK for HIP builds |
-| macOS | Xcode or Xcode Command Line Tools with the Metal compiler available through `xcrun` |
+| Windows | Visual Studio Build Tools 2022 or newer with C++ desktop workload, MSVC x64 compiler, Windows SDK, CMake, Ninja, MSVC OpenMP components; official NVIDIA CUDA Toolkit for CUDA builds, Vulkan SDK for Vulkan builds, AMD HIP SDK for HIP builds |
+| macOS | Xcode or Xcode Command Line Tools, plus CMake. Metal builds also require the Metal compiler available through `xcrun` |
 
 ### Homebrew Install
 
@@ -263,6 +265,7 @@ Common presets:
 
 ```powershell
 .\scripts\build_windows.ps1 -Preset windows-cuda-release -Target audiocpp_cli
+.\scripts\build_windows.ps1 -Preset windows-vulkan-release -Target audiocpp_cli
 .\scripts\build_windows.ps1 -Preset windows-cpu-release -Target audiocpp_cli
 .\scripts\build_windows.ps1 -Target audiocpp_server -Jobs 16
 .\scripts\build_windows.ps1 -Preset windows-cuda-release -ModelSet custom -Models "qwen3_tts,pocket_tts,qwen3_asr" -Target audiocpp_cli
@@ -281,6 +284,29 @@ For deployment builds with compiled package specs:
 ```
 
 For requirements, CPU profiles, CUDA packaging, and release zips, see [docs/build/windows.md](docs/build/windows.md).
+
+### macOS CPU Build
+
+Apple builds enable Metal by default. To build a CPU-only binary, disable Metal explicitly:
+
+```bash
+cmake -S . -B build/macos-cpu-release \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DENGINE_ENABLE_CUDA=OFF \
+  -DENGINE_ENABLE_VULKAN=OFF \
+  -DENGINE_ENABLE_METAL=OFF \
+  -DENGINE_ENABLE_OPENMP=OFF \
+  -DGGML_OPENMP=OFF
+cmake --build build/macos-cpu-release \
+  --parallel "$(sysctl -n hw.logicalcpu)" \
+  --target audiocpp_cli audiocpp_server audiocpp_gguf
+```
+
+Confirm that the resulting CLI sees the host CPU backend:
+
+```bash
+build/macos-cpu-release/bin/audiocpp_cli --list-devices
+```
 
 ### Metal Build
 

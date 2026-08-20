@@ -239,7 +239,13 @@ static engine::core::BackendType map_backend(int backend) {
     }
 }
 
-static engine::runtime::VoiceTaskKind map_task(int task) {
+// Task mapping lives in audiocpp::detail (not file-static) so the enum-sync
+// unit test can link it directly; the using-declaration keeps the call sites
+// in this file unchanged. The shared library's hidden-visibility preset plus
+// the .def/version-script export whitelist keep it out of the dynamic symbol
+// table, so the C ABI surface is unchanged.
+namespace audiocpp::detail {
+engine::runtime::VoiceTaskKind map_task(int task) {
     switch (task) {
         case AUDIOCPP_TASK_TTS:   return engine::runtime::VoiceTaskKind::Tts;
         case AUDIOCPP_TASK_ASR:   return engine::runtime::VoiceTaskKind::Asr;
@@ -258,6 +264,8 @@ static engine::runtime::VoiceTaskKind map_task(int task) {
         default:                  return engine::runtime::VoiceTaskKind::Tts;
     }
 }
+}  // namespace audiocpp::detail
+using audiocpp::detail::map_task;
 
 /* ======================================================================== */
 /* Lifecycle                                                                 */

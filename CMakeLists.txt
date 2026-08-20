@@ -1855,6 +1855,7 @@ if (ENGINE_BUILD_TESTS)
         target_link_libraries(capi_option_number_test PRIVATE OpenMP::OpenMP_CXX)
     endif()
     add_test(NAME capi_option_number_test COMMAND capi_option_number_test)
+    set_tests_properties(capi_option_number_test PROPERTIES LABELS "fork_regression")
 endif()
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -1890,6 +1891,61 @@ if (ENGINE_BUILD_TESTS)
         target_link_libraries(capi_session_options_test PRIVATE OpenMP::OpenMP_CXX)
     endif()
     add_test(NAME capi_session_options_test COMMAND capi_session_options_test)
+    set_tests_properties(capi_session_options_test PROPERTIES LABELS "fork_regression")
+endif()
+
+# ──────────────────────────────────────────────────────────────────────────
+# C ABI enum-sync unit test: AUDIOCPP_ARTIFACT_* values must mirror the
+# engine ArtifactKind numerically (static_asserts) and map_task must cover
+# every AUDIOCPP_TASK_* constant with a distinct engine kind. Guards against
+# upstream enum insertions silently desynchronizing the C header.
+# ──────────────────────────────────────────────────────────────────────────
+if (ENGINE_BUILD_TESTS)
+    add_executable(capi_enum_sync_test
+        tests/unittests/test_capi_enum_sync.cpp
+        capi/src/audiocpp_capi.cpp
+    )
+    set_target_properties(capi_enum_sync_test PROPERTIES CXX_VISIBILITY_PRESET default)
+    target_compile_definitions(capi_enum_sync_test PRIVATE AUDIOCPP_EXPORTS)
+    if (MSVC)
+        target_compile_options(capi_enum_sync_test PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/utf-8>)
+    endif()
+    target_include_directories(capi_enum_sync_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/capi/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/capi/src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/external/cJSON"
+        "${CMAKE_CURRENT_BINARY_DIR}/generated"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests"
+    )
+    target_link_libraries(capi_enum_sync_test PRIVATE engine_runtime ggml cjson_vendor)
+    if (ENGINE_ENABLE_OPENMP)
+        target_link_libraries(capi_enum_sync_test PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    add_test(NAME capi_enum_sync_test COMMAND capi_enum_sync_test)
+    set_tests_properties(capi_enum_sync_test PROPERTIES LABELS "fork_regression")
+endif()
+
+# ──────────────────────────────────────────────────────────────────────────
+# Shared-library symbol-surface test: loads the built libaudiocpp and checks
+# the dynamic export table (every public AUDIOCPP_API function present, no
+# vendored cJSON/libyaml leakage). Fork-regression guard for merge-induced
+# export drift; see tests/unittests/test_capi_shared_lib_surface.cpp.
+# ──────────────────────────────────────────────────────────────────────────
+if (AUDIOCPP_BUILD_CAPI AND ENGINE_BUILD_TESTS)
+    add_executable(capi_shared_lib_surface_test
+        tests/unittests/test_capi_shared_lib_surface.cpp
+    )
+    target_compile_definitions(capi_shared_lib_surface_test PRIVATE
+        AUDIOCPP_TEST_LIB_PATH="$<TARGET_FILE:audiocpp>"
+    )
+    target_include_directories(capi_shared_lib_surface_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests"
+    )
+    if (NOT WIN32)
+        target_link_libraries(capi_shared_lib_surface_test PRIVATE ${CMAKE_DL_LIBS})
+    endif()
+    add_test(NAME capi_shared_lib_surface_test COMMAND capi_shared_lib_surface_test)
+    set_tests_properties(capi_shared_lib_surface_test PROPERTIES LABELS "fork_regression")
 endif()
 
 add_executable(audiocpp_cli
@@ -2197,6 +2253,7 @@ if (ENGINE_BUILD_TESTS)
         NAME progress_callback_test
         COMMAND progress_callback_test
     )
+    set_tests_properties(progress_callback_test PROPERTIES LABELS "fork_regression")
 
     add_engine_unittest(dots_tts_vocoder_parity tests/dots_tts/dots_tts_vocoder_parity.cpp)
 
@@ -2220,6 +2277,7 @@ if (ENGINE_BUILD_TESTS)
         NAME backend_weight_store_commit_test
         COMMAND backend_weight_store_commit_test
     )
+    set_tests_properties(backend_weight_store_commit_test PROPERTIES LABELS "fork_regression")
 
     add_engine_unittest(wav_reader_chunk_bounds_test tests/unittests/test_wav_reader_chunk_bounds.cpp)
 
@@ -2248,6 +2306,18 @@ if (ENGINE_BUILD_TESTS)
         NAME tensor_source_memory_backed_test
         COMMAND tensor_source_memory_backed_test
     )
+    set_tests_properties(tensor_source_memory_backed_test PROPERTIES LABELS "fork_regression")
+
+    # ASR internal-VAD embedded-weights policy (sense_asr/qwen3_asr/
+    # vibevoice_asr chunking). Guards the fork fix where hardcoded disk
+    # paths bypassed the baked-in silero weights on embed builds.
+    add_engine_unittest(asr_vad_model_path_test tests/unittests/test_asr_vad_model_path.cpp)
+
+    add_test(
+        NAME asr_vad_model_path_test
+        COMMAND asr_vad_model_path_test
+    )
+    set_tests_properties(asr_vad_model_path_test PROPERTIES LABELS "fork_regression")
 
     add_engine_unittest(audio_chunking_test tests/unittests/test_audio_chunking.cpp)
 

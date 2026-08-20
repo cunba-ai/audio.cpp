@@ -12,6 +12,11 @@ param(
     [string]$NativeCpu = $null,
     [ValidateSet("ON", "OFF")]
     [string]$Llamafile = $null,
+    # Override the preset's ENGINE_BUILD_TESTS (e.g. to run the
+    # fork-regression suite: -BuildTests ON, then
+    # ctest --test-dir <build-dir> -L fork_regression).
+    [ValidateSet("ON", "OFF")]
+    [string]$BuildTests = $null,
     [switch]$DeploymentBuild,
     [switch]$Ccache,
     [ValidateSet("full", "core", "custom")]
@@ -459,6 +464,9 @@ if (-not [string]::IsNullOrEmpty($NativeCpu)) {
 }
 if (-not [string]::IsNullOrEmpty($Llamafile)) {
     $settings.Llamafile = $Llamafile
+}
+if (-not [string]::IsNullOrEmpty($BuildTests)) {
+    $settings.BuildTests = $BuildTests
 }
 $isCudaPreset = $settings.EnableCuda -eq "ON"
 $isVulkanPreset = $settings.EnableVulkan -eq "ON"

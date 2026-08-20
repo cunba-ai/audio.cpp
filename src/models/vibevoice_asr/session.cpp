@@ -23,7 +23,6 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -67,22 +66,6 @@ void validate_weight_storage(assets::TensorStorageType storage_type, const char 
 
 std::filesystem::path default_vad_model_path() {
     return std::filesystem::path("assets") / "framework" / "models" / "silero_vad";
-}
-
-// Prefer baked-in silero weights (AUDIOCPP_EMBED_VAD_ASSETS) so the internal
-// VAD session works with no external asset files; load_silero_vad_model
-// treats an empty model_path as "use embedded". An explicit
-// vibevoice_asr.vad_model_path option always wins, and builds without
-// embedded assets fall back to the on-disk default.
-std::filesystem::path resolve_vad_model_path(
-    const std::unordered_map<std::string, std::string> &options) {
-    const auto explicit_path =
-        runtime::find_option(options, {"vibevoice_asr.vad_model_path"});
-    if (!explicit_path.has_value() &&
-        engine::assets::embedded::has_embedded_asset("silero_vad")) {
-        return {};
-    }
-    return explicit_path.value_or(default_vad_model_path().string());
 }
 
 int64_t audio_frame_count(const runtime::AudioBuffer & audio) {
@@ -557,7 +540,12 @@ VibeVoiceASRSession::VibeVoiceASRSession(
           128ull * 1024ull * 1024ull,
           decoder_weight_storage_type_),
       postprocessor_(tokenizer_),
-      vad_model_path_(resolve_vad_model_path(options.options)) {
+      vad_model_path_(
+          engine::assets::embedded::prefer_embedded_vad_model_path(
+              runtime::find_option(options.options,
+                                   {"vibevoice_asr.vad_model_path"}),
+              default_vad_model_path(),
+              engine::assets::embedded::has_embedded_asset("silero_vad"))) {
     if (task_.task != runtime::VoiceTaskKind::Asr || task_.mode != runtime::RunMode::Offline) {
         throw std::runtime_error("VibeVoice-ASR streaming sessions are not supported");
     }

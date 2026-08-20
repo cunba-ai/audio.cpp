@@ -12,9 +12,17 @@ struct cJSON;
 
 namespace engine::runtime {
 struct AudioBuffer;
+enum class VoiceTaskKind;
 }
 
 namespace audiocpp::detail {
+
+// Map an AUDIOCPP_TASK_* constant to the engine task kind. Defined in
+// audiocpp_capi.cpp at namespace scope (not file-static) so the enum-sync
+// unit test can verify every C constant maps to a distinct engine kind —
+// a new AUDIOCPP_TASK_* value without a matching case would silently fall
+// back to Tts.
+engine::runtime::VoiceTaskKind map_task(int task);
 
 // Render a cJSON/JSON number into the string form stored in the options map.
 //

@@ -65,6 +65,14 @@ ctest --test-dir build --output-on-failure
 python3 tools/check_loader_catalog_sync.py --self-test
 python3 tools/check_loader_catalog_sync.py
 
+# Fork regression suite — run after EVERY upstream merge to prove the fork's
+# deltas survived and still work:
+#   .\scripts\build_windows.ps1 -Preset windows-cpu-release -Target audiocpp -BuildTests ON -Jobs 2
+#   capi\test\build_fork_regression.bat   (vcvars + test targets + ctest)
+# Covers: embedded-VAD path policy for ASR families, CAPI task/artifact enum
+# sync with the engine, shared-library export surface + cJSON/yaml symbol
+# hiding, memory-backed tensor sources, progress callbacks, CAPI option handling.
+
 # Nix dev shell (optional)
 nix develop
 ```

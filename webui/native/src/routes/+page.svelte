@@ -68,6 +68,7 @@
   let maxTokens = 1024;
   let sourceFile: File | null = null;
   let voiceFile: File | null = null;
+  let vibeVoiceSpeakerFiles: Array<File | null> = [null, null, null, null];
   let voiceInput: HTMLInputElement | null = null;
   let referenceTextFile: File | null = null;
   let referenceTextInput: HTMLInputElement | null = null;
@@ -132,6 +133,27 @@
     document.documentElement.lang = uiLanguage;
   }
 
+  async function clearLegacyUiCaches() {
+    // This server commonly reuses localhost:8080. Remove workers and Cache
+    // Storage left by an older application on that origin before Native Studio
+    // starts making requests. Do not clear localStorage or IndexedDB: they hold
+    // saved voices, model-folder selection, and UI preferences.
+    try {
+      if ('serviceWorker' in navigator) {
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(registrations.map((registration) => registration.unregister()));
+      }
+      if ('caches' in window) {
+        const cacheNames = await window.caches.keys();
+        await Promise.all(cacheNames.map((name) => window.caches.delete(name)));
+      }
+    } catch (error) {
+      // Cache cleanup must not prevent an offline/local UI from starting when a
+      // browser restricts either API. The no-store response headers still apply.
+      console.warn('Unable to clear legacy WebUI caches:', error);
+    }
+  }
+
   function workflowLabel(id: string, fallback: string, translate = tr) {
     const translationId = id === 'conversion' ? 'vc' : id === 'separation' ? 'sep' : id;
     return translate(`workflow.${translationId}`, {}, fallback);
@@ -183,10 +205,6 @@
     }
   }
 
-  function loadedModelName(model: LoadedModel) {
-    return catalog.find((entry) => entry.id === model.id)?.display_name || model.id;
-  }
-
   const workflowTabs = [
     { id: 'tts', label: 'Text to speech', filterLabel: 'TTS', tasks: ['tts', 'clon'] },
     { id: 'asr', label: 'ASR / Transcription', filterLabel: 'ASR', tasks: ['asr'] },
@@ -212,8 +230,51 @@
     stable_audio: 'Stable Audio 3',
     qwen3_asr: 'Qwen3-ASR',
     vevo2: 'Vevo2',
-    seed_vc: 'Seed-VC'
+    seed_vc: 'Seed-VC',
+    magpie_tts: 'MagpieTTS',
+    meanvc2: 'MeanVC2',
+    personaplex: 'PersonaPlex'
   };
+
+  function pathVariantLabel(path: string) {
+    const normalized = path.replace(/\\/g, '/');
+    const filename = normalized.split('/').filter(Boolean).pop() || '';
+    const match = filename.match(/(?:^|[-_])(\d+(?:\.\d+)?[bm])(?:[-_]|$)/i);
+    return match ? match[1].toUpperCase() : '';
+  }
+
+  function catalogPathMatches(expectedPath: string, actualPath: string) {
+    const actual = comparablePath(actualPath);
+    const expected = comparablePath(resolveCatalogPath(expectedPath));
+    if (actual === expected) return true;
+    const relative = comparablePath(expectedPath).replace(/^models\//, '');
+    return actual === relative || actual.endsWith(`/${relative}`);
+  }
+
+  function catalogEntryMatchesLoadedModel(entry: CatalogEntry, model: LoadedModel) {
+    if (entry.family !== model.family || entry.task !== model.task) return false;
+    if (catalogPathMatches(entry.path, model.path)) return true;
+    return Boolean((entry.install_packages || []).some((choice) =>
+      catalogPathMatches(choice.path, model.path)));
+  }
+
+  function loadedCatalogEntry(model: LoadedModel) {
+    const exact = catalog.find((entry) => entry.id === model.id);
+    if (exact && catalogEntryMatchesLoadedModel(exact, model)) return exact;
+    return catalog.find((entry) => catalogEntryMatchesLoadedModel(entry, model));
+  }
+
+  function inferredLoadedModelName(model: LoadedModel, base?: CatalogEntry) {
+    const variant = pathVariantLabel(model.path);
+    const familyName = familyLabels[model.family] || base?.display_name || model.family;
+    return variant && !familyName.toLowerCase().includes(variant.toLowerCase())
+      ? `${familyName} ${variant}`
+      : familyName;
+  }
+
+  function loadedModelName(model: LoadedModel) {
+    return loadedCatalogEntry(model)?.display_name || inferredLoadedModelName(model);
+  }
 
   function compareModelNames(left: string, right: string) {
     return left.localeCompare(right, 'en', { sensitivity: 'base', numeric: true });
@@ -221,7 +282,7 @@
 
   function configuredCatalogEntries() {
     return loadedModels.map((model) => {
-      const exact = catalog.find((entry) => entry.id === model.id);
+      const exact = loadedCatalogEntry(model);
       const familyMatch = catalog.find((entry) =>
         entry.family === model.family && entry.task === model.task);
       const base = exact || familyMatch;
@@ -235,7 +296,7 @@
           mode: model.mode
         }),
         id: model.id,
-        display_name: exact ? exact.display_name : base ? `${base.display_name} (${model.id})` : model.id,
+        display_name: exact ? exact.display_name : inferredLoadedModelName(model, base),
         display_name_en: exact ? exact.display_name_en : base?.display_name_en,
         family: model.family,
         path: model.path,
@@ -287,12 +348,17 @@
   $: needsSource = ['asr', 'vc', 'svc', 's2s', 'sep', 'vad', 'diar', 'align', 'midi'].includes(selected?.task);
   $: acceptsSource = needsSource || selected?.task === 'gen';
   $: needsVoice = (['clon', 'vc', 'svc'].includes(selected?.task) && selected?.family !== 'rvc') ||
+    (selected?.task === 's2s' && selected?.family === 'personaplex') ||
     (selected?.task === 'tts' && !['supertonic'].includes(selected?.family));
+  $: usesVibeVoiceSpeakerFiles = selected?.family === 'vibevoice';
   $: isQwenBase = selected?.task === 'tts' && selected?.family === 'qwen3_tts' &&
     !selected?.id.includes('custom');
-  $: referenceVoiceRequired = !quickStartVoice && (
+  $: allowsQuickStartVoice = ['tts', 'clon'].includes(selected?.task);
+  $: referenceVoiceRequired = !(allowsQuickStartVoice && quickStartVoice) && (
     (['clon', 'vc', 'svc'].includes(selected?.task) && selected?.family !== 'rvc') || isQwenBase);
-  $: referenceTextRequired = Boolean(voiceFile) && isQwenBase;
+  $: lyricsRequired = requiresRequestOption(selected, 'lyrics');
+  $: referenceTextRequired = requiresRequestOption(selected, 'reference_text') ||
+    (Boolean(voiceFile) && isQwenBase);
   $: quickStartVoices = server && !server.ui_management
     ? configuredVoices
     : Object.entries(demoVoiceSources)
@@ -353,11 +419,7 @@
   }
 
   function packagePathMatches(choice: InstallPackageChoice, path: string) {
-    const actual = comparablePath(path);
-    const expected = comparablePath(resolveCatalogPath(choice.path));
-    if (actual === expected) return true;
-    const relative = comparablePath(choice.path).replace(/^models\//, '');
-    return actual === relative || actual.endsWith(`/${relative}`);
+    return catalogPathMatches(choice.path, path);
   }
 
   function residentModel(entry: CatalogEntry, models = loadedModels) {
@@ -437,6 +499,11 @@
       status = 'Reference voice changed. Choose or enter its matching transcript.';
       warningStatus = status;
     }
+  }
+
+  function chooseVibeVoiceSpeaker(index: number, file: File | null) {
+    vibeVoiceSpeakerFiles = vibeVoiceSpeakerFiles.map((current, currentIndex) =>
+      currentIndex === index ? file : current);
   }
 
   function chooseQuickStartVoice(voice: string) {
@@ -537,6 +604,10 @@
     // Specs that publish request metadata are authoritative. Older specs
     // without that metadata keep the legacy UI behavior until migrated.
     return entry.request_options === undefined || entry.request_options.includes(option);
+  }
+
+  function requiresRequestOption(entry: CatalogEntry, option: string) {
+    return entry.required_request_options?.includes(option) === true;
   }
 
   function packageVersionLabel(size: ModelPackageSize | undefined, translate = tr) {
@@ -801,7 +872,9 @@
 
   function resetParams() {
     const byId = parameterCatalog[selected?.id] || parameterCatalog[selected?.family] || [];
-    paramSpecs = byId;
+    paramSpecs = selected?.family === 'vibevoice'
+      ? byId.filter((spec) => spec.name !== 'voice_samples')
+      : byId;
     advancedValues = Object.fromEntries(byId.map((spec) => [spec.name, spec.default ?? '']));
     if (selected?.family === 'minimax_h3') {
       duration = 15;
@@ -1017,7 +1090,19 @@
       ? 44100
       : ['asr', 'vad', 'diar', 'align', 'midi'].includes(selected.task) ? 16000 : undefined;
     const wav = await browserDecodeToWav(file, targetSampleRate);
-    return uploadWav(wav, file.name.replace(/\.[^.]+$/, '') + '.wav', aborter?.signal);
+    return uploadWav(wav, aborter?.signal);
+  }
+
+  async function vibeVoiceSamplePaths(): Promise<string | undefined> {
+    const firstEmpty = vibeVoiceSpeakerFiles.findIndex((file) => !file);
+    const hasLaterFile = firstEmpty >= 0 && vibeVoiceSpeakerFiles.slice(firstEmpty + 1).some(Boolean);
+    if (hasLaterFile) {
+      throw new StatusWarning('VibeVoice speaker references must be filled from Speaker 1 without gaps.');
+    }
+    const files = vibeVoiceSpeakerFiles.filter((file): file is File => Boolean(file));
+    if (!files.length) return undefined;
+    const paths = await Promise.all(files.map((file) => stagedPath(file)));
+    return paths.filter((path): path is string => Boolean(path)).join(',');
   }
 
   function requestOptions() {
@@ -1205,7 +1290,7 @@
     if (!blob.size) return;
     const file = new File([blob], `live-${liveChunkNumber}.webm`, { type: blob.type });
     const wav = await browserDecodeToWav(file, 16000);
-    const audio = await uploadWav(wav, `live-${liveChunkNumber}.wav`);
+    const audio = await uploadWav(wav);
     const result = await transcription({
       model: selected.id,
       audio,
@@ -1302,12 +1387,20 @@
         throw new StatusWarning(`${selected.display_name_en || selected.display_name} requires a reference voice.`);
       }
       if (referenceTextRequired && !referenceText.trim()) {
-        throw new StatusWarning('Qwen3-TTS Base voice cloning requires a reference transcript. Choose a matching .txt file or enter the transcript.');
+        const prefix = isQwenBase ? 'Qwen3-TTS Base voice cloning' : (selected.display_name_en || selected.display_name);
+        throw new StatusWarning(`${prefix} requires a reference transcript. Choose a matching .txt file or enter the transcript.`);
+      }
+      if (lyricsRequired && !lyrics.trim()) {
+        throw new StatusWarning(`${selected.display_name_en || selected.display_name} requires lyrics.`);
       }
       await ensureLoaded();
       const options = requestOptions();
+      if (usesVibeVoiceSpeakerFiles) {
+        const samples = await vibeVoiceSamplePaths();
+        if (samples) options.voice_samples = samples;
+      }
       const audio = acceptsSource ? await stagedPath(sourceFile) : undefined;
-      const voiceRef = needsVoice ? await stagedPath(voiceFile) : undefined;
+      const voiceRef = needsVoice && !usesVibeVoiceSpeakerFiles ? await stagedPath(voiceFile) : undefined;
 
       if (['tts', 'clon', 'vdes'].includes(selected.task)) {
         if (!text.trim()) throw new StatusWarning('Enter text to generate.');
@@ -1376,7 +1469,7 @@
           request.max_tokens = maxTokens;
         } else if (selected.task === 's2s') {
           request.seed = resolvedSeed;
-          request.max_tokens = maxTokens;
+          if (supportsMaxTokens(selected)) request.max_tokens = maxTokens;
         }
         if (audio) request.audio = audio;
         if (voiceRef) request.voice_ref = voiceRef;
@@ -1675,6 +1768,7 @@
   }
 
   onMount(async () => {
+    await clearLegacyUiCaches();
     const savedLanguage = localStorage.getItem('audiocpp.ui.language');
     uiLanguage = resolveUiLanguage(savedLanguage ? [savedLanguage] : navigator.languages);
     document.documentElement.lang = uiLanguage;
@@ -1881,8 +1975,9 @@
         {/if}
 
         {#if selected.task === 'gen'}
-          <label for="lyrics">{tr('request.lyrics')} <span>{tr('request.optional')}</span></label>
-          <textarea id="lyrics" rows="3" bind:value={lyrics} placeholder="[Verse]…"></textarea>
+          <label for="lyrics">{tr('request.lyrics')} <span>{lyricsRequired ? tr('voice.required') : tr('request.optional')}</span></label>
+          <textarea id="lyrics" rows="3" bind:value={lyrics} required={lyricsRequired}
+            aria-required={lyricsRequired} placeholder="[Verse]…"></textarea>
         {/if}
 
         {#if selected.task === 'asr'}
@@ -1958,8 +2053,8 @@
           {/if}
         {/if}
 
-        {#if needsVoice}
-          {#if quickStartVoices.length}
+        {#if needsVoice && !usesVibeVoiceSpeakerFiles}
+          {#if allowsQuickStartVoice && quickStartVoices.length}
             <label for="quick-start-voice">{server?.ui_management === false ? tr('voice.configured') : tr('voice.quickStart')}</label>
             <select id="quick-start-voice" value={quickStartVoice}
               on:change={(event) => chooseQuickStartVoice(event.currentTarget.value)}>
@@ -2025,6 +2120,25 @@
               <button type="button" disabled={!voiceFile} on:click={storeCurrentVoice}>{tr('voice.save')}</button>
               <button class="danger" type="button" disabled={!savedVoiceId}
                 on:click={removeCurrentVoice}>{tr('common.delete')}</button>
+            </div>
+          </div>
+        {/if}
+
+        {#if usesVibeVoiceSpeakerFiles}
+          <div class="vibevoice-speakers">
+            <div class="field-label">Speaker references <span>optional, up to 4</span></div>
+            <div class="reference-input-grid">
+              {#each [0, 1, 2, 3] as speaker}
+                <div>
+                  <label for={'vibevoice-speaker-' + speaker}>Speaker {speaker + 1}</label>
+                  <input id={'vibevoice-speaker-' + speaker} class="file file-native" type="file" accept="audio/*"
+                    on:change={(event) => chooseVibeVoiceSpeaker(speaker, event.currentTarget.files?.[0] || null)} />
+                  <label class="file-picker" for={'vibevoice-speaker-' + speaker}>
+                    <strong>{tr('file.choose')}</strong>
+                    <span>{vibeVoiceSpeakerFiles[speaker]?.name || tr('file.none')}</span>
+                  </label>
+                </div>
+              {/each}
             </div>
           </div>
         {/if}

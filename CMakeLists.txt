@@ -2395,6 +2395,17 @@ if (ENGINE_BUILD_TESTS)
     )
     set_tests_properties(asr_vad_model_path_test PROPERTIES LABELS "fork_regression")
 
+    # Silero loader file-claim policy. Guards the fork fix where silero's
+    # can_load claimed any existing file, so no-hint loads of foreign GGUFs
+    # died on "missing tensor: stft_conv.weight".
+    add_engine_unittest(silero_vad_loader_routing_test tests/unittests/test_silero_vad_loader_routing.cpp)
+
+    add_test(
+        NAME silero_vad_loader_routing_test
+        COMMAND silero_vad_loader_routing_test
+    )
+    set_tests_properties(silero_vad_loader_routing_test PROPERTIES LABELS "fork_regression")
+
     add_engine_unittest(audio_chunking_test tests/unittests/test_audio_chunking.cpp)
 
     add_test(

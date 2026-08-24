@@ -132,7 +132,17 @@ std::unique_ptr<ILoadedVoiceModel> ModelRegistry::load(const ModelLoadRequest & 
     const auto inspection = engine::debug::trace_log_enabled()
         ? std::optional<ModelInspection>(loader->inspect(request))
         : std::nullopt;
-    auto model = loader->load(request);
+    std::unique_ptr<ILoadedVoiceModel> model;
+    try {
+        model = loader->load(request);
+    } catch (const std::exception & error) {
+        // Name the loader that claimed the request so a misrouted load (a
+        // family whose can_load over-claimed the path) is distinguishable
+        // from a genuine model-data error in the log.
+        throw std::runtime_error(
+            "loader '" + loader->family() + "' failed on " + request.model_path.string() +
+            ": " + error.what());
+    }
     if (inspection.has_value()) {
         log_model_load_trace(*inspection, *model);
     }

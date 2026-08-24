@@ -5,6 +5,8 @@
 #include "engine/framework/assets/tensor_source.h"
 #include "engine/framework/io/filesystem.h"
 
+#include <cstring>
+#include <fstream>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -23,6 +25,40 @@ SileroWeights load_silero_weights(const std::filesystem::path & checkpoint_path)
     SileroWeights weights;
     weights.source = resources.open_tensor_source("weights");
     return weights;
+}
+
+bool file_starts_with_gguf_magic(const std::filesystem::path & path) {
+    std::ifstream input(path, std::ios::binary);
+    char magic[4] = {};
+    return input.read(magic, 4) && std::memcmp(magic, "GGUF", 4) == 0;
+}
+
+// Restrict the file branch of resolve_silero_assets to checkpoints that are
+// provably silero. silero_vad is the first-registered loader, so with no
+// family_hint its can_load used to claim ANY existing file and fail inside
+// load() on a silero-only tensor name ("missing tensor: stft_conv.weight"),
+// which misdirects debugging for files that belong to other families. Both
+// probes are header-only (GGUF init is no_alloc, safetensors parsing reads
+// the JSON header), so can_load stays cheap even for multi-GB checkpoints.
+bool looks_like_silero_checkpoint(const std::filesystem::path & checkpoint_path) {
+    // The magic pre-check keeps ggml from logging "invalid magic" errors for
+    // the safetensors checkpoints that go through the tensor probe below.
+    if (file_starts_with_gguf_magic(checkpoint_path)) {
+        try {
+            const auto model_spec = engine::assets::read_gguf_embedded_model_spec(checkpoint_path);
+            if (model_spec.has_value()) {
+                return model_spec->family == "silero_vad";
+            }
+        } catch (...) {
+            // GGUF with unreadable spec metadata; fall through to the probe.
+        }
+    }
+    try {
+        // First weight SileroVADRuntime loads; no other family ships it.
+        return engine::assets::open_tensor_source(checkpoint_path)->has_tensor("stft_conv.weight");
+    } catch (...) {
+        return false;
+    }
 }
 
 std::string checkpoint_cache_key(const std::filesystem::path & checkpoint_path) {
@@ -49,6 +85,9 @@ std::shared_ptr<const SileroWeights> load_silero_weights_from_embedded() {
 SileroAssetPaths resolve_silero_assets(const std::filesystem::path & model_path) {
     if (engine::io::is_existing_file(model_path)) {
         const auto checkpoint_path = std::filesystem::weakly_canonical(model_path);
+        if (!looks_like_silero_checkpoint(checkpoint_path)) {
+            throw std::runtime_error("not a Silero VAD checkpoint: " + checkpoint_path.string());
+        }
         SileroAssetPaths paths;
         paths.model_root = checkpoint_path.parent_path();
         paths.checkpoint_path = checkpoint_path;

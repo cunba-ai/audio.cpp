@@ -16,7 +16,8 @@ cd /d "%~dp0..\.."
 cmake --build build/windows-cpu-release -j 2 --target ^
   asr_vad_model_path_test capi_enum_sync_test capi_shared_lib_surface_test ^
   tensor_source_memory_backed_test progress_callback_test ^
-  backend_weight_store_commit_test capi_option_number_test capi_session_options_test
+  backend_weight_store_commit_test capi_option_number_test capi_session_options_test ^
+  silero_vad_loader_routing_test
 if errorlevel 1 exit /b 1
 
 ctest --test-dir build/windows-cpu-release -L fork_regression --output-on-failure

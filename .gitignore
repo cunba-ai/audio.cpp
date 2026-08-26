@@ -44,3 +44,5 @@ __pycache__/
 # fork-local artifacts (reference dirs, dll copies under capi/test)
 ref/
 audiocpp.dll
+
+audio-vtest-*

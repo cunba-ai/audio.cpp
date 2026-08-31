@@ -95,6 +95,15 @@ public:
             return false;
         }
         try {
+            // resolve_silero_assets only accepts provably-silero checkpoints
+            // (GGUF: embedded audiocpp.model_spec.family; otherwise a
+            // header-only stft_conv.weight probe), so a checkpoint that
+            // resolves here is silero regardless of its filename. Upstream
+            // #357 tightens the same hintless-hijack bug with a
+            // canonical-filename filter; that filter is subsumed by the
+            // probe and would misreject spec'd/probed silero GGUFs, so this
+            // fork keeps the probe as the sole authority (see
+            // test_silero_vad_loader_routing.cpp cases 4-5).
             (void) resolve_silero_assets(request.model_path);
             return true;
         } catch (...) {

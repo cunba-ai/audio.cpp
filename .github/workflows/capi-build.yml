@@ -216,7 +216,7 @@ jobs:
         if: matrix.config.setup == 'cuda'
         uses: Jimver/cuda-toolkit@v0.2.35
         with:
-          cuda: '12.9.0'
+          cuda: '12.9.1'
           method: 'network'
 
       # ── ROCm/HIP: real AMD HIP SDK installer (llama.cpp pattern) ──────────

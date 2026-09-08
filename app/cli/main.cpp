@@ -2,6 +2,7 @@
 #include "batch.h"
 #include "partial_render.h"
 #include "request.h"
+#include "../common/build_info.h"
 #include "../streaming/pcm_source.h"
 #include "../streaming/streaming.h"
 #include "../workflow/execution.h"
@@ -51,6 +52,7 @@ void print_task_list_help() {
     std::cout
         << "audiocpp_cli --task <task> --family <family> --model <path> --backend <backend> [options]\n"
         << "  Global:\n"
+        << "    --version  Print build version, commit, compiler, platform, and enabled backends\n"
         << "    --task vad|asr|diar|sep|gen|tts|clon|vc|s2s|align|vdes|spk|svc|midi\n"
         << "    --family <name>\n"
         << "    --model <path>\n"
@@ -638,6 +640,10 @@ int audiocpp_cli_main(int argc, char ** argv) {
             log_file,
         });
         const bool metrics_requested = has_arg(argc, argv, "--metrics");
+        if (has_arg(argc, argv, "--version")) {
+            minitts::app::print_build_info(std::cout);
+            return 0;
+        }
 
         const auto registry_config = find_arg(argc, argv, "--registry-config");
         auto registry = engine::runtime::make_default_registry(
@@ -770,6 +776,10 @@ int audiocpp_cli_main(int argc, char ** argv) {
             return 0;
         }
         if (!model_arg) {
+            if (argc == 1) {
+                minitts::app::print_build_info_summary(std::cerr);
+                std::cerr << "Run audiocpp_cli --help for usage.\n";
+            }
             throw std::runtime_error("missing required --model argument");
         }
 
@@ -1016,7 +1026,7 @@ int wmain(int argc, wchar_t ** wargv) {
         }
         argv.push_back(nullptr);
         const int status = audiocpp_cli_main(argc, argv.data());
-        if (status == 0) {
+        if (status == 0 && !minitts::cli::has_arg(argc, argv.data(), "--version")) {
             minitts::cli::warn_ignored_args(argc, argv.data());
         }
         return status;
@@ -1028,7 +1038,7 @@ int wmain(int argc, wchar_t ** wargv) {
 #else
 int main(int argc, char ** argv) {
     const int status = audiocpp_cli_main(argc, argv);
-    if (status == 0) {
+    if (status == 0 && !minitts::cli::has_arg(argc, argv, "--version")) {
         minitts::cli::warn_ignored_args(argc, argv);
     }
     return status;

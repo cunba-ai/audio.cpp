@@ -138,6 +138,7 @@ jobs:
             -DAUDIOCPP_DEPLOYMENT_BUILD=ON \
             -DENGINE_BUILD_EXAMPLES=OFF \
             -DENGINE_ENABLE_OPENMP=OFF \
+            -DENGINE_ENABLE_NATIVE_CPU=OFF \
             ${{ matrix.config.cmake_extra }}
 
       - name: Build audiocpp shared library
@@ -319,6 +320,7 @@ jobs:
             -DAUDIOCPP_DEPLOYMENT_BUILD=ON ^
             -DENGINE_BUILD_EXAMPLES=OFF ^
             -DENGINE_ENABLE_OPENMP=OFF ^
+            -DENGINE_ENABLE_NATIVE_CPU=OFF ^
             -DENGINE_ENABLE_CUDA=ON ^
             -DCMAKE_CUDA_ARCHITECTURES="${{ env.CUDA_ARCHS }}"
 
@@ -340,6 +342,7 @@ jobs:
             -DAUDIOCPP_DEPLOYMENT_BUILD=ON `
             -DENGINE_BUILD_EXAMPLES=OFF `
             -DENGINE_ENABLE_OPENMP=OFF `
+            -DENGINE_ENABLE_NATIVE_CPU=OFF `
             -DGGML_HIP=ON `
             -DGPU_TARGETS="${{ env.AMDGPU_TARGETS }}" `
             -DCMAKE_PREFIX_PATH="$hipPath"
@@ -359,6 +362,7 @@ jobs:
             -DAUDIOCPP_BUILD_CAPI=ON ^
             -DAUDIOCPP_DEPLOYMENT_BUILD=ON ^
             -DENGINE_BUILD_EXAMPLES=OFF ^
+            -DENGINE_ENABLE_NATIVE_CPU=OFF ^
             -DGGML_SYCL=ON ^
             -DGGML_SYCL_F16=OFF ^
             -DGGML_SYCL_TARGET=INTEL
@@ -377,6 +381,7 @@ jobs:
             -DAUDIOCPP_DEPLOYMENT_BUILD=ON ^
             -DENGINE_BUILD_EXAMPLES=OFF ^
             -DENGINE_ENABLE_OPENMP=OFF ^
+            -DENGINE_ENABLE_NATIVE_CPU=OFF ^
             -DENGINE_ENABLE_VULKAN=ON
 
       - name: Build audiocpp shared library (CUDA)

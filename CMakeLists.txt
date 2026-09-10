@@ -3194,6 +3194,13 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
             COMMAND inflect_v2_frontend_test
         )
 
+        add_engine_unittest(espeak_lifetime_test tests/unittests/test_espeak_lifetime.cpp)
+        target_include_directories(espeak_lifetime_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
+        add_test(
+            NAME espeak_lifetime_test
+            COMMAND espeak_lifetime_test
+        )
+
         add_engine_unittest(voxtral_realtime_stream_chunking_test tests/unittests/test_voxtral_realtime_stream_chunking.cpp)
         target_include_directories(voxtral_realtime_stream_chunking_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
         add_test(

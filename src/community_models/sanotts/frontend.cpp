@@ -1,5 +1,6 @@
 #include "engine/community_models/sanotts/frontend.h"
 
+#include "engine/community_models/espeak_lifetime.h"
 #include "engine/framework/io/dynamic_library.h"
 
 #include <algorithm>
@@ -962,9 +963,19 @@ struct EspeakApi {
         if (!selected) {
             throw std::runtime_error("sanoTTS eSpeak-ng has no voice matching '" + voice + "'");
         }
+        // eSpeak-ng state is process-global (see espeak_lifetime.h): register this
+        // instance and let only the last one out terminate it and unload the library.
+        community::acquire_espeak();
     }
 
     ~EspeakApi() {
+        // Tearing the global state down while another sanoTTS/Inflect instance is
+        // still alive pulls the phoneme tables and the module out from under it.
+        // Observed as a SIGSEGV inside audiocpp_free_model whenever an LRU cache
+        // evicted one cached voice while a second one was still resident.
+        if (!community::release_espeak()) {
+            return;
+        }
         if (terminate != nullptr) {
             terminate();
         }

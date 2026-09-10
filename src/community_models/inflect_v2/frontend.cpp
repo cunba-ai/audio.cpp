@@ -1,5 +1,6 @@
 #include "engine/community_models/inflect_v2/frontend.h"
 
+#include "engine/community_models/espeak_lifetime.h"
 #include "engine/framework/io/dynamic_library.h"
 
 #include <algorithm>
@@ -381,13 +382,19 @@ struct EspeakApi {
             library = nullptr;
             throw std::runtime_error("Inflect v2 eSpeak-ng installation has no en-us voice");
         }
+        // eSpeak-ng state is process-global (see espeak_lifetime.h): register this
+        // instance and let only the last one out terminate it and unload the library.
+        community::acquire_espeak();
     }
 
     ~EspeakApi() {
-        if (library != nullptr) {
-            terminate();
-            io::close_dynamic_library(library);
+        // Same trap as sanoTTS: tearing down the shared eSpeak state while another
+        // front end still uses it segfaults.
+        if (library == nullptr || !community::release_espeak()) {
+            return;
         }
+        terminate();
+        io::close_dynamic_library(library);
     }
 
     template <typename Fn>

@@ -36,9 +36,9 @@
 typedef const char * (*fn_version_t)(void);
 typedef audiocpp_model_t * (*fn_load_model_t)(const char *, const char *, int, int, int, int, audiocpp_error_t *);
 typedef void (*fn_free_model_t)(audiocpp_model_t *);
-typedef audiocpp_stream_t * (*fn_stream_start_t)(const audiocpp_model_t *, int, const char *, int64_t, audiocpp_error_t *);
+typedef audiocpp_stream_t * (*fn_stream_start_t)(const audiocpp_model_t *, int, const char *, int64_t, const audiocpp_audio_contract_t *, audiocpp_error_t *);
 typedef audiocpp_stream_event_t * (*fn_stream_pull_t)(audiocpp_stream_t *, int, audiocpp_error_t *);
-typedef int (*fn_stream_finish_t)(audiocpp_stream_t *, audiocpp_text_t *, audiocpp_error_t *);
+typedef int (*fn_stream_finish_t)(audiocpp_stream_t *, audiocpp_text_t **, audiocpp_error_t *);
 typedef void (*fn_free_stream_event_t)(audiocpp_stream_event_t *);
 typedef void (*fn_stream_free_t)(audiocpp_stream_t *);
 typedef int (*fn_write_wav_t)(const char *, const float *, int64_t, int);
@@ -110,7 +110,7 @@ int main(int argc, char **argv) {
     char options[2048];
     snprintf(options, sizeof(options), "{\"text\": \"%s\"}", text);
     printf("[stream] stream_start: options=%s\n", options);
-    audiocpp_stream_t *stream = p_stream_start(model, TASK_TTS, options, 0, &err);
+    audiocpp_stream_t *stream = p_stream_start(model, TASK_TTS, options, 0, nullptr, &err);
     if (!stream) {
         fprintf(stderr, "FAIL[stream_start]: code=%d msg=%s\n", err.code, err.message ? err.message : "(null)");
         p_clear_error(&err); p_free_model(model); FREE_LIB(handle); return 4;

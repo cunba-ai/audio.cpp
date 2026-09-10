@@ -2004,11 +2004,39 @@ audiocpp_artifacts_t *audiocpp_midi_from_wav(
 /* Streaming (chunk-push model)                                             */
 /* ======================================================================== */
 
+namespace {
+
+// Streaming sessions are prepared before any audio arrives, so unlike the
+// offline path nothing can be derived from a TaskRequest::audio_input. Callers
+// state the contract explicitly; this folds it into the preparation request.
+engine::runtime::SessionPreparationRequest stream_preparation_request(
+    const engine::runtime::TaskRequest & request,
+    const audiocpp_audio_contract_t * audio_contract
+) {
+    auto prep = engine::runtime::build_preparation_request(request);
+    if (audio_contract == nullptr) {
+        return prep;
+    }
+    if (audio_contract->sample_rate <= 0) {
+        throw std::runtime_error(
+            "audio_contract.sample_rate must be > 0 (pass NULL if the model needs no contract)");
+    }
+    prep.audio = engine::runtime::AudioPreparationContract{
+        audio_contract->sample_rate,
+        audio_contract->channels > 0 ? audio_contract->channels : 1,
+        audio_contract->max_input_samples,
+    };
+    return prep;
+}
+
+}  // namespace
+
 audiocpp_stream_t *audiocpp_stream_start(
     const audiocpp_model_t *model,
     int task,
     const char *options_json,
     int64_t preferred_chunk_samples,
+    const audiocpp_audio_contract_t *audio_contract,
     audiocpp_error_t *err
 ) {
     audiocpp_stream_t *result = nullptr;
@@ -2052,7 +2080,7 @@ audiocpp_stream_t *audiocpp_stream_start(
         // Streaming sessions still need prepare() (e.g. supertonic's start_stream
         // calls require_prepared). The offline run() path prepares implicitly;
         // this streaming entry point must do it explicitly.
-        streaming->prepare(engine::runtime::build_preparation_request(req));
+        streaming->prepare(stream_preparation_request(req, audio_contract));
         streaming->start_stream(req);
 
         result = new audiocpp_stream{};
@@ -2060,10 +2088,17 @@ audiocpp_stream_t *audiocpp_stream_start(
         result->streaming = streaming;
         result->next_start_sample = 0;
 
-        // Register a sink to collect events emitted via callback
+        // Register a sink to collect events emitted via callback (streaming ASR
+        // emits partial/final text through it). Capture the handle BY VALUE: the
+        // sink outlives this function, so capturing &result (the address of the
+        // local pointer variable) left it pointing at a dead stack slot, and any
+        // later callback wrote sink_events through whatever happened to reuse
+        // that slot — observed as flaky stack-cookie corruption / "bad array new
+        // length" / SIGSEGV during stream_finish.
         result->sink_events.clear();
-        streaming->set_stream_event_sink([&result](const engine::runtime::StreamEvent &ev) {
-            result->sink_events.push_back(ev);
+        audiocpp_stream * const stream_handle = result;
+        streaming->set_stream_event_sink([stream_handle](const engine::runtime::StreamEvent &ev) {
+            stream_handle->sink_events.push_back(ev);
         });
     });
     return result;
@@ -2143,10 +2178,13 @@ audiocpp_stream_event_t *audiocpp_stream_push(
 
 int audiocpp_stream_finish(
     audiocpp_stream_t *stream,
-    audiocpp_text_t *out_text,
+    audiocpp_text_t **out_text,
     audiocpp_error_t *err
 ) {
     if (!stream) return -1;
+    // Null the out-param before anything can throw, so a failing call never
+    // leaves the caller holding an uninitialized pointer.
+    if (out_text) *out_text = nullptr;
     AUDIOCPP_CATCH(err, {
         if (!stream->streaming) {
             throw std::runtime_error("invalid stream handle");
@@ -2178,15 +2216,18 @@ int audiocpp_stream_finish(
         stream->sink_events.clear();
         stream->streaming->set_stream_event_sink(nullptr);
 
-        // Extract final text (for ASR)
-        if (out_text) {
-            memset(out_text, 0, sizeof(*out_text));
-            if (task_result.text_output) {
-                out_text->text = dup_cstr(task_result.text_output->text);
-                out_text->language = !task_result.text_output->language.empty()
-                    ? dup_cstr(task_result.text_output->language)
-                    : nullptr;
-            }
+        // Extract final text (for ASR). Heap-allocated and library-owned, so the
+        // caller frees it with audiocpp_free_text exactly like the audiocpp_asr()
+        // result. Filling caller-provided storage instead would make
+        // audiocpp_free_text's `delete` run on a non-heap pointer — that is
+        // STATUS_HEAP_CORRUPTION (0xC0000374) at the next heap operation.
+        if (out_text && task_result.text_output) {
+            auto *text = new audiocpp_text_t{};
+            text->text = dup_cstr(task_result.text_output->text);
+            text->language = !task_result.text_output->language.empty()
+                ? dup_cstr(task_result.text_output->language)
+                : nullptr;
+            *out_text = text;
         }
     });
     return err && err->code != 0 ? -1 : 0;

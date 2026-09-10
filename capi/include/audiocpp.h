@@ -964,6 +964,31 @@ typedef struct {
 } audiocpp_stream_event_t;
 
 /**
+ * Audio contract for a streaming session.
+ *
+ * Why this exists: many families size their front end from the audio they are
+ * about to process and reject a session with no contract
+ * ("<Model> prepare() requires an audio contract"). The offline entry points
+ * derive it from the AudioBuffer they are handed, but a streaming session is
+ * *prepared before any audio arrives*, so nothing can be derived — the caller
+ * has to state it here. Families whose prepare() needs it (sense_asr,
+ * citrinet_asr, parakeet_tdt, kroko_asr, fun_asr_nano, higgs_audio_stt,
+ * hviske_asr, nemotron_asr, voxtral_realtime, vibevoice_asr, marblenet_vad)
+ * fail without one; TTS/VAD families that do not need it accept NULL.
+ */
+typedef struct {
+    /** Sample rate of the audio that will be pushed to the stream (e.g. 16000).
+     *  Required: must be > 0 whenever the struct is passed. */
+    int sample_rate;
+    /** Channel count of that audio. 0 = 1 (mono). */
+    int channels;
+    /** Upper bound on the total samples the stream may receive, used to size
+     *  encoder capacity. 0 = unknown/unbounded, which is the normal case for a
+     *  live stream. */
+    int64_t max_input_samples;
+} audiocpp_audio_contract_t;
+
+/**
  * Start a streaming session from a loaded model.
  *
  * Creates a new streaming task session (separate from the model's
@@ -973,6 +998,12 @@ typedef struct {
  * @param task        AUDIOCPP_TASK_* (VAD, ASR, TTS, etc.).
  * @param options_json Optional JSON options (NULL = defaults).
  * @param preferred_chunk_samples Preferred audio chunk size in samples (0 = model default).
+ * @param audio_contract Audio contract for the stream (see
+ *                    audiocpp_audio_contract_t). Pass the sample rate and
+ *                    channel count of the audio you are going to push. NULL is
+ *                    only valid for families that do not need a contract — the
+ *                    ones that do will fail here with their own message. A
+ *                    non-NULL contract with sample_rate <= 0 is rejected.
  * @param err         Optional error output.
  * @return Stream handle, or NULL on failure (check err).
  */
@@ -981,6 +1012,7 @@ AUDIOCPP_API audiocpp_stream_t *audiocpp_stream_start(
     int task,
     const char *options_json,
     int64_t preferred_chunk_samples,
+    const audiocpp_audio_contract_t *audio_contract,
     audiocpp_error_t *err
 );
 
@@ -1015,14 +1047,16 @@ AUDIOCPP_API audiocpp_stream_event_t *audiocpp_stream_push(
  * accumulated final output.
  *
  * @param stream   Stream handle (invalidated after this call).
- * @param out_text Optional: receives final transcript (for ASR). Pass NULL to skip.
- *                 Caller owns and must free with audiocpp_free_text.
+ * @param out_text Optional out-param: receives a heap-allocated final transcript
+ *                 (for ASR), or NULL when the stream produced none. The library
+ *                 owns it — free with audiocpp_free_text, exactly like the
+ *                 audiocpp_asr() return value. Pass NULL to skip.
  * @param err      Optional error output.
  * @return 0 on success, -1 on error.
  */
 AUDIOCPP_API int audiocpp_stream_finish(
     audiocpp_stream_t *stream,
-    audiocpp_text_t *out_text,
+    audiocpp_text_t **out_text,
     audiocpp_error_t *err
 );
 

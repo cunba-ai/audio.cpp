@@ -436,9 +436,14 @@ streaming session inherits the backend (CPU/CUDA/...) from the model handle —
 it runs on the same device selected at `audiocpp_load_model` time.
 
 ```c
-// 1. Start stream (creates a new streaming session)
+// 1. Start stream (creates a new streaming session).
+//    The audio contract states the sample rate / channels of the audio you are
+//    about to push — streaming sessions are prepared before any audio arrives,
+//    and several ASR families size their front end from it. Pass NULL only for
+//    models that need none (streaming TTS).
+audiocpp_audio_contract_t contract = { 16000, 1, 0 /* unbounded */ };
 audiocpp_stream_t *stream = audiocpp_stream_start(
-    model, TASK_VAD, NULL, 512, &err);
+    model, TASK_ASR, NULL, 512, &contract, &err);
 
 // 2. Push audio chunks → get events synchronously
 while (have_audio) {
@@ -450,10 +455,14 @@ while (have_audio) {
     audiocpp_free_stream_event(ev);
 }
 
-// 3. Finish → get final result
-audiocpp_text_t final;
+// 3. Finish → get final result (heap-allocated, library-owned)
+audiocpp_text_t *final = NULL;
 audiocpp_stream_finish(stream, &final, &err);
-audiocpp_free_text(&final);
+if (final) {
+    printf("%s
+", final->text);
+    audiocpp_free_text(final);   // same ownership as audiocpp_asr()
+}
 audiocpp_stream_free(stream);
 ```
 
@@ -477,8 +486,9 @@ audiocpp_stream_free(stream);
   is passed in `stream_start`'s `options_json` as `{"text":"...","language":"zh"}`.
   Call `stream_pull` repeatedly to get synthesized audio chunks:
   ```c
+  // TTS consumes no audio → no contract needed (NULL).
   stream = audiocpp_stream_start(model, TASK_TTS,
-      "{\"text\":\"你好世界\",\"language\":\"zh\"}", 0, &err);
+      "{\"text\":\"你好世界\",\"language\":\"zh\"}", 0, NULL, &err);
   while (true) {
       audiocpp_stream_event_t *ev = audiocpp_stream_pull(stream, -1, &err);
       if (!ev) break;  // stream exhausted
@@ -490,6 +500,15 @@ audiocpp_stream_free(stream);
 **Streamable models** (7): silero_vad (VAD), nemotron_asr/higgs_audio_stt/
 voxtral_realtime (ASR), omnivoice/supertonic/voxcpm2 (TTS). Other models
 (vibevoice_asr, etc.) reject `stream_start` → caller should fall back to offline.
+
+**Audio contract (streaming ASR/VAD)**: `stream_start` takes an
+`audiocpp_audio_contract_t` describing the audio the caller will push. Families
+whose `prepare()` sizes its front end from that audio (sense_asr, citrinet_asr,
+parakeet_tdt, kroko_asr, fun_asr_nano, higgs_audio_stt, hviske_asr, nemotron_asr,
+voxtral_realtime, vibevoice_asr, marblenet_vad) reject a NULL contract with
+`<Model> prepare() requires an audio contract`. The offline entry points derive
+the same contract from the AudioBuffer they receive; a streaming session is
+prepared before any audio exists, so it must be passed in explicitly.
 
 **Notes on `stream_pull` and `stream_finish`:**
 

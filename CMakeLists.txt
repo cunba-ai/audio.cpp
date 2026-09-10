@@ -2075,11 +2075,20 @@ if (AUDIOCPP_EMBED_AUDIO_UTILITIES)
                 "rnnoise:${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/audio_utilities/rnnoise/rnnoise10Gb_15.safetensors"
                 "zipenhancer:${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/audio_utilities/zipenhancer/zipenhancer.safetensors"
                 "flashsr:${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/audio_utilities/flashsr/flashsr.safetensors"
+                # fork: GTCRN denoiser variants (3 x ~243 KB; exposed through
+                # audiocpp_denoise as gtcrn/gtcrn_streaming, gtcrn_dns3,
+                # gtcrn_vctk).
+                "gtcrn_streaming:${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/audio_utilities/gtcrn/gtcrn_streaming.safetensors"
+                "gtcrn_dns3:${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/audio_utilities/gtcrn/gtcrn_dns3.safetensors"
+                "gtcrn_vctk:${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/audio_utilities/gtcrn/gtcrn_vctk.safetensors"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_asset.py"
                 "${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/audio_utilities/deepfilternet2/deepfilternet2.safetensors"
                 "${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/audio_utilities/rnnoise/rnnoise10Gb_15.safetensors"
                 "${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/audio_utilities/zipenhancer/zipenhancer.safetensors"
                 "${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/audio_utilities/flashsr/flashsr.safetensors"
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/audio_utilities/gtcrn/gtcrn_streaming.safetensors"
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/audio_utilities/gtcrn/gtcrn_dns3.safetensors"
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/framework/audio_utilities/gtcrn/gtcrn_vctk.safetensors"
         COMMENT "Generating embedded audio-utility asset byte arrays"
         VERBATIM
     )
@@ -2404,6 +2413,37 @@ if (ENGINE_BUILD_TESTS)
     endif()
     add_test(NAME capi_enum_sync_test COMMAND capi_enum_sync_test)
     set_tests_properties(capi_enum_sync_test PROPERTIES LABELS "fork_regression")
+endif()
+
+# ──────────────────────────────────────────────────────────────────────────
+# Embedded audio-utility denoiser test: with AUDIOCPP_EMBED_AUDIO_UTILITIES=ON
+# every materializable asset (incl. the fork-added GTCRN variants) must be in
+# the embed table, and audiocpp_denoise must denoise with model_path=NULL. The
+# test skips itself when embedding is off.
+# ──────────────────────────────────────────────────────────────────────────
+if (ENGINE_BUILD_TESTS AND AUDIOCPP_BUILD_CAPI)
+    add_executable(capi_denoise_embedded_test
+        tests/unittests/test_capi_denoise_embedded.cpp
+        capi/src/audiocpp_capi.cpp
+    )
+    set_target_properties(capi_denoise_embedded_test PROPERTIES CXX_VISIBILITY_PRESET default)
+    target_compile_definitions(capi_denoise_embedded_test PRIVATE AUDIOCPP_EXPORTS)
+    if (MSVC)
+        target_compile_options(capi_denoise_embedded_test PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/utf-8>)
+    endif()
+    target_include_directories(capi_denoise_embedded_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/capi/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/capi/src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/external/cJSON"
+        "${CMAKE_CURRENT_BINARY_DIR}/generated"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests"
+    )
+    target_link_libraries(capi_denoise_embedded_test PRIVATE engine_runtime ggml cjson_vendor)
+    if (ENGINE_ENABLE_OPENMP)
+        target_link_libraries(capi_denoise_embedded_test PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    add_test(NAME capi_denoise_embedded_test COMMAND capi_denoise_embedded_test)
+    set_tests_properties(capi_denoise_embedded_test PROPERTIES LABELS "fork_regression")
 endif()
 
 # ──────────────────────────────────────────────────────────────────────────

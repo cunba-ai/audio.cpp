@@ -13,6 +13,7 @@
 #include "engine/framework/audio/chunking.h"
 #include "engine/framework/audio/deepfilternet2.h"
 #include "engine/framework/audio/flashsr.h"
+#include "engine/framework/audio/gtcrn.h"
 #include "engine/framework/audio/resampling.h"
 #include "engine/framework/audio/rnnoise.h"
 #include "engine/framework/audio/zipenhancer.h"
@@ -1355,6 +1356,32 @@ std::filesystem::path resolve_utility_model_path(
     return want_directory ? file.parent_path() : file;
 }
 
+// GTCRN ships three single-file checkpoints (streaming / dns3 / vctk); the
+// utility_api names are mirrored here, with "gtcrn" aliasing the streaming
+// checkpoint. Each name maps to its own embedded asset so an empty model_path
+// materializes the right variant.
+struct GtcrnVariant {
+    const char * name;
+    const char * embedded_id;
+    const char * filename;
+};
+
+constexpr GtcrnVariant kGtcrnVariants[] = {
+    {"gtcrn", "gtcrn_streaming", "gtcrn_streaming.safetensors"},
+    {"gtcrn_streaming", "gtcrn_streaming", "gtcrn_streaming.safetensors"},
+    {"gtcrn_dns3", "gtcrn_dns3", "gtcrn_dns3.safetensors"},
+    {"gtcrn_vctk", "gtcrn_vctk", "gtcrn_vctk.safetensors"},
+};
+
+const GtcrnVariant * find_gtcrn_variant(const std::string & name) {
+    for (const auto & variant : kGtcrnVariants) {
+        if (name == variant.name) {
+            return &variant;
+        }
+    }
+    return nullptr;
+}
+
 }  // namespace
 
 audiocpp_audio_t *audiocpp_denoise(
@@ -1375,7 +1402,9 @@ audiocpp_audio_t *audiocpp_denoise(
             throw std::runtime_error("sample_rate must be > 0");
         }
         if (model_name == nullptr || model_name[0] == '\0') {
-            throw std::runtime_error("model_name is required (deepfilternet2|rnnoise|zipenhancer)");
+            throw std::runtime_error(
+                "model_name is required (deepfilternet2|rnnoise|zipenhancer|"
+                "gtcrn|gtcrn_streaming|gtcrn_dns3|gtcrn_vctk)");
         }
         const std::string name = model_name;
         const auto backend = parse_utility_backend(options_json);
@@ -1422,10 +1451,26 @@ audiocpp_audio_t *audiocpp_denoise(
             auto in16 = engine::audio::resample_mono_linear(input, sample_rate, 16000);
             auto out = model->denoise_mono_16k(in16);
             result = pack_audio_output(out.samples, out.sample_rate);
+        } else if (const GtcrnVariant * gtcrn = find_gtcrn_variant(name); gtcrn != nullptr) {
+            // GTCRN loads a single safetensors FILE per variant (like rnnoise),
+            // so the embedded asset is materialized as a file, not a dir.
+            const auto file = resolve_utility_model_path(
+                model_path, gtcrn->embedded_id, gtcrn->filename, /*want_directory=*/false);
+            if (file.empty()) {
+                throw std::runtime_error(name + ": no model path and no embedded asset");
+            }
+            auto model = get_or_load_utility_model<engine::audio::GTCRNModel>(
+                utility_model_cache_key(file, backend),
+                [&]() { return std::make_shared<engine::audio::GTCRNModel>(
+                    engine::audio::GTCRNModel::load_from_safetensors(file, backend)); });
+            auto in16 = engine::audio::resample_mono_linear(input, sample_rate, 16000);
+            auto out = model->denoise_mono_16k(in16);
+            result = pack_audio_output(out.samples, out.sample_rate);
         } else {
             throw std::runtime_error(
                 "unsupported denoise model: " + name +
-                " (expected deepfilternet2|rnnoise|zipenhancer)");
+                " (expected deepfilternet2|rnnoise|zipenhancer|"
+                "gtcrn|gtcrn_streaming|gtcrn_dns3|gtcrn_vctk)");
         }
     });
     return result;

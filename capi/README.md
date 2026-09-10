@@ -34,7 +34,7 @@ Each zip contains:
   `audiocpp_load_model(NULL, "silero_vad", ...)` loads from the embedded bytes.
   Off by default — without it, ship `assets/framework/models/{silero,marblenet}_vad/`.
 - `AUDIOCPP_EMBED_AUDIO_UTILITIES=ON` — bake deepfilternet2/rnnoise/zipenhancer/
-  flashsr weights into the binary (+~28 MB) so `audiocpp_denoise`/
+  flashsr/gtcrn weights into the binary (+~28 MB) so `audiocpp_denoise`/
   `audiocpp_super_resolve` work with `model_path = NULL`. Off by default —
   without it, ship `assets/framework/audio_utilities/` and pass the model dir.
 
@@ -312,13 +312,15 @@ library and pass their path. `audiocpp_vad_energy` needs neither (it's pure
 signal energy).
 
 **Denoise / super-resolve** — `audiocpp_denoise(pcm, n, rate, model_name,
-model_path, options, err)` runs one of three standalone audio-enhancement models
-(`deepfilternet2` / `rnnoise` / `zipenhancer`) to reduce noise. `audiocpp_super_
+model_path, options, err)` runs one of the standalone audio-enhancement models
+(`deepfilternet2` / `rnnoise` / `zipenhancer` / `gtcrn` / `gtcrn_streaming` /
+`gtcrn_dns3` / `gtcrn_vctk`) to reduce noise. `audiocpp_super_
 resolve(pcm, n, rate, model_path, options, err)` upsamples narrowband audio to
 wideband via `flashsr` (16k → 48k). These are NOT model-registry tasks — they
-load directly. With `AUDIOCPP_EMBED_AUDIO_UTILITIES=ON` (~28 MB: deepfilternet2 8.9 + rnnoise 11.0 + zipenhancer 7.9 + flashsr 0.3), pass
+load directly. With `AUDIOCPP_EMBED_AUDIO_UTILITIES=ON` (~28 MB: deepfilternet2 8.9 + rnnoise 11.0 + zipenhancer 7.9 + flashsr 0.3 + gtcrn 0.7), pass
 `model_path = NULL` to use baked-in weights; otherwise pass the model directory
-(rnnoise takes a file path). The input sample rate is arbitrary (resampled to the
+(rnnoise and gtcrn take a file path; each gtcrn variant maps to its own
+checkpoint, with `gtcrn` aliasing `gtcrn_streaming`). The input sample rate is arbitrary (resampled to the
 model's native rate internally). `options_json` keys: `backend` ("cpu"|"cuda"|
 "vulkan"|"metal"|"sycl"), `device` (index).
 

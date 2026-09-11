@@ -1,0 +1,10 @@
+{
+  "created_at_ms": 1786266422325,
+  "id": "b31cbca138f848ea810a862db140d665",
+  "kind": "asr",
+  "state": {
+    "elapsed_ms": 16,
+    "progress": null,
+    "status": "running"
+  }
+}

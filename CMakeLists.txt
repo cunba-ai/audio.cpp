@@ -103,6 +103,7 @@ option(ENGINE_HIP_STRIX_HALO_OPTIMIZATIONS
     OFF)
 option(ENGINE_ENABLE_NATIVE_CPU "Build ggml CPU kernels with native host ISA flags" ${ENGINE_DEFAULT_ENABLE_NATIVE_CPU})
 option(ENGINE_ENABLE_OPENMP "Build host code with OpenMP support" ON)
+option(AUDIOCPP_STATIC_ESPEAK "Build and statically link GPL-3.0-or-later eSpeak-ng; keep data separate" OFF)
 option(AUDIOCPP_BUILD_NATIVE_MODEL_MANAGER
     "Build native model-manager tools and server download/install support"
     OFF)
@@ -454,6 +455,8 @@ add_library(engine_core OBJECT
     src/framework/runtime/workspace.cpp
     src/framework/midi/midi_file.cpp
     src/framework/io/filesystem.cpp
+    src/framework/audio/espeak_phonemizer.cpp
+    src/framework/audio/espeak_data.cpp
     src/framework/io/config.cpp
     src/framework/io/json.cpp
     src/framework/io/text.cpp
@@ -1366,6 +1369,27 @@ audiocpp_add_model(sortformer_diar
         engine::models::sortformer_diar::make_sortformer_diar_loader
 )
 
+audiocpp_add_model(sortformer_diar_v2
+    SOURCES
+        src/community_models/sortformer_diar/assets.cpp
+        src/community_models/sortformer_diar/frontend.cpp
+        src/community_models/sortformer_diar/weights.cpp
+        src/community_models/sortformer_diar/aosc_state.cpp
+        src/community_models/sortformer_diar/stream_schedule.cpp
+        src/community_models/sortformer_diar/encoder.cpp
+        src/community_models/sortformer_diar/session.cpp
+    INCLUDES
+        engine/community_models/sortformer_diar/aosc_state.h
+        engine/community_models/sortformer_diar/stream_schedule.h
+        engine/community_models/sortformer_diar/encoder.h
+        engine/community_models/sortformer_diar/session.h
+        engine/community_models/sortformer_diar/frontend.h
+        engine/community_models/sortformer_diar/weights.h
+        engine/community_models/sortformer_diar/assets.h
+    LOADERS
+        engine::community_models::sortformer_diar::make_sortformer_diar_v2_loader
+)
+
 audiocpp_add_model(stable_audio
     SOURCES
         src/models/stable_audio/assets.cpp
@@ -2025,6 +2049,8 @@ target_include_directories(engine_runtime PRIVATE
 )
 
 target_link_libraries(engine_runtime PUBLIC ggml)
+find_package(Threads REQUIRED)
+target_link_libraries(engine_runtime PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
 target_link_libraries(engine_runtime PRIVATE sentencepiece cjson_vendor yaml_vendor)
 
 # Embed silero_vad + marblenet_vad weights directly into engine_runtime so VAD
@@ -2096,6 +2122,9 @@ if (AUDIOCPP_EMBED_AUDIO_UTILITIES)
     target_compile_definitions(engine_runtime PUBLIC AUDIOCPP_EMBED_AUDIO_UTILITIES=1)
 endif()
 
+if(AUDIOCPP_STATIC_ESPEAK)
+    include(tools/cmake/espeak_static.cmake)
+endif()
 if (AUDIOCPP_HIP_STRIX_HALO_OPTIMIZATIONS_ACTIVE)
     target_compile_definitions(engine_runtime PRIVATE ENGINE_HIP_STRIX_HALO_OPTIMIZATIONS=1)
 endif()
@@ -2484,6 +2513,9 @@ add_executable(audiocpp_cli
 )
 
 target_link_libraries(audiocpp_cli PRIVATE engine_runtime ggml)
+if(AUDIOCPP_STATIC_ESPEAK)
+    audiocpp_stage_espeak(audiocpp_cli)
+endif()
 target_include_directories(audiocpp_cli PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 # MinGW selects the wmain() entry point only when linked with -municode;
 # without it the CLI fails to link (undefined reference / ld error 5).
@@ -2557,6 +2589,9 @@ add_executable(audiocpp_server
 )
 
 target_link_libraries(audiocpp_server PRIVATE engine_runtime ggml)
+if(AUDIOCPP_STATIC_ESPEAK)
+    audiocpp_stage_espeak(audiocpp_server)
+endif()
 if (AUDIOCPP_BUILD_NATIVE_MODEL_MANAGER)
     target_sources(audiocpp_server PRIVATE app/server/model_installer.cpp)
     target_link_libraries(audiocpp_server PRIVATE audiocpp_package_manager)
@@ -2678,7 +2713,26 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
         target_link_libraries(${target} PRIVATE engine_runtime ggml)
     endfunction()
 
+    add_engine_unittest(sortformer_v2_aosc_test tests/community_models/sortformer_diar/sortformer_v2_aosc_test.cpp)
+    add_test(NAME sortformer_v2_aosc_test COMMAND sortformer_v2_aosc_test)
+
+    add_engine_unittest(sortformer_v2_schedule_test tests/community_models/sortformer_diar/sortformer_v2_schedule_test.cpp)
+    add_test(NAME sortformer_v2_schedule_test COMMAND sortformer_v2_schedule_test)
+
     if (ENGINE_BUILD_TESTS)
+        add_engine_unittest(espeak_data_test tests/unittests/test_espeak_data.cpp)
+        target_link_libraries(espeak_data_test PRIVATE Threads::Threads)
+        add_test(NAME espeak_data_test COMMAND espeak_data_test)
+        add_library(espeak_test_library SHARED tests/unittests/espeak_test_library.cpp)
+        add_library(espeak_test_missing_symbol SHARED tests/unittests/espeak_test_library.cpp)
+        target_link_libraries(espeak_test_library PRIVATE Threads::Threads)
+        target_link_libraries(espeak_test_missing_symbol PRIVATE Threads::Threads)
+        target_compile_definitions(espeak_test_missing_symbol PRIVATE ESPEAK_TEST_MISSING_SYMBOL=1)
+        add_engine_unittest(espeak_phonemizer_test tests/unittests/test_espeak_phonemizer.cpp)
+        target_link_libraries(espeak_phonemizer_test PRIVATE Threads::Threads)
+        add_dependencies(espeak_phonemizer_test espeak_test_library espeak_test_missing_symbol)
+        add_test(NAME espeak_phonemizer_test COMMAND espeak_phonemizer_test
+            $<TARGET_FILE:espeak_test_library> $<TARGET_FILE:espeak_test_missing_symbol>)
         add_executable(sentencepiece_tokenizer1_test
             tests/unittests/test_sentencepiece_tokenizer1.cpp
         )
@@ -2961,6 +3015,16 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
     endif()
 
     if (ENGINE_BUILD_MODEL_TESTS)
+        if (sanotts IN_LIST AUDIOCPP_LINKED_MODELS AND inflect_v2 IN_LIST AUDIOCPP_LINKED_MODELS)
+            add_engine_unittest(espeak_frontend_probe tests/unittests/espeak_frontend_probe.cpp)
+            if(AUDIOCPP_STATIC_ESPEAK)
+                audiocpp_stage_espeak(espeak_frontend_probe)
+                add_test(NAME espeak_static_frontend_test COMMAND espeak_frontend_probe - - concurrent)
+            endif()
+            if (MSVC)
+                target_compile_options(espeak_frontend_probe PRIVATE /utf-8)
+            endif()
+        endif()
         # Model-specific tests and probes.
         if (f5_tts IN_LIST AUDIOCPP_LINKED_MODELS)
             target_compile_definitions(engine_model_f5_tts PRIVATE F5_MEL_TEST=1)
@@ -3192,13 +3256,6 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
         add_test(
             NAME inflect_v2_frontend_test
             COMMAND inflect_v2_frontend_test
-        )
-
-        add_engine_unittest(espeak_lifetime_test tests/unittests/test_espeak_lifetime.cpp)
-        target_include_directories(espeak_lifetime_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
-        add_test(
-            NAME espeak_lifetime_test
-            COMMAND espeak_lifetime_test
         )
 
         add_engine_unittest(voxtral_realtime_stream_chunking_test tests/unittests/test_voxtral_realtime_stream_chunking.cpp)

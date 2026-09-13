@@ -121,6 +121,28 @@ on (see CONTRIBUTING.md "Framework Modules (High Risk)"); for new model PRs
 include exact build/run commands, model paths/ids, generated outputs, and
 parity/path-test results.
 
+### Upstream C ABI is removed — ignore it in every merge (fork policy)
+
+Upstream PR #530 added a second C ABI (`include/audiocpp.h`, `src/capi/`,
+`tests/capi/`, `docs/c_api.md`, CMake option `AUDIOCPP_BUILD_C_API`, target
+name also `audiocpp`) that overlaps this fork's `capi/` surface (colliding
+names include `audiocpp_stream_start/push/finish`). This fork keeps **only**
+its own C ABI (`capi/include/audiocpp.h` via `AUDIOCPP_BUILD_CAPI`).
+
+On every upstream merge:
+
+- Resolve modify/delete conflicts on those paths by **keeping the deletion**
+  (`git rm` them again if the merge re-stages them).
+- Never enable `AUDIOCPP_BUILD_C_API` — CMake hard-errors on it (see the
+  FORK POLICY note in CMakeLists.txt); `AUDIOCPP_BUILD_CAPI` is the fork's
+  surface.
+- `fork_policy_test` (fork_regression) fails if upstream's files come back or
+  the fork's CAPI files disappear — a red test after a merge means the
+  conflict was resolved the wrong way.
+- Never put both headers on one include path: `capi/include/audiocpp.h`
+  (ours) vs `include/audiocpp.h` (upstream's, deleted here) shadow each
+  other by name.
+
 ## Known pitfalls
 
 ### qwen3-tts Base voice clone: reference transcript must cover the reference audio

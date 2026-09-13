@@ -2,6 +2,7 @@
 
 #include "engine/framework/assets/embedded.h"
 #include "engine/framework/debug/trace.h"
+#include "engine/framework/audio/utility_api.h"
 #include "engine/framework/model_spec/package.h"
 #include "engine/framework/io/config.h"
 #include "engine/framework/io/filesystem.h"
@@ -160,13 +161,20 @@ std::unique_ptr<ILoadedVoiceModel> ModelRegistry::load(const std::filesystem::pa
 }
 
 void ModelRegistry::validate_request(const ModelLoadRequest & request) const {
-    // Empty model_path is allowed for VAD families when their weights are
-    // embedded in the binary (AUDIOCPP_EMBED_VAD_ASSETS); the loader fetches
-    // the baked-in bytes. Skip the on-disk existence check in that case.
+    // Two path-shape exceptions skip the on-disk existence check:
+    // 1. Empty model_path for families whose weights are embedded in the
+    //    binary (AUDIOCPP_EMBED_VAD_ASSETS); the loader fetches the baked-in
+    //    bytes.
     const bool embedded_path = request.model_path.empty()
         && request.family_hint.has_value()
         && assets::embedded::has_embedded_asset(*request.family_hint);
-    if (!embedded_path &&
+    // 2. The builtin audio-utility family passes a utility id (not a path)
+    //    as model_path.
+    const bool builtin_audio_utility_id =
+        request.family_hint.has_value() &&
+        *request.family_hint == "builtin_audio_utils" &&
+        engine::audio::find_builtin_audio_utility(request.model_path.generic_string()).has_value();
+    if (!embedded_path && !builtin_audio_utility_id &&
         !engine::io::is_existing_file(request.model_path) &&
         !engine::io::is_existing_directory(request.model_path)) {
         throw std::runtime_error("model path does not exist: " + request.model_path.string());

@@ -30,9 +30,11 @@
 | IndexTTS2.5 | `index_tts2` (variant `2.5`) | `tts` | [IndexTTS](models/index_tts.md) |
 | Irodori-TTS | `irodori_tts` | `tts`, `vdes` | [Irodori-TTS](#irodori-tts) |
 | Kokoro 82M | `kokoro_tts` | `tts` | [Kokoro 82M](models/kokoro_tts.md) |
+| KittenTTS Mini 0.8 | `kitten_tts` | `tts` | [KittenTTS](community_models/kitten_tts.md) |
 | GLM-TTS | `glm_tts` | `tts`, `clon` | [GLM-TTS](#glm-tts) |
 | Inflect Micro v2 | `inflect_v2` | `tts` | [Inflect v2](#inflect-v2) |
 | OuteTTS | `outetts` | `tts`, `clon` | [OuteTTS](#outetts) |
+| Piper TTS | `piper_tts` | `tts` | [Piper TTS](community_models/piper_tts.md) |
 | sanoTTS voice family | `sanotts` | `tts` | [sanoTTS](#sanotts) |
 | Supertonic | `supertonic` | `tts` | [Supertonic](#supertonic) |
 | VieNeu-TTS | `vietneu_tts` | `tts`, `clon` | [VieNeu-TTS](community_models/vietneu_tts.md) |
@@ -533,6 +535,7 @@ audiocpp_cli --task tts --family voxcpm2 --model models/VoxCPM2 --backend cuda -
 | `--text-chunk-size` | integer chars | `2048` | Long-form chunk size. |
 | `--text-chunk-mode` | `default`, `tag_aware`, `japanese`, `endline` | `tag_aware` | Long-form chunking mode; keeps style/tag controls attached to chunks by default. |
 | `--request-option voxcpm2.chunk_strategy=continuation\|stateless` | enum | `continuation` | Long-form chunk generation strategy. `stateless` synthesizes each text chunk from the same original prompt/reference and concatenates the audio; use it for plain text/reference-clone long-form input, not voice/emotion tag carry-over. |
+| `--request-option voxcpm2.stream_left_context=<n>` | integer, `0`–`8` | `3` | Streaming: preceding patches decoded together with each emitted patch and trimmed off again. The AudioVAE decoder is causal but is invoked per patch, so without them its convolution history restarts at every patch boundary and the seams click. `0` decodes every patch alone; values above `3` cost decoder time for little gain. |
 | `--max-tokens` | integer | `4096` | Maximum generated AR tokens. |
 | `--num-inference-steps` | integer | `10` | Flow matching steps. |
 | `--guidance-scale` | float | `2.0` | CFG strength. |

@@ -600,6 +600,7 @@ add_library(engine_core OBJECT
     src/framework/audio/conversion.cpp
     src/framework/audio/deepfilternet2.cpp
     src/framework/audio/dsp.cpp
+    src/framework/audio/nemo_mel_frontend.cpp
     src/framework/audio/flashsr.cpp
     src/framework/audio/gtcrn.cpp
     src/framework/audio/istft_graph.cpp
@@ -863,6 +864,35 @@ audiocpp_add_model(inflect_v2
     LOADERS
         engine::models::inflect_v2::make_inflect_v2_loader
 )
+
+audiocpp_add_model(piper_tts
+    SOURCES
+        src/community_models/piper_tts/assets.cpp
+        src/community_models/piper_tts/frontend.cpp
+        src/community_models/piper_tts/vits_runtime.cpp
+        src/community_models/piper_tts/session.cpp
+    INCLUDES
+        engine/community_models/piper_tts/session.h
+    LOADERS
+        engine::models::piper_tts::make_piper_tts_loader
+)
+
+audiocpp_add_model(kitten_tts
+    SOURCES
+        src/community_models/kitten_tts/assets.cpp
+        src/community_models/kitten_tts/decoder.cpp
+        src/community_models/kitten_tts/frontend.cpp
+        src/community_models/kitten_tts/plbert.cpp
+        src/community_models/kitten_tts/predictor.cpp
+        src/community_models/kitten_tts/session.cpp
+    INCLUDES
+        engine/community_models/kitten_tts/session.h
+    LOADERS
+        engine::models::kitten_tts::make_kitten_tts_loader
+)
+if(MSVC)
+    target_compile_options(engine_model_kitten_tts PRIVATE /utf-8)
+endif()
 
 audiocpp_add_model(f5_tts
     SOURCES
@@ -3043,6 +3073,19 @@ endif()
 if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TESTS)
     enable_testing()
 
+    if(cohere_asr IN_LIST AUDIOCPP_LINKED_MODELS AND
+       canary_asr IN_LIST AUDIOCPP_LINKED_MODELS AND
+       citrinet_asr IN_LIST AUDIOCPP_LINKED_MODELS AND
+       parakeet_tdt IN_LIST AUDIOCPP_LINKED_MODELS AND
+       sortformer_diar IN_LIST AUDIOCPP_LINKED_MODELS AND
+       sortformer_diar_v2 IN_LIST AUDIOCPP_LINKED_MODELS AND
+       hviske_asr IN_LIST AUDIOCPP_LINKED_MODELS AND
+       nemotron_asr IN_LIST AUDIOCPP_LINKED_MODELS AND
+       granite5asr IN_LIST AUDIOCPP_LINKED_MODELS)
+        add_executable(nemo_mel_migration_probe tests/nemo_mel_migration/probe.cpp)
+        target_link_libraries(nemo_mel_migration_probe PRIVATE engine_runtime ggml)
+    endif()
+
     set(ENGINE_UNITTEST_ASSET_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests/assets")
 
     function(add_engine_unittest target source)
@@ -3130,6 +3173,9 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
 
         add_engine_unittest(safetensors_offsets_test tests/unittests/test_safetensors_offsets.cpp)
         add_test(NAME safetensors_offsets_test COMMAND safetensors_offsets_test)
+
+        add_engine_unittest(asr_graph_capacity_test tests/unittests/test_asr_graph_capacity.cpp)
+        add_test(NAME asr_graph_capacity_test COMMAND asr_graph_capacity_test)
 
         add_engine_unittest(audio_chunking_test tests/unittests/test_audio_chunking.cpp)
         add_test(NAME audio_chunking_test COMMAND audio_chunking_test)

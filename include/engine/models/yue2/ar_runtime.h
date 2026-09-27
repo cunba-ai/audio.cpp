@@ -39,7 +39,8 @@ public:
         assets::TensorStorageType weight_type,
         size_t weight_context_bytes,
         size_t prefill_graph_arena_bytes,
-        size_t decode_graph_arena_bytes);
+        size_t decode_graph_arena_bytes,
+        bool allow_flash_attention = true);
     ~Yue2ArRuntime();
 
     std::vector<int32_t> generate(

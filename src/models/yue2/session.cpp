@@ -202,7 +202,7 @@ runtime::ModelCliInterface yue2_cli_interface() {
         {"yue2.ar_decode_graph_arena_mb", "int", "AR one-token decode graph arena size in MiB.", false, "1536", "1"},
         {"yue2.nar_graph_arena_mb", "int", "NAR acoustic flow graph arena size in MiB.", false, "6144", "1"},
         {"yue2.vae_graph_arena_mb", "int", "VAE decode graph arena size in MiB.", false, "1536", "1"},
-        {"yue2.attention", "auto|flash|eager", "NAR acoustic-flow attention lowering; auto uses flash except on CUDA sm70 (no kernel) and Intel Vulkan (eager measured faster).", false, "auto"},
+        {"yue2.attention", "auto|flash|eager", "AR + NAR attention lowering; auto uses flash except on CUDA sm70/sm75 (no MMA kernel, eager fallback) and Intel Vulkan (eager measured faster).", false, "auto"},
         {"yue2.attention_tile_rows", "int", "Query rows per tile in the eager NAR attention; 0 keeps a tile's score matrix under 3 GiB.", false, "0", "0"},
     };
     return out;
@@ -220,19 +220,20 @@ Yue2Session::Yue2Session(
     if (task_.task != runtime::VoiceTaskKind::AudioGeneration || task_.mode != runtime::RunMode::Offline) {
         throw std::runtime_error("Yue2 supports only offline gen/music");
     }
-    // 显卡门控:YuE2 的 AR/MoT 图依赖 flash-attention MMA 内核(ggml-cuda 仅
-    // 为 cc >= 800 实例化),Volta/Turing(sm_70/75)会在图启动时以 CUDA
-    // "no device code compatible with CUDA arch 7xx" 崩溃进程。这里在加载期
-    // 给出明确报错而不是崩溃(2026-09-27;AR 侧无 eager 降级,不能用
-    // resolve_flash_attention 的 auto-eager 兜底)。
+    // 显卡检查:YuE2 的 AR/semantic 图默认走 flash-attention MMA 内核(ggml-cuda
+    // 仅为 cc >= 800 实例化),Volta/Turing(sm_70/75)会在图启动时以 CUDA
+    // "no device code compatible with CUDA arch 7xx" 崩溃进程。AR 与 NAR 图现在
+    // 都接了 eager(repeat-KV + matmul/softmax)降级:auto/eager 在 sm < 800 上
+    // 自动走 eager,只有显式要求 flash 时才在加载期报错(2026-09-27)。
+    const auto attention_preference = attention_preference_from_options(options);
     if (execution_context().backend_type() == core::BackendType::Cuda) {
         const int cc = core::cuda_device_compute_capability(execution_context().backend());
-        if (cc > 0 && cc < 800) {
+        if (cc > 0 && cc < 800 && attention_preference == core::AttentionPreference::Flash) {
             throw std::runtime_error(
-                "YuE2 requires CUDA flash-attention MMA kernels (compute capability >= 8.0, "
-                "Ampere or newer); this device is sm_" + std::to_string(cc / 100) + "." +
+                "YuE2 CUDA flash-attention MMA kernels require compute capability >= 8.0 "
+                "(Ampere or newer); this device is sm_" + std::to_string(cc / 100) + "." +
                 std::to_string((cc / 10) % 10) +
-                ". Use a newer GPU or run with --backend cpu (slow).");
+                ". Use yue2.attention=auto (eager fallback on this GPU) or a newer device.");
         }
     }
     pipeline_ = std::make_unique<Yue2PipelineRuntime>(
@@ -246,7 +247,7 @@ Yue2Session::Yue2Session(
         runtime::parse_size_mb_option(options.options, {"yue2.ar_decode_graph_arena_mb"}, 1536ull * 1024ull * 1024ull),
         runtime::parse_size_mb_option(options.options, {"yue2.nar_graph_arena_mb"}, 6144ull * 1024ull * 1024ull),
         runtime::parse_size_mb_option(options.options, {"yue2.vae_graph_arena_mb"}, 1536ull * 1024ull * 1024ull),
-        attention_preference_from_options(options),
+        attention_preference,
         runtime::parse_i64_option(options.options, {"yue2.attention_tile_rows"}).value_or(0));
 }
 

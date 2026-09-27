@@ -141,6 +141,7 @@ engine::modules::QwenCausalDecodeRuntimeConfig make_runtime_config(
     core::BackendType backend_type,
     size_t prefill_graph_arena_bytes,
     size_t decode_graph_arena_bytes,
+    bool allow_flash_attention,
     int64_t logits_size = 0) {
     engine::modules::QwenCausalDecodeRuntimeConfig out;
     out.trace_name = "yue2.ar";
@@ -156,8 +157,15 @@ engine::modules::QwenCausalDecodeRuntimeConfig make_runtime_config(
     out.decoder.stack.rope_theta = config.rope_theta;
     out.decoder.stack.rope_type = GGML_ROPE_TYPE_NEOX;
     out.decoder.stack.use_qk_norm = true;
-    out.decoder.stack.runtime.attention.prefill_mode = engine::modules::QwenDecoderAttentionMode::FlashGroupedViewKV;
-    out.decoder.stack.runtime.attention.static_mode = engine::modules::QwenDecoderAttentionMode::FlashGroupedViewKV;
+    // Eager (repeat-KV + matmul/softmax) graph for GPUs without flash-attention
+    // device code (e.g. CUDA sm70/sm75, where the MMA kernels are missing and
+    // large-shape launches die with "no device code compatible with CUDA arch").
+    out.decoder.stack.runtime.attention.allow_flash_attention = allow_flash_attention;
+    const auto attention_mode = allow_flash_attention
+        ? engine::modules::QwenDecoderAttentionMode::FlashGroupedViewKV
+        : engine::modules::QwenDecoderAttentionMode::ManualRepeat;
+    out.decoder.stack.runtime.attention.prefill_mode = attention_mode;
+    out.decoder.stack.runtime.attention.static_mode = attention_mode;
     out.decoder.stack.runtime.static_cache.update_mode = engine::modules::QwenDecoderStaticCacheUpdateMode::DirectSetRows;
     out.decoder.stack.runtime.static_cache.set_rows_mode =
         engine::modules::QwenDecoderStaticCacheSetRowsMode::BackendViewOptimized;
@@ -460,7 +468,8 @@ struct Yue2ArRuntime::Impl {
         assets::TensorStorageType weight_type,
         size_t weight_context_bytes,
         size_t prefill_graph_arena_bytes,
-        size_t decode_graph_arena_bytes)
+        size_t decode_graph_arena_bytes,
+        bool allow_flash_attention)
         : execution(execution),
           assets(std::move(assets)),
           weight_type(weight_type) {
@@ -480,18 +489,21 @@ struct Yue2ArRuntime::Impl {
             config,
             execution.backend_type(),
             prefill_graph_arena_bytes,
-            decode_graph_arena_bytes);
+            decode_graph_arena_bytes,
+            allow_flash_attention);
         abc_runtime_config = make_runtime_config(
             config,
             execution.backend_type(),
             prefill_graph_arena_bytes,
             decode_graph_arena_bytes,
+            allow_flash_attention,
             kAbcEndToken + 1);
         semantic_runtime_config = make_runtime_config(
             config,
             execution.backend_type(),
             prefill_graph_arena_bytes,
             decode_graph_arena_bytes,
+            allow_flash_attention,
             kCodecSize + 1);
     }
 
@@ -972,14 +984,16 @@ Yue2ArRuntime::Yue2ArRuntime(
     assets::TensorStorageType weight_type,
     size_t weight_context_bytes,
     size_t prefill_graph_arena_bytes,
-    size_t decode_graph_arena_bytes)
+    size_t decode_graph_arena_bytes,
+    bool allow_flash_attention)
     : impl_(std::make_unique<Impl>(
           execution,
           std::move(assets),
           weight_type,
           weight_context_bytes,
           prefill_graph_arena_bytes,
-          decode_graph_arena_bytes)) {}
+          decode_graph_arena_bytes,
+          allow_flash_attention)) {}
 
 Yue2ArRuntime::~Yue2ArRuntime() = default;
 

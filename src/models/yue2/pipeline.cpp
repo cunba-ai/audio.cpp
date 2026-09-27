@@ -424,7 +424,8 @@ private:
             model_weight_type,
             model_weight_context_bytes,
             ar_prefill_graph_arena_bytes,
-            ar_decode_graph_arena_bytes);
+            ar_decode_graph_arena_bytes,
+            allow_flash_attention);
         engine::debug::timing_log_scalar("yue2.ar.init_ms", engine::debug::elapsed_ms(start));
     }
 

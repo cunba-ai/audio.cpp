@@ -188,6 +188,35 @@ static __dpct_inline__ T op_trunc(T x) {
     return sycl::trunc(x);
 }
 
+template<typename T>
+static __dpct_inline__ T op_expm1(T x) {
+    const float xf = (float) x;
+    return (T) sycl::expm1(xf);
+}
+
+// Round f32 to bf16 precision (round-to-nearest-even) and back, mirroring
+// the CPU op bf16_to_f32(f32_to_bf16(x)) without needing the bf16 type.
+template<typename T>
+static __dpct_inline__ T op_round_bf16(T x) {
+    const float xf = (float) x;
+    uint32_t u = sycl::bit_cast<uint32_t>(xf);
+    // Round the dropped low half away: add 0x7FFF + lsb of the kept half (RNE).
+    u += 0x7FFFu + ((u >> 16) & 1u);
+    // Keep the top 16 bits (bf16 payload) and expand back to f32.
+    u &= 0xFFFF0000u;
+    return (T) sycl::bit_cast<float>(u);
+}
+
+template<typename T>
+static __dpct_inline__ T op_xielu(T x, float alpha_n, float alpha_p, float beta, float eps) {
+    const float xi = (float) x;
+    const float gate_pos = (xi > 0.0f) ? 1.0f : 0.0f;
+    const float y_pos = alpha_p * xi * xi + beta * xi;
+    const float min_v_eps = sycl::fmin(xi, eps);
+    const float y_neg = (sycl::expm1(min_v_eps) - xi) * alpha_n + beta * xi;
+    return (T) (gate_pos * y_pos + (1.0f - gate_pos) * y_neg);
+}
+
 template<typename T, typename F>
 static void unary_op_generic_kernel(
         const T * x,
@@ -772,6 +801,74 @@ static inline void ggml_sycl_op_trunc(ggml_backend_sycl_context & ctx, ggml_tens
         });
 }
 
+static inline void ggml_sycl_op_expm1(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+    ggml_sycl_detail::ggml_sycl_op_unary(ctx, dst, [](auto x) {
+        return op_expm1(x);
+    });
+}
+
+// round-to-bf16: any of f32/f16/bf16 in, always f32 out (mirrors the CUDA
+// round_bf16_kernel family). Requires a contiguous src0.
+template <typename src_t>
+static void round_bf16_kernel(const src_t * x, float * dst, const int64_t k, const sycl::nd_item<1> & item_ct1) {
+    SYCL_GLOBAL_ID_LOOP(k, item_ct1) {
+        dst[i] = op_round_bf16((float) x[i]);
+    }
+}
+
+static inline void ggml_sycl_op_round_bf16(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+    const ggml_tensor * src0 = dst->src[0];
+
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(ggml_is_contiguous(src0) && ggml_is_contiguous(dst));
+
+    dpct::queue_ptr stream = ctx.stream();
+    SYCL_CHECK(ggml_sycl_set_device(ctx.device));
+
+    const int64_t k           = ggml_nelements(src0);
+    const int     num_blocks  = ceil_div(k, 256);
+    float *       dst_d       = (float *) dst->data;
+
+    switch (src0->type) {
+        case GGML_TYPE_F32:
+            stream->parallel_for(
+                sycl::nd_range<1>(sycl::range<1>(num_blocks) * sycl::range<1>(256), sycl::range<1>(256)),
+                [=](sycl::nd_item<1> item_ct1) {
+                    round_bf16_kernel((const float *) src0->data, dst_d, k, item_ct1);
+                });
+            break;
+        case GGML_TYPE_F16:
+            stream->parallel_for(
+                sycl::nd_range<1>(sycl::range<1>(num_blocks) * sycl::range<1>(256), sycl::range<1>(256)),
+                [=](sycl::nd_item<1> item_ct1) {
+                    round_bf16_kernel((const sycl::half *) src0->data, dst_d, k, item_ct1);
+                });
+            break;
+#ifdef GGML_SYCL_HAS_BF16
+        case GGML_TYPE_BF16:
+            stream->parallel_for(
+                sycl::nd_range<1>(sycl::range<1>(num_blocks) * sycl::range<1>(256), sycl::range<1>(256)),
+                [=](sycl::nd_item<1> item_ct1) {
+                    round_bf16_kernel((const sycl::ext::oneapi::bfloat16 *) src0->data, dst_d, k, item_ct1);
+                });
+            break;
+#endif
+        default:
+            GGML_ABORT("round_bf16: unsupported src type");
+    }
+}
+
+static inline void ggml_sycl_op_xielu(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+    const float alpha_n = ggml_get_op_params_f32(dst, 1);
+    const float alpha_p = ggml_get_op_params_f32(dst, 2);
+    const float beta    = ggml_get_op_params_f32(dst, 3);
+    const float eps     = ggml_get_op_params_f32(dst, 4);
+
+    ggml_sycl_detail::ggml_sycl_op_unary(ctx, dst, [alpha_n, alpha_p, beta, eps](auto x) {
+        return op_xielu(x, alpha_n, alpha_p, beta, eps);
+    });
+}
+
 static inline void ggml_sycl_op_acc(ggml_backend_sycl_context & ctx, ggml_tensor *dst) {
     const ggml_tensor * src0 = dst->src[0];
     const ggml_tensor * src1 = dst->src[1];
@@ -1121,4 +1218,19 @@ void ggml_sycl_round(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
 void ggml_sycl_trunc(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
     scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);
     ggml_sycl_op_trunc(ctx, dst);
+}
+
+void ggml_sycl_expm1(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);
+    ggml_sycl_op_expm1(ctx, dst);
+}
+
+void ggml_sycl_round_bf16(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);
+    ggml_sycl_op_round_bf16(ctx, dst);
+}
+
+void ggml_sycl_xielu(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);
+    ggml_sycl_op_xielu(ctx, dst);
 }

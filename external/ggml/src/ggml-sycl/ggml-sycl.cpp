@@ -47,6 +47,7 @@
 #include "ggml-sycl/add-id.hpp"
 #include "ggml-sycl/backend.hpp"
 #include "ggml-sycl/common.hpp"
+#include "ggml-sycl/conv2d-transpose.hpp"
 #include "ggml-sycl/element_wise.hpp"
 #include "ggml-sycl/gemm.hpp"
 #include "ggml-sycl/getrows.hpp"
@@ -4395,6 +4396,15 @@ static bool ggml_sycl_compute_forward(ggml_backend_sycl_context & ctx, struct gg
                 case GGML_UNARY_OP_TRUNC:
                     ggml_sycl_trunc(ctx, dst);
                     break;
+                case GGML_UNARY_OP_EXPM1:
+                    ggml_sycl_expm1(ctx, dst);
+                    break;
+                case GGML_UNARY_OP_XIELU:
+                    ggml_sycl_xielu(ctx, dst);
+                    break;
+                case GGML_UNARY_OP_ROUND_BF16:
+                    ggml_sycl_round_bf16(ctx, dst);
+                    break;
                 default:
                     return false;
             }
@@ -4523,6 +4533,9 @@ static bool ggml_sycl_compute_forward(ggml_backend_sycl_context & ctx, struct gg
             break;
         case GGML_OP_IM2COL_3D:
             ggml_sycl_im2col_3d(ctx, dst);
+            break;
+        case GGML_OP_CONV_TRANSPOSE_2D:
+            ggml_sycl_op_conv2d_transpose(ctx, dst);
             break;
         case GGML_OP_POOL_2D:
             ggml_sycl_pool2d(ctx, dst);
@@ -4751,6 +4764,94 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
             GGML_LOG_ERROR("%s: error: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
         }
         GGML_ASSERT(ok);
+
+        // Debug knob (GGML_SYCL_SYNCEVERY=n): force a host wait every n ops.
+        // Diagnoses Level-Zero queue-depth exhaustion on long unsynchronized
+        // runs (UR_RESULT_ERROR_OUT_OF_RESOURCES after ~500k enqueues on the
+        // B50 driver).
+        static int syncevery = -2;
+        if (syncevery == -2) {
+            syncevery = getenv("GGML_SYCL_SYNCEVERY") ? atoi(getenv("GGML_SYCL_SYNCEVERY")) : 0;
+        }
+        if (syncevery > 0 && ((i + 1) % syncevery) == 0) {
+            const queue_ptr sync_stream = sycl_ctx->stream(sycl_ctx->device, 0);
+            SYCL_CHECK(CHECK_TRY_ERROR((sync_stream)->wait()));
+        }
+
+        // Debug-only NaN probe (env GGML_SYCL_NANCHECK=1): after each node,
+        // download dst and report the first op whose output contains non-finite
+        // values. Costly; for debugging only.
+        static int nancheck_enabled = -1;
+        if (nancheck_enabled < 0) {
+            nancheck_enabled = getenv("GGML_SYCL_NANCHECK") ? atoi(getenv("GGML_SYCL_NANCHECK")) : 0;
+        }
+        if (nancheck_enabled && ggml_nbytes(node) > 0 &&
+            (node->type == GGML_TYPE_F32 || node->type == GGML_TYPE_F16)) {
+            const int64_t n = ggml_nelements(node);
+            if (n > 0 && n <= (1 << 28)) {
+                std::vector<char> host(ggml_nbytes(node));
+                // use the backend buffer interface through the node's buffer
+                if (node->buffer && node->buffer->iface.get_tensor) {
+                    node->buffer->iface.get_tensor(node->buffer, node, host.data(), 0, ggml_nbytes(node));
+                    int64_t bad = -1;
+                    if (node->type == GGML_TYPE_F32) {
+                        const float * p = (const float *) host.data();
+                        for (int64_t i = 0; i < n; i++) {
+                            if (!std::isfinite(p[i])) { bad = i; break; }
+                        }
+                    } else {
+                        const ggml_fp16_t * p = (const ggml_fp16_t *) host.data();
+                        for (int64_t i = 0; i < n; i++) {
+                            float v = GGML_FP16_TO_FP32(p[i]);
+                            if (!std::isfinite(v)) { bad = i; break; }
+                        }
+                    }
+                    if (bad >= 0) {
+                        GGML_LOG_ERROR("[nancheck] node %d '%s' op=%s type=%s first_nonfinite@%lld data=%p buf=%p off=%zu\n",
+                                       i, node->name, ggml_op_name(node->op), ggml_type_name(node->type), (long long) bad,
+                                       node->data, (void *) node->buffer, node->view_src ? node->view_offs : 0);
+                        for (int s = 0; s < 2; s++) {
+                            ggml_tensor * sp = node->src[s];
+                            if (sp) {
+                                GGML_LOG_ERROR("[nancheck]   src%d '%s' op=%s data=%p buf=%p off=%zu\n", s, sp->name,
+                                               ggml_op_name(sp->op), sp->data, (void *) sp->buffer, sp->view_src ? sp->view_offs : 0);
+                            }
+                        }
+                        // also profile src0 if it is a finite-scannable f32/f16
+                        for (int s = 0; s < 1; s++) {
+                            ggml_tensor * sp = node->src[s];
+                            if (sp && (sp->type == GGML_TYPE_F32 || sp->type == GGML_TYPE_F16)) {
+                                int64_t sn = ggml_nelements(sp);
+                                if (sn > 0 && sn <= (1 << 28) && sp->buffer && sp->buffer->iface.get_tensor) {
+                                    std::vector<char> shost(ggml_nbytes(sp));
+                                    sp->buffer->iface.get_tensor(sp->buffer, sp, shost.data(), 0, ggml_nbytes(sp));
+                                    int64_t sbad = 0; double smin = 1e300, smax = -1e300;
+                                    if (sp->type == GGML_TYPE_F32) {
+                                        const float * p = (const float *) shost.data();
+                                        for (int64_t k = 0; k < sn; k++) {
+                                            if (!std::isfinite(p[k])) { sbad++; continue; }
+                                            if (p[k] < smin) smin = p[k];
+                                            if (p[k] > smax) smax = p[k];
+                                        }
+                                    } else {
+                                        const ggml_fp16_t * p = (const ggml_fp16_t *) shost.data();
+                                        for (int64_t k = 0; k < sn; k++) {
+                                            float v = GGML_FP16_TO_FP32(p[k]);
+                                            if (!std::isfinite(v)) { sbad++; continue; }
+                                            if (v < smin) smin = v;
+                                            if (v > smax) smax = v;
+                                        }
+                                    }
+                                    GGML_LOG_ERROR("[nancheck]  + src%d '%s' type=%s n=%lld nonfinite=%lld min=%g max=%g\n",
+                                                   s, sp->name, ggml_type_name(sp->type), (long long) sn,
+                                                   (long long) sbad, smin, smax);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -5029,6 +5130,21 @@ static bool ggml_backend_sycl_device_supports_op(ggml_backend_dev_t dev, const g
 #else
                     return ggml_is_contiguous(op->src[0]) && (op->src[0]->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32) && (op->type == op->src[0]->type);
 #endif
+                case GGML_UNARY_OP_EXPM1:
+                case GGML_UNARY_OP_XIELU:
+#if defined (GGML_SYCL_F16)
+                    return ggml_is_contiguous(op->src[0]) && (op->type == op->src[0]->type) &&
+                           (op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_F16);
+#else
+                    return ggml_is_contiguous(op->src[0]) && (op->type == op->src[0]->type) &&
+                           op->type == GGML_TYPE_F32;
+#endif
+                case GGML_UNARY_OP_ROUND_BF16:
+                    // f32/f16/bf16 src (contiguous), contiguous f32 dst.
+                    return (op->src[0]->type == GGML_TYPE_F32 || op->src[0]->type == GGML_TYPE_F16 ||
+                            op->src[0]->type == GGML_TYPE_BF16) &&
+                           op->type == GGML_TYPE_F32 && ggml_is_contiguous(op) &&
+                           ggml_is_contiguous(op->src[0]);
                 default:
                     return false;
             }
@@ -5176,6 +5292,23 @@ static bool ggml_backend_sycl_device_supports_op(ggml_backend_dev_t dev, const g
                 if(src0_type == GGML_TYPE_Q4_1 && src1_type == GGML_TYPE_Q4_1) {
                     return true;
                 }
+#ifdef GGML_SYCL_HAS_BF16
+                if (src0_type == GGML_TYPE_F32 && src1_type == GGML_TYPE_BF16) {
+                    return true;
+                }
+                if (src0_type == GGML_TYPE_BF16 && src1_type == GGML_TYPE_F32) {
+                    return true;
+                }
+                if (src0_type == GGML_TYPE_BF16 && src1_type == GGML_TYPE_BF16) {
+                    return true;
+                }
+                if (src0_type == GGML_TYPE_F16 && src1_type == GGML_TYPE_BF16) {
+                    return true;
+                }
+                if (src0_type == GGML_TYPE_BF16 && src1_type == GGML_TYPE_F16) {
+                    return true;
+                }
+#endif
                 return false;
             }
         case GGML_OP_REPEAT_BACK:
@@ -5245,6 +5378,7 @@ static bool ggml_backend_sycl_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_IM2COL:
         case GGML_OP_IM2COL_3D:
         case GGML_OP_UPSCALE:
+        case GGML_OP_CONV_TRANSPOSE_2D:
             return true;
         case GGML_OP_SUM:
         case GGML_OP_SUM_ROWS:

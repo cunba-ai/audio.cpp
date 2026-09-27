@@ -105,9 +105,6 @@ static void soft_max_f32(const float *         x,
     max_val = warp_reduce_max<WARP_SIZE>(max_val);
 
     if (block_size > WARP_SIZE) {
-        if (warp_id == 0) {
-            buf_iw[lane_id] = -INFINITY;
-        }
         item_ct1.barrier();
 
         if (lane_id == 0) {
@@ -115,7 +112,10 @@ static void soft_max_f32(const float *         x,
         }
         item_ct1.barrier();
 
-        max_val = buf_iw[lane_id];
+        max_val = -INFINITY;
+        for (int i = lane_id; i < nwarps; i += WARP_SIZE) {
+            max_val = sycl::max(max_val, buf_iw[i]);
+        }
         max_val = warp_reduce_max<WARP_SIZE>(max_val);
     }
     float tmp = 0.0f; // partial sum
@@ -128,7 +128,7 @@ static void soft_max_f32(const float *         x,
             break;
         }
 
-        const float val = sycl::native::exp(vals[col] - max_val);
+        const float val = sycl::native::exp(sycl::max(vals[col] - max_val, -80.0f));
         tmp += val;
         vals[col] = val;
     }
@@ -156,7 +156,7 @@ static void soft_max_f32(const float *         x,
         tmp = warp_reduce_sum<WARP_SIZE>(tmp);
     }
     if (sinks) {
-        tmp += sycl::native::exp(sinks[i02] - max_val);
+        tmp += sycl::native::exp(sycl::max(sinks[i02] - max_val, -80.0f));
     }
     const float inv_sum = 1.0f / tmp;
 
@@ -290,7 +290,8 @@ static void soft_max_f32_sycl(const float *x, const T *mask,
 
             cgh.parallel_for(
                 sycl::nd_range<3>(block_nums * block_dims, block_dims),
-                [=](sycl::nd_item<3> item_ct1) {
+                [=](sycl::nd_item<3> item_ct1)
+                    [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
                     soft_max_f32<false, 0, 0>(
                         x, mask, sinks, dst, params,
                         dpct_local_acc_ct1

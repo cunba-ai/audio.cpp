@@ -162,7 +162,6 @@ RoformerSession::RoformerSession(
     std::fill(last_chunk_window_.end() - fade_size_, last_chunk_window_.end(), 1.0f);
     only_chunk_window_ = first_chunk_window_;
     std::fill(only_chunk_window_.end() - fade_size_, only_chunk_window_.end(), 1.0f);
-    chunk_planar_work_.resize(static_cast<size_t>(config.channels * chunk_size_));
     assets_->tensor_source->release_storage();
 }
 
@@ -276,22 +275,23 @@ runtime::TaskResult RoformerSession::run(const runtime::TaskRequest & request) {
         chunk_size_ / 2 + 2,
     };
     const auto chunk_loop_start = Clock::now();
-    const auto planned_chunks = engine::audio::plan_audio_chunks(total_length, chunk_spec);
-    const int64_t progress_total = planned_chunks.size() <= 1 ? 1 : static_cast<int64_t>(planned_chunks.size());
+    const auto chunk_plan = engine::audio::plan_audio_chunks(total_length, chunk_spec);
+    const int64_t progress_total = chunk_plan.size() <= 1 ? 1 : static_cast<int64_t>(chunk_plan.size());
     emit_progress("roformer", 0, progress_total);
-    for (size_t chunk_index = 0; chunk_index < planned_chunks.size(); ++chunk_index) {
-        const auto & chunk = planned_chunks[chunk_index];
+    runtime_->process_chunks(chunk_plan.size(), [&](size_t index, std::vector<float> & buffer) {
+        const auto & chunk = chunk_plan[index];
         engine::audio::copy_planar_chunk(
-            chunk_planar_work_,
+            buffer,
             planar,
             audio.channels,
             total_length,
             chunk,
             chunk_spec);
-        const auto & vocals_planar = runtime_->separate_chunk(chunk_planar_work_);
+    }, [&](size_t index, const std::vector<float> & vocals_planar) {
+        const auto & chunk = chunk_plan[index];
         const bool first_chunk = chunk.output_start_sample == 0;
         const bool last_chunk = chunk.output_start_sample + chunk_size_ >= total_length;
-        const auto & chunk_window = planned_chunks.size() == 1
+        const auto & chunk_window = chunk_plan.size() == 1
             ? only_chunk_window_
             : (first_chunk
                    ? first_chunk_window_
@@ -305,9 +305,9 @@ runtime::TaskResult RoformerSession::run(const runtime::TaskRequest & request) {
             chunk,
             chunk_window,
             engine::audio::AudioChunkCounterMode::PerLane);
-        emit_progress("roformer", static_cast<int64_t>(chunk_index + 1), progress_total);
-    }
-    if (planned_chunks.empty()) {
+        emit_progress("roformer", static_cast<int64_t>(index + 1), progress_total);
+    });
+    if (chunk_plan.empty()) {
         emit_progress("roformer", 1, 1);
     }
     engine::debug::timing_log_scalar(

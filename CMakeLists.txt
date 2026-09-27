@@ -518,6 +518,7 @@ add_library(engine_core OBJECT
     src/framework/text/chinese_variant.cpp
     src/framework/text/chunking.cpp
     src/framework/text/subtitle.cpp
+    src/framework/text/moss_tts_normalization.cpp
     src/framework/text/text_normalization.cpp
     src/framework/text/unicode_normalization.cpp
     src/framework/io/yaml.cpp
@@ -525,6 +526,11 @@ add_library(engine_core OBJECT
     src/framework/io/safetensors.cpp
     src/framework/debug/trace.cpp
     src/framework/debug/profiler.cpp
+    src/framework/decoders/moss_tts_delay/backbone.cpp
+    src/framework/decoders/moss_tts_delay/config.cpp
+    src/framework/decoders/moss_tts_delay/delay_decoder.cpp
+    src/framework/decoders/moss_tts_delay/heads.cpp
+    src/framework/decoders/moss_tts_delay/prompt.cpp
     src/framework/decoders/tdt_decoder_runner.cpp
     src/framework/decoders/tdt_decoder_greedy_customized.cpp
     src/framework/decoders/tdt_decoder_greedy_duration_loop.cpp
@@ -601,6 +607,8 @@ add_library(engine_core OBJECT
     src/framework/audio/deepfilternet2.cpp
     src/framework/audio/dsp.cpp
     src/framework/audio/nemo_mel_frontend.cpp
+    src/framework/audio/mel_spectrogram_frontend.cpp
+    src/framework/audio/reference_audio_frontend.cpp
     src/framework/audio/flashsr.cpp
     src/framework/audio/gtcrn.cpp
     src/framework/audio/istft_graph.cpp
@@ -624,6 +632,7 @@ add_library(engine_core OBJECT
     src/framework/codecs/neural_audio.cpp
     src/framework/codecs/oobleck_audio_vae_runtime.cpp
     src/framework/codecs/redae_codec_runtime.cpp
+    src/framework/codecs/snac_decoder_runtime.cpp
     src/framework/conditioners/clap_audio_conditioner_runtime.cpp
     src/framework/conditioners/cav_mae_st_conditioner_runtime.cpp
     src/framework/conditioners/musicgen_style_conditioner_runtime.cpp
@@ -725,8 +734,11 @@ audiocpp_add_model(demucs
         engine/models/demucs/session.h
     LOADERS
         engine::models::demucs::make_htdemucs_loader
+        engine::models::demucs::make_htdemucs_6stems_loader
     ALIASES
         htdemucs
+        htdemucs_6stems
+        htdemucs_6s
 )
 
 audiocpp_add_model(kokoro_tts
@@ -813,6 +825,18 @@ audiocpp_add_model(outetts
         qwen3_forced_aligner
 )
 
+audiocpp_add_model(maya1
+    SOURCES
+        src/models/maya1/assets.cpp
+        src/models/maya1/generator.cpp
+        src/models/maya1/session.cpp
+        src/models/maya1/tokenizer.cpp
+    INCLUDES
+        engine/models/maya1/session.h
+    LOADERS
+        engine::models::maya1::make_maya1_loader
+)
+
 audiocpp_add_model(parakeet_tdt
     SOURCES
         src/community_models/parakeet_tdt/assets.cpp
@@ -893,6 +917,17 @@ audiocpp_add_model(kitten_tts
 if(MSVC)
     target_compile_options(engine_model_kitten_tts PRIVATE /utf-8)
 endif()
+
+audiocpp_add_model(samsone
+    SOURCES
+        src/models/samsone/assets.cpp
+        src/models/samsone/runtime.cpp
+        src/models/samsone/session.cpp
+    INCLUDES
+        engine/models/samsone/session.h
+    LOADERS
+        engine::models::samsone::make_samsone_loader
+)
 
 audiocpp_add_model(f5_tts
     SOURCES
@@ -1103,12 +1138,33 @@ audiocpp_add_model(moss
         moss_tts_nano
 )
 
+audiocpp_add_model(moss_ttsd
+    SOURCES
+        src/community_models/moss_ttsd/assets.cpp
+        src/community_models/moss_ttsd/prompt.cpp
+        src/community_models/moss_ttsd/session.cpp
+        src/community_models/moss_ttsd/loader.cpp
+    INCLUDES
+        engine/community_models/moss_ttsd/loader.h
+    LOADERS
+        engine::models::moss_ttsd::make_moss_ttsd_loader
+)
+
+audiocpp_add_model(moss_tts_v15
+    SOURCES
+        src/community_models/moss_tts_v15/assets.cpp
+        src/community_models/moss_tts_v15/prompt.cpp
+        src/community_models/moss_tts_v15/session.cpp
+        src/community_models/moss_tts_v15/loader.cpp
+    INCLUDES
+        engine/community_models/moss_tts_v15/loader.h
+    LOADERS
+        engine::models::moss_tts_v15::make_moss_tts_v15_loader
+)
+
 audiocpp_add_model(moss_voicegen
     SOURCES
         src/community_models/moss_voicegen/assets.cpp
-        src/community_models/moss_voicegen/backbone.cpp
-        src/community_models/moss_voicegen/delay_decoder.cpp
-        src/community_models/moss_voicegen/heads.cpp
         src/community_models/moss_voicegen/loader.cpp
         src/community_models/moss_voicegen/session.cpp
         src/community_models/moss_voicegen/tokenizer_text.cpp
@@ -1451,12 +1507,28 @@ audiocpp_add_model(nemotron_asr
         src/models/nemotron_asr/encoder.cpp
         src/models/nemotron_asr/decoder.cpp
         src/models/nemotron_asr/session.cpp
+        src/models/nemotron_asr/speaker_tagging.cpp
+        src/models/nemotron_asr/masked_asr.cpp
         src/models/nemotron_asr/loader.cpp
         src/models/nemotron_asr/weights.cpp
     INCLUDES
         engine/models/nemotron_asr/loader.h
     LOADERS
         engine::models::nemotron_asr::make_nemotron_asr_loader
+)
+
+audiocpp_add_model(gigaam_asr
+    SOURCES
+        src/models/gigaam_asr/assets.cpp
+        src/models/gigaam_asr/conformer.cpp
+        src/models/gigaam_asr/frontend.cpp
+        src/models/gigaam_asr/weights.cpp
+        src/models/gigaam_asr/runtime.cpp
+        src/models/gigaam_asr/session.cpp
+    INCLUDES
+        engine/models/gigaam_asr/model.h
+    LOADERS
+        engine::models::gigaam_asr::make_gigaam_asr_loader
 )
 
 audiocpp_add_model(cohere_asr
@@ -1515,22 +1587,28 @@ audiocpp_add_model(qwen3_tts
         engine::models::qwen3_tts::make_qwen3_tts_loader
 )
 
-audiocpp_add_model(vietneu_tts
+audiocpp_add_model(vieneu_v3_turbo
     SOURCES
-        src/community_models/vietneu_tts/assets.cpp
-        src/community_models/vietneu_tts/tokenizer_text.cpp
-        src/community_models/vietneu_tts/tokenizer_speech_encoder.cpp
-        src/community_models/vietneu_tts/tokenizer_speech_decoder.cpp
-        src/community_models/vietneu_tts/speaker_encoder.cpp
-        src/community_models/vietneu_tts/talker.cpp
-        src/community_models/vietneu_tts/prompt_tts_voice_clone.cpp
-        src/community_models/vietneu_tts/session.cpp
-        src/community_models/vietneu_tts/loader.cpp
+        src/community_models/vieneu_v3_turbo/assets.cpp
+        src/community_models/vieneu_v3_turbo/tokenizer_text.cpp
+        src/community_models/vieneu_v3_turbo/tokenizer_speech_encoder.cpp
+        src/community_models/vieneu_v3_turbo/tokenizer_speech_decoder.cpp
+        src/community_models/vieneu_v3_turbo/speaker_encoder.cpp
+        src/community_models/vieneu_v3_turbo/talker.cpp
+        src/community_models/vieneu_v3_turbo/prompt_tts_voice_clone.cpp
+        src/community_models/vieneu_v3_turbo/session.cpp
+        src/community_models/vieneu_v3_turbo/loader.cpp
+        src/community_models/vieneu_v3_turbo/frame_cap.cpp
+        src/community_models/vieneu_v3_turbo/orchestration.cpp
+        src/community_models/vieneu_v3_turbo/text_frontend.cpp
     INCLUDES
-        engine/community_models/vietneu_tts/loader.h
+        engine/community_models/vieneu_v3_turbo/loader.h
     LOADERS
-        engine::models::vietneu_tts::make_vietneu_tts_loader
+        engine::models::vieneu_v3_turbo::make_vieneu_v3_turbo_loader
 )
+if(MSVC)
+    target_compile_options(engine_model_vieneu_v3_turbo PRIVATE /utf-8)
+endif()
 
 audiocpp_add_model(qwen3_asr
     SOURCES
@@ -1626,6 +1704,23 @@ audiocpp_add_model(sortformer_diar_v2
         engine/community_models/sortformer_diar/assets.h
     LOADERS
         engine::community_models::sortformer_diar::make_sortformer_diar_v2_loader
+)
+
+audiocpp_add_model(nemotron_3_diar
+    SOURCES
+        src/models/nemotron_3_diar/assets.cpp
+        src/models/nemotron_3_diar/frontend.cpp
+        src/models/nemotron_3_diar/streaming.cpp
+        src/models/nemotron_3_diar/encoder.cpp
+        src/models/nemotron_3_diar/session.cpp
+    INCLUDES
+        engine/models/nemotron_3_diar/assets.h
+        engine/models/nemotron_3_diar/frontend.h
+        engine/models/nemotron_3_diar/streaming.h
+        engine/models/nemotron_3_diar/encoder.h
+        engine/models/nemotron_3_diar/session.h
+    LOADERS
+        engine::models::nemotron_3_diar::make_nemotron_3_diar_loader
 )
 
 audiocpp_add_model(stable_audio
@@ -2494,6 +2589,7 @@ if (MSVC)
     # as a second input file (nvcc fatal: "A single input file is required"),
     # breaking the .cu compiles (istft_cuda_runtime.cu, torch_random_cuda_runtime.cu).
     # The .cu files already get /utf-8 via -Xcompiler=/utf-8 in the CUDA flags.
+    target_compile_options(engine_core PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/utf-8>)
     target_compile_options(engine_runtime PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/utf-8>)
 endif()
 
@@ -3086,6 +3182,23 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
         target_link_libraries(nemo_mel_migration_probe PRIVATE engine_runtime ggml)
     endif()
 
+    if(index_tts2 IN_LIST AUDIOCPP_LINKED_MODELS AND
+       confucius4_tts IN_LIST AUDIOCPP_LINKED_MODELS AND
+       seed_vc IN_LIST AUDIOCPP_LINKED_MODELS AND
+       glm_tts IN_LIST AUDIOCPP_LINKED_MODELS AND
+       niagara_asr IN_LIST AUDIOCPP_LINKED_MODELS AND
+       qwen3_tts IN_LIST AUDIOCPP_LINKED_MODELS AND
+       vieneu_v3_turbo IN_LIST AUDIOCPP_LINKED_MODELS AND
+       dramabox IN_LIST AUDIOCPP_LINKED_MODELS AND
+       mira_tts IN_LIST AUDIOCPP_LINKED_MODELS AND
+       chatterbox IN_LIST AUDIOCPP_LINKED_MODELS AND
+       dots_tts IN_LIST AUDIOCPP_LINKED_MODELS AND
+       kroko_asr IN_LIST AUDIOCPP_LINKED_MODELS)
+        add_executable(shared_mel_migration_probe tests/shared_mel_migration/probe.cpp)
+        target_link_libraries(shared_mel_migration_probe PRIVATE engine_runtime ggml)
+        target_include_directories(shared_mel_migration_probe PRIVATE src/models/chatterbox)
+    endif()
+
     set(ENGINE_UNITTEST_ASSET_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests/assets")
 
     function(add_engine_unittest target source)
@@ -3097,11 +3210,49 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
     add_engine_unittest(auk_vae_test tests/auk/vae_test.cpp)
     add_engine_unittest(auk_flow_test tests/auk/flow_test.cpp)
 
+    if (ENGINE_ENABLE_CUDA)
+        add_engine_unittest(cuda_bias_fusion_test tests/unittests/test_cuda_bias_fusion.cpp)
+        add_test(NAME cuda_bias_fusion_test COMMAND cuda_bias_fusion_test)
+        set_tests_properties(cuda_bias_fusion_test PROPERTIES SKIP_RETURN_CODE 77)
+        add_engine_unittest(cuda_rope_rows_test tests/unittests/test_cuda_rope_rows.cpp)
+        add_test(NAME cuda_rope_rows_test COMMAND cuda_rope_rows_test)
+        set_tests_properties(cuda_rope_rows_test PROPERTIES SKIP_RETURN_CODE 77)
+        add_engine_unittest(cuda_head_convert_test tests/unittests/test_cuda_head_convert.cpp)
+        target_link_libraries(cuda_head_convert_test PRIVATE CUDA::cudart_static)
+        add_test(NAME cuda_head_convert_test COMMAND cuda_head_convert_test)
+        set_tests_properties(cuda_head_convert_test PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+
     add_engine_unittest(sortformer_v2_aosc_test tests/community_models/sortformer_diar/sortformer_v2_aosc_test.cpp)
     add_test(NAME sortformer_v2_aosc_test COMMAND sortformer_v2_aosc_test)
 
     add_engine_unittest(sortformer_v2_schedule_test tests/community_models/sortformer_diar/sortformer_v2_schedule_test.cpp)
     add_test(NAME sortformer_v2_schedule_test COMMAND sortformer_v2_schedule_test)
+
+    # Links both families: the test reads the file nemotron_3_diar writes.
+    if(nemotron_asr IN_LIST AUDIOCPP_LINKED_MODELS AND nemotron_3_diar IN_LIST AUDIOCPP_LINKED_MODELS)
+        add_engine_unittest(nemotron_asr_speaker_tagging_test tests/nemotron_asr/speaker_tagging_test.cpp)
+        add_test(NAME nemotron_asr_speaker_tagging_test COMMAND nemotron_asr_speaker_tagging_test)
+    endif()
+
+    if(nemotron_3_diar IN_LIST AUDIOCPP_LINKED_MODELS)
+        add_engine_unittest(nemotron_3_diar_streaming_test tests/nemotron_3_diar/streaming_schedule_test.cpp)
+        add_test(NAME nemotron_3_diar_streaming_test COMMAND nemotron_3_diar_streaming_test)
+    endif()
+
+    # Registered here rather than in the extended block below so it runs in the
+    # linux/mac build workflows (they only set ENGINE_BUILD_TESTS). It is
+    # platform-safe: the Metal timing section skips itself when Metal is absent.
+    add_engine_unittest(conv1d_pertap_fast_path_test tests/unittests/test_conv1d_pertap_fast_path.cpp)
+    add_test(NAME conv1d_pertap_fast_path_test COMMAND conv1d_pertap_fast_path_test)
+
+    if(audio8_tts IN_LIST AUDIOCPP_LINKED_MODELS)
+        # Regression test for the Falcon-H1 host KV cache append (per-head re-stride).
+        add_engine_unittest(audio8_tts_falcon_kv_cache_test tests/unittests/test_audio8_tts_falcon_kv_cache.cpp)
+        target_include_directories(audio8_tts_falcon_kv_cache_test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/community_models/audio8_tts)
+        add_test(NAME audio8_tts_falcon_kv_cache_test COMMAND audio8_tts_falcon_kv_cache_test)
+    endif()
 
     if (ENGINE_BUILD_TESTS)
         if(kokoro_tts IN_LIST AUDIOCPP_LINKED_MODELS)
@@ -3151,6 +3302,10 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
 
         add_engine_unittest(audio_dsp_test tests/unittests/test_audio_dsp.cpp)
         add_test(NAME audio_dsp_test COMMAND audio_dsp_test)
+
+        add_engine_unittest(mel_spectrogram_frontend_test
+            tests/unittests/test_mel_spectrogram_frontend.cpp)
+        add_test(NAME mel_spectrogram_frontend_test COMMAND mel_spectrogram_frontend_test)
 
         if(sheetsage2 IN_LIST AUDIOCPP_LINKED_MODELS)
             add_engine_unittest(sheetsage_audio_frontend_test tests/unittests/test_sheetsage_audio_frontend.cpp)
@@ -3236,6 +3391,18 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
         add_engine_unittest(transformer_kv_ring_test tests/unittests/test_transformer_kv_ring.cpp)
         add_test(NAME transformer_kv_ring_test COMMAND transformer_kv_ring_test)
 
+        add_engine_unittest(kokoro_word_timings_test tests/unittests/test_kokoro_word_timings.cpp)
+        target_include_directories(kokoro_word_timings_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
+        target_link_libraries(kokoro_word_timings_test PRIVATE engine_model_kokoro_tts)
+        add_test(NAME kokoro_word_timings_test COMMAND kokoro_word_timings_test)
+
+        add_engine_unittest(quantize_chunking_test tests/unittests/test_quantize_chunking.cpp)
+        add_test(NAME quantize_chunking_test COMMAND quantize_chunking_test)
+
+        add_engine_unittest(moss_ttsd_speakers_test tests/unittests/test_moss_ttsd_speakers.cpp)
+        target_link_libraries(moss_ttsd_speakers_test PRIVATE engine_model_moss_ttsd)
+        add_test(NAME moss_ttsd_speakers_test COMMAND moss_ttsd_speakers_test)
+
         add_engine_unittest(model_spec_system_test tests/unittests/test_model_spec_system.cpp)
         # So the test can read the specs this repository ships, rather than a
         # copy of them staged somewhere.
@@ -3278,6 +3445,20 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
         add_test(NAME fork_policy_test COMMAND fork_policy_test)
         set_tests_properties(fork_policy_test PROPERTIES LABELS "fork_regression")
     endif()
+
+        add_executable(moss_tts_v15_text_normalization_test
+            tests/moss_tts_v15/text_normalization_test.cpp
+        )
+        target_link_libraries(moss_tts_v15_text_normalization_test PRIVATE engine_runtime ggml)
+        add_test(NAME moss_tts_v15_text_normalization
+            COMMAND moss_tts_v15_text_normalization_test --vectors
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/moss_tts_v15/reference/text_normalization_vectors.json")
+        # Kept separate from the shipped vectors so upstream's set stays as it
+        # ships: these are cases it does not reach, with expectations taken from
+        # the reference implementation rather than written by hand.
+        add_test(NAME moss_tts_v15_text_normalization_regressions
+            COMMAND moss_tts_v15_text_normalization_test --vectors
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/moss_tts_v15/reference/text_normalization_regressions.json")
 
     if (ENGINE_BUILD_EXTENDED_TESTS)
         find_package(Threads REQUIRED)
@@ -3378,6 +3559,10 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
             target_link_libraries(cli_request_options_test PRIVATE OpenMP::OpenMP_CXX)
         endif()
         add_test(NAME cli_request_options_test COMMAND cli_request_options_test)
+
+        add_engine_unittest(file_sink_json_test tests/unittests/test_file_sink_json.cpp)
+        target_sources(file_sink_json_test PRIVATE app/workflow/file_sink.cpp)
+        add_test(NAME file_sink_json_test COMMAND file_sink_json_test)
 
         add_executable(server_multipart_test
             tests/unittests/test_server_multipart.cpp
@@ -3633,6 +3818,49 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
         if (ENGINE_ENABLE_OPENMP)
             target_link_libraries(moss_voicegen_codec_parity PRIVATE OpenMP::OpenMP_CXX)
         endif()
+
+        add_executable(moss_voicegen_codec_encode_parity
+            tests/moss_voicegen/codec_encode_parity.cpp
+        )
+        target_link_libraries(moss_voicegen_codec_encode_parity PRIVATE engine_runtime ggml)
+        if (ENGINE_ENABLE_OPENMP)
+            target_link_libraries(moss_voicegen_codec_encode_parity PRIVATE OpenMP::OpenMP_CXX)
+        endif()
+
+        add_executable(moss_codec_decode_length_sweep
+            tests/moss_tts_delay/codec_decode_length_sweep.cpp
+        )
+        target_link_libraries(moss_codec_decode_length_sweep PRIVATE engine_runtime ggml)
+        if (ENGINE_ENABLE_OPENMP)
+            target_link_libraries(moss_codec_decode_length_sweep PRIVATE OpenMP::OpenMP_CXX)
+        endif()
+
+        add_executable(moss_tts_delay_backbone_parity
+            tests/moss_tts_delay/backbone_parity.cpp
+        )
+        target_link_libraries(moss_tts_delay_backbone_parity PRIVATE engine_runtime ggml)
+        if (ENGINE_ENABLE_OPENMP)
+            target_link_libraries(moss_tts_delay_backbone_parity PRIVATE OpenMP::OpenMP_CXX)
+        endif()
+
+        add_executable(moss_tts_v15_prompt_parity
+            tests/moss_tts_v15/prompt_parity.cpp
+            src/community_models/moss_tts_v15/prompt.cpp
+        )
+        target_link_libraries(moss_tts_v15_prompt_parity PRIVATE engine_runtime ggml)
+        if (ENGINE_ENABLE_OPENMP)
+            target_link_libraries(moss_tts_v15_prompt_parity PRIVATE OpenMP::OpenMP_CXX)
+        endif()
+
+        add_executable(moss_ttsd_prompt_parity
+            tests/moss_ttsd/prompt_parity.cpp
+            src/community_models/moss_ttsd/prompt.cpp
+        )
+        target_link_libraries(moss_ttsd_prompt_parity PRIVATE engine_runtime ggml)
+        if (ENGINE_ENABLE_OPENMP)
+            target_link_libraries(moss_ttsd_prompt_parity PRIVATE OpenMP::OpenMP_CXX)
+        endif()
+
 
         add_executable(moss_voicegen_smoke
             tests/moss_voicegen/voicegen_smoke.cpp

@@ -73,7 +73,7 @@ int main(int argc, char ** argv) {
             w.mlp.down_proj = {tensor({64, 128}), std::nullopt};
             weights.stack.layers.push_back(w);
         }
-        std::array<std::array<engine::core::TensorValue, 4>, 3> import_tensors;
+        std::array<std::array<engine::core::TensorValue, 6>, 3> import_tensors;
         const std::array<ggml_type, 3> import_types{GGML_TYPE_F32, GGML_TYPE_F16, GGML_TYPE_BF16};
         for (size_t type = 0; type < import_types.size(); ++type) {
             for (auto & value : import_tensors[type]) {
@@ -94,7 +94,9 @@ int main(int argc, char ** argv) {
             options.allow_bf16_storage = true;
             engine::runtime::TransformerKVCache legacy(9, 4, {values[0]}, {values[1]}, options);
             engine::runtime::TransformerKVCache device_zero(9, 4, {values[2]}, {values[3]}, options);
-            for (int steps : {5, 2, 0}) {
+            options.lazy_import_scratch = true;
+            engine::runtime::TransformerKVCache lazy(9, 4, {values[4]}, {values[5]}, options);
+            for (int steps : {0, 5, 2, 0, 9}) {
                 engine::runtime::TransformerKVState state;
                 state.current_end = steps;
                 state.layers.resize(1);
@@ -102,6 +104,17 @@ int main(int argc, char ** argv) {
                 state.layers[0].key = pattern(steps * 4, .4f);
                 state.layers[0].value = pattern(steps * 4, -.7f);
                 legacy.import_state(state);
+                lazy.import_state(state);
+                if (lazy.current_end() != legacy.current_end() || lazy.valid_steps() != legacy.valid_steps()) {
+                    throw std::runtime_error("lazy cache import changed positions");
+                }
+                for (size_t kind = 0; kind < 2; ++kind) {
+                    const auto bytes = ggml_nbytes(values[kind].tensor);
+                    std::vector<unsigned char> expected(bytes), actual(bytes);
+                    ggml_backend_tensor_get(values[kind].tensor, expected.data(), 0, bytes);
+                    ggml_backend_tensor_get(values[kind + 4].tensor, actual.data(), 0, bytes);
+                    if (actual != expected) { throw std::runtime_error("lazy cache import changed values or tail"); }
+                }
                 device_zero.import_state(state);
                 device_zero.clear_on_backend();
                 for (size_t kind = 0; kind < 2; ++kind) {
@@ -155,9 +168,36 @@ int main(int argc, char ** argv) {
               grown_reference.logits);
         reference.start_decode_tokens(grown_reference.state, 64);
         close(saver.decode_token(7).logits, reference.decode_token(7).logits);
+        // Kept prefix: a prompt sharing its first 24 rows with the previous
+        // one recomputes only the remainder, including after decode steps
+        // appended rows past the prefix, and across a block-size change.
+        for (const auto & [steps, keep, chunk] : std::array<std::array<int, 3>, 4>{{{45, 24, 8}, {50, 24, 8}, {48, 47, 16}, {49, 40, 5}}}) {
+            auto kept_embeddings = pattern(steps * 64, .3f);
+            std::fill(kept_embeddings.begin() + 24 * 64, kept_embeddings.end(), 0.f);
+            const auto tail = pattern((steps - 24) * 64, -.2f + .01f * steps);
+            std::copy(tail.begin(), tail.end(), kept_embeddings.begin() + 24 * 64);
+            auto kept_reference = reference.prefill_embeddings(kept_embeddings, steps);
+            if (saver.retainable_prefix_steps(steps, 64, chunk, keep) != std::min(keep, steps - 1)) {
+                throw std::runtime_error("resident prefix not retainable");
+            }
+            close(saver.prefill_embeddings_into_cache(kept_embeddings, steps, 64, chunk, keep).logits,
+                  kept_reference.logits);
+            if (saver.decode_current_end() != steps) { throw std::runtime_error("kept prefix cache position mismatch"); }
+            reference.start_decode_tokens(kept_reference.state, 64);
+            for (int token = 0; token < 3; ++token) {
+                close(saver.decode_token(token + 9).logits, reference.decode_token(token + 9).logits);
+            }
+        }
+        // A prefix longer than the resident rows, or a capacity the current
+        // graph cannot hold, falls back to a full prefill.
+        if (saver.retainable_prefix_steps(60, 64, 8, 55) != 0) { throw std::runtime_error("unresident prefix retained"); }
+        if (saver.retainable_prefix_steps(40, 128, 8, 20) != 0) { throw std::runtime_error("prefix retained across capacity growth"); }
+        const auto regrown = pattern(40 * 64, .3f);
+        auto regrown_reference = reference.prefill_embeddings(regrown, 40);
+        close(saver.prefill_embeddings_into_cache(regrown, 40, 128, 8, 20).logits, regrown_reference.logits);
         saver.release_runtime_graphs();
         if (saver.decode_current_end() != 0) { throw std::runtime_error("reset failed"); }
-        std::cout << "PASS chunk boundaries, repeated prefill, decode, reset, capacity, reference parity\n";
+        std::cout << "PASS chunk boundaries, repeated prefill, kept prefix, decode, reset, capacity, reference parity\n";
         return 0;
     } catch (const std::exception & error) {
         std::cerr << error.what() << '\n';

@@ -86,6 +86,10 @@ struct TransformerWeights {
     core::TensorValue input_proj;   // [d_model, input_dim]
     core::TensorValue output_proj;  // [output_dim, d_model]
     std::vector<LayerWeights> layers;
+    // Projections are held in VRAM at their stored type and widened to f32 inside the graph,
+    // so the graph allocator can reuse each widened copy after its last use instead of
+    // keeping every expanded weight resident.
+    bool widen_to_f32 = false;
 };
 
 struct AttentionWindow {
@@ -120,10 +124,11 @@ inline TransformerWeights load_transformer(
     const CodecWeights & codec_weights,
     const TransformerSpec & spec,
     const std::string & stack_prefix,
-    int64_t module_index) {
+    int64_t module_index,
+    assets::TensorStorageType weight_storage_type) {
     const std::string prefix = stack_prefix + "." + std::to_string(module_index);
     const auto load = [&](const std::string & name, std::initializer_list<int64_t> shape) {
-        return store.load_tensor(codec_weights.source_for(name), name, assets::TensorStorageType::F32, shape);
+        return store.load_tensor(codec_weights.source_for(name), name, weight_storage_type, shape);
     };
     const auto load_f32 = [&](const std::string & name, std::initializer_list<int64_t> shape) {
         return store.load_f32_tensor(codec_weights.source_for(name), name, shape);
@@ -131,11 +136,20 @@ inline TransformerWeights load_transformer(
 
     TransformerWeights weights;
     weights.spec = spec;
-    weights.input_proj = load(prefix + ".input_proj.weight", {spec.d_model, spec.input_dim});
-    // Upstream's ProjectedTransformer only creates an output projection when the stage
-    // changes width. v2 ships one on every module; v1 leaves it out wherever
-    // output_dimension already equals d_model, so treat it as optional and fall through to
-    // the identity in that case.
+    // The same rule governs both projections: upstream's ProjectedTransformer only
+    // creates one when the stage changes width. v2 ships both on every module; v1
+    // omits whichever is an identity. That shows up asymmetrically because the two
+    // halves are shaped differently -- v1's decoder stages all widen on input and
+    // only the last narrows on output, while its encoder stages only widen on the
+    // first and narrow on every output -- so handling only the output side happens
+    // to satisfy the decoder and fails on encoder.3 with a missing tensor.
+    const std::string input_proj_name = prefix + ".input_proj.weight";
+    if (codec_weights.has(input_proj_name)) {
+        weights.input_proj = load(input_proj_name, {spec.d_model, spec.input_dim});
+    } else if (spec.input_dim != spec.d_model) {
+        throw std::runtime_error(
+            "MOSS codec stage " + prefix + " changes width but carries no input projection");
+    }
     const std::string output_proj_name = prefix + ".output_proj.weight";
     if (codec_weights.has(output_proj_name)) {
         weights.output_proj = load(output_proj_name, {spec.output_dim, spec.d_model});
@@ -221,6 +235,18 @@ inline core::TensorValue windowed_attention(
     return merged;
 }
 
+// A projection weight as the graph should consume it. Widening f16 or bf16 to f32 is exact, so
+// this computes the same values as loading the weight at f32, without holding the f32 copy.
+inline core::TensorValue projection_weight(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & weight,
+    bool widen_to_f32) {
+    if (!widen_to_f32 || weight.type == GGML_TYPE_F32) {
+        return weight;
+    }
+    return core::wrap_tensor(ggml_cast(ctx.ggml, weight.tensor, GGML_TYPE_F32), weight.shape, GGML_TYPE_F32);
+}
+
 inline core::TensorValue transformer_layer(
     core::ModuleBuildContext & ctx,
     const core::TensorValue & input,
@@ -229,13 +255,14 @@ inline core::TensorValue transformer_layer(
     const core::TensorValue & positions,
     const core::TensorValue & mask,
     const std::vector<AttentionWindow> * windows,
-    int64_t steps) {
+    int64_t steps,
+    bool widen_to_f32) {
     const int64_t dim = spec.d_model / spec.num_heads;
     const modules::LayerNormModule norm({spec.d_model, kLayerNormEps, true, true});
 
     auto normed = norm.build(ctx, input, binding::norm_data(ctx, weights.norm1_w, weights.norm1_b));
     auto qkv = modules::LinearModule(binding::linear_config(spec.d_model, 3 * spec.d_model, false))
-                   .build(ctx, normed, binding::linear_data(ctx, weights.in_proj));
+                   .build(ctx, normed, binding::linear_data(ctx, projection_weight(ctx, weights.in_proj, widen_to_f32)));
 
     auto q = core::ensure_backend_addressable_layout(
         ctx, modules::SliceModule({2, 0, spec.d_model}).build(ctx, qkv));
@@ -267,7 +294,7 @@ inline core::TensorValue transformer_layer(
         core::TensorShape::from_dims({1, steps, spec.d_model}),
     }).build(ctx, context);
     auto attn_out = modules::LinearModule(binding::linear_config(spec.d_model, spec.d_model, false))
-                        .build(ctx, context, binding::linear_data(ctx, weights.out_proj));
+                        .build(ctx, context, binding::linear_data(ctx, projection_weight(ctx, weights.out_proj, widen_to_f32)));
     auto layer_scale1 = modules::ReshapeModule({
         core::TensorShape::from_dims({1, 1, spec.d_model}),
     }).build(ctx, weights.layer_scale1);
@@ -277,10 +304,10 @@ inline core::TensorValue transformer_layer(
 
     auto ff_in = norm.build(ctx, x, binding::norm_data(ctx, weights.norm2_w, weights.norm2_b));
     auto ff = modules::LinearModule(binding::linear_config(spec.d_model, spec.intermediate_size, false))
-                  .build(ctx, ff_in, binding::linear_data(ctx, weights.fc1));
+                  .build(ctx, ff_in, binding::linear_data(ctx, projection_weight(ctx, weights.fc1, widen_to_f32)));
     ff = modules::GeluModule({modules::GeluApproximation::ExactErf}).build(ctx, ff);
     ff = modules::LinearModule(binding::linear_config(spec.intermediate_size, spec.d_model, false))
-             .build(ctx, ff, binding::linear_data(ctx, weights.fc2));
+             .build(ctx, ff, binding::linear_data(ctx, projection_weight(ctx, weights.fc2, widen_to_f32)));
     auto layer_scale2 = modules::ReshapeModule({
         core::TensorShape::from_dims({1, 1, spec.d_model}),
     }).build(ctx, weights.layer_scale2);
@@ -300,16 +327,18 @@ inline core::TensorValue run_transformer(
     int64_t steps,
     const std::vector<AttentionWindow> * windows = nullptr) {
     const auto & spec = weights.spec;
-    auto x = modules::LinearModule(binding::linear_config(spec.input_dim, spec.d_model, false))
-                 .build(ctx, input, binding::linear_data(ctx, weights.input_proj));
+    auto x = weights.input_proj.valid()
+                 ? modules::LinearModule(binding::linear_config(spec.input_dim, spec.d_model, false))
+                       .build(ctx, input, binding::linear_data(ctx, projection_weight(ctx, weights.input_proj, weights.widen_to_f32)))
+                 : input;
     for (const auto & layer : weights.layers) {
-        x = transformer_layer(ctx, x, layer, spec, positions, mask, windows, steps);
+        x = transformer_layer(ctx, x, layer, spec, positions, mask, windows, steps, weights.widen_to_f32);
     }
     if (!weights.output_proj.valid()) {
         return x;
     }
     return modules::LinearModule(binding::linear_config(spec.d_model, spec.output_dim, false))
-        .build(ctx, x, binding::linear_data(ctx, weights.output_proj));
+        .build(ctx, x, binding::linear_data(ctx, projection_weight(ctx, weights.output_proj, weights.widen_to_f32)));
 }
 
 inline std::vector<float> causal_context_mask(int64_t steps, int64_t context) {
@@ -474,6 +503,8 @@ public:
         core::ExecutionContext & execution_context,
         size_t weight_context_bytes,
         size_t graph_arena_bytes,
+        assets::TensorStorageType weight_storage_type,
+        bool widen_to_f32,
         MossAudioTokenizerConfig config = moss_audio_tokenizer_v2_config());
     ~MossAudioTokenizerEncoder();
 
@@ -504,6 +535,7 @@ public:
         core::ExecutionContext & execution_context,
         size_t weight_context_bytes,
         size_t graph_arena_bytes,
+        assets::TensorStorageType weight_storage_type,
         MossAudioTokenizerConfig config = moss_audio_tokenizer_v2_config());
     ~MossAudioTokenizerDecoder();
 
@@ -934,6 +966,8 @@ MossAudioTokenizerEncoder::MossAudioTokenizerEncoder(
     core::ExecutionContext & execution_context,
     size_t weight_context_bytes,
     size_t graph_arena_bytes,
+    assets::TensorStorageType weight_storage_type,
+    bool widen_to_f32,
     MossAudioTokenizerConfig config)
     : impl_(std::make_unique<Impl>()) {
     impl_->backend = execution_context.backend();
@@ -959,7 +993,13 @@ MossAudioTokenizerEncoder::MossAudioTokenizerEncoder(
         const int64_t module_index =
             config.encoder_module_start + static_cast<int64_t>(index) * config.encoder_module_stride;
         impl_->transformers.push_back(cd::load_transformer(
-            *impl_->store, weights, to_encoder_transformer_spec(config.encoder_stages[index]), "encoder", module_index));
+            *impl_->store,
+            weights,
+            to_encoder_transformer_spec(config.encoder_stages[index]),
+            "encoder",
+            module_index,
+            weight_storage_type));
+        impl_->transformers.back().widen_to_f32 = widen_to_f32;
     }
     impl_->store->upload();
 }
@@ -1230,6 +1270,7 @@ MossAudioTokenizerDecoder::MossAudioTokenizerDecoder(
     core::ExecutionContext & execution_context,
     size_t weight_context_bytes,
     size_t graph_arena_bytes,
+    assets::TensorStorageType weight_storage_type,
     MossAudioTokenizerConfig config)
     : impl_(std::make_unique<Impl>()) {
     impl_->backend = execution_context.backend();
@@ -1254,7 +1295,12 @@ MossAudioTokenizerDecoder::MossAudioTokenizerDecoder(
         const int64_t module_index =
             config.decoder_module_start + static_cast<int64_t>(index) * config.decoder_module_stride;
         impl_->transformers.push_back(cd::load_transformer(
-            *impl_->store, weights, to_decoder_transformer_spec(config.decoder_stages[index]), "decoder", module_index));
+            *impl_->store,
+            weights,
+            to_decoder_transformer_spec(config.decoder_stages[index]),
+            "decoder",
+            module_index,
+            weight_storage_type));
     }
     impl_->store->upload();
 }
@@ -1495,11 +1541,22 @@ MossAudioTokenizerConfig moss_audio_tokenizer_nano_config() {
         {768, 384, 256, 4, 2, 1024, 800, 2},
         {768, 192, 256, 4, 4, 1024, 500, 2},
     };
+    // ⚠ CONTEXT IS THE RATE BEFORE THE STAGE TIMES THAT STAGE'S OWN DURATION.
+    // Nano's durations are not uniform -- the checkpoint gives 10, 8, 6 and 4
+    // seconds down the decoder -- and the rate at each transformer is the one
+    // *before* its patch, not after. Getting that wrong made every decoder
+    // context exactly twice what it should be, so the decoder attended over
+    // twice the intended window and drifted from the reference as soon as a
+    // sequence outgrew the real one: 111 dB at 43 frames, 12 dB at 171. See
+    // #663. The encoder list below was already right, which is why only the
+    // decode side was affected.
+    //
+    //   50 Hz x 10 s = 500,  100 x 8 = 800,  200 x 6 = 1200,  400 x 4 = 1600
     config.decoder_stages = {
-        {192, 768, 256, 4, 4, 1024, 1000, 2},
-        {384, 768, 256, 4, 2, 1024, 1600, 2},
-        {384, 768, 256, 4, 2, 1024, 2400, 2},
-        {384, 240, 256, 4, 4, 1024, 3200, 240},
+        {192, 768, 256, 4, 4, 1024, 500, 2},
+        {384, 768, 256, 4, 2, 1024, 800, 2},
+        {384, 768, 256, 4, 2, 1024, 1200, 2},
+        {384, 240, 256, 4, 4, 1024, 1600, 240},
     };
     config.encoder_final_patch = 4;
     config.decoder_initial_patch = 4;
@@ -1551,6 +1608,9 @@ struct MossAudioTokenizerCodecRuntime::Impl {
                 encoder_execution_context(),
                 options.weight_context_bytes,
                 options.encoder_graph_arena_bytes,
+                options.encoder_transformer_weight_storage_type.value_or(
+                    options.transformer_weight_storage_type),
+                options.widen_encoder_transformer_weights_to_f32,
                 config);
         }
         return *encoder;
@@ -1564,6 +1624,7 @@ struct MossAudioTokenizerCodecRuntime::Impl {
                 decode_context,
                 options.weight_context_bytes,
                 options.decoder_graph_arena_bytes,
+                options.transformer_weight_storage_type,
                 config);
         }
         return *decoder;

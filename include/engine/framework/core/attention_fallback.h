@@ -48,4 +48,12 @@ bool resolve_flash_attention(ggml_backend_t backend, int64_t head_dim, Attention
 // path materializes an F16 ggml_repeat must not use it on Vulkan (no kernel).
 bool vulkan_device_is_intel(ggml_backend_t backend);
 
+// CUDA compute capability of the backend's device, in numeric form
+// (major * 100 + minor * 10, e.g. V100 = 700, RTX 4090 = 890). Returns 0 for
+// null / non-GPU / non-CUDA backends and query failures (fail-open). Families
+// whose graphs REQUIRE flash-attention MMA kernels (instantiated only for
+// cc >= 800 in ggml-cuda) and have no eager lowering should gate load with a
+// clear error when 0 < cc < 800 instead of crashing at graph launch.
+int cuda_device_compute_capability(ggml_backend_t backend);
+
 }  // namespace engine::core

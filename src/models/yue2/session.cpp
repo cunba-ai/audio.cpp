@@ -3,6 +3,7 @@
 #include "engine/framework/debug/profiler.h"
 #include "engine/framework/assets/tensor_source.h"
 #include "engine/framework/core/attention_fallback.h"
+#include "engine/framework/core/execution_context.h"
 #include "engine/framework/io/filesystem.h"
 #include "engine/framework/runtime/options.h"
 
@@ -218,6 +219,21 @@ Yue2Session::Yue2Session(
       assets_(select_component_assets(require_assets(std::move(assets)), options.options)) {
     if (task_.task != runtime::VoiceTaskKind::AudioGeneration || task_.mode != runtime::RunMode::Offline) {
         throw std::runtime_error("Yue2 supports only offline gen/music");
+    }
+    // 显卡门控:YuE2 的 AR/MoT 图依赖 flash-attention MMA 内核(ggml-cuda 仅
+    // 为 cc >= 800 实例化),Volta/Turing(sm_70/75)会在图启动时以 CUDA
+    // "no device code compatible with CUDA arch 7xx" 崩溃进程。这里在加载期
+    // 给出明确报错而不是崩溃(2026-09-27;AR 侧无 eager 降级,不能用
+    // resolve_flash_attention 的 auto-eager 兜底)。
+    if (execution_context().backend_type() == core::BackendType::Cuda) {
+        const int cc = core::cuda_device_compute_capability(execution_context().backend());
+        if (cc > 0 && cc < 800) {
+            throw std::runtime_error(
+                "YuE2 requires CUDA flash-attention MMA kernels (compute capability >= 8.0, "
+                "Ampere or newer); this device is sm_" + std::to_string(cc / 100) + "." +
+                std::to_string((cc / 10) % 10) +
+                ". Use a newer GPU or run with --backend cpu (slow).");
+        }
     }
     pipeline_ = std::make_unique<Yue2PipelineRuntime>(
         execution_context(),

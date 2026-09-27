@@ -62,48 +62,56 @@ AttentionPreference parse_preference_value(const std::string & value, const char
 // above 800 (MMA fully instantiated); eager on 700-800, where large shapes
 // select the MMA kernel with no usable device code. Unknown backends and
 // query failures fail OPEN to preserve current behavior.
-bool cuda_device_wants_eager(ggml_backend_t backend) {
+static int cc_probe(ggml_backend_t backend) {
 #ifdef AUDIOCPP_CUDA_DRIVER_PROBE
     if (backend == nullptr) {
-        return false;
+        return 0;
     }
     ggml_backend_dev_t device = ggml_backend_get_device(backend);
     if (device == nullptr) {
-        return false;
+        return 0;
     }
     if (ggml_backend_dev_type(device) != GGML_BACKEND_DEVICE_TYPE_GPU) {
-        return false;
+        return 0;
     }
     const char * name = ggml_backend_dev_name(device);
     if (name == nullptr || std::strncmp(name, "CUDA", 4) != 0) {
-        return false;  // HIP / Vulkan / Metal / CPU: unchanged behavior.
+        return 0;  // HIP / Vulkan / Metal / CPU: not a CUDA device.
     }
     char * end = nullptr;
     const long ordinal = std::strtol(name + 4, &end, 10);
     if (end == name + 4 || ordinal < 0) {
-        return false;
+        return 0;
     }
     kCcProbeCuDevice cu_device = -1;
     if (cuDeviceGet(&cu_device, static_cast<int>(ordinal)) != 0) {
-        return false;
+        return 0;
     }
     int major = 0;
     int minor = 0;
     if (cuDeviceGetAttribute(&major, 75 /* COMPUTE_CAPABILITY_MAJOR */, cu_device) != 0) {
-        return false;
+        return 0;
     }
     if (cuDeviceGetAttribute(&minor, 76 /* COMPUTE_CAPABILITY_MINOR */, cu_device) != 0) {
-        return false;
+        return 0;
     }
-    const int cc = major * 100 + minor * 10;
-    return cc >= 700 && cc < 800;
+    return major * 100 + minor * 10;
 #else
     (void) backend;
-    return false;
+    return 0;
 #endif  // AUDIOCPP_CUDA_DRIVER_PROBE
 }
 
+bool cuda_device_wants_eager(ggml_backend_t backend) {
+    const int cc = cc_probe(backend);
+    return cc >= 700 && cc < 800;
+}
+
 }  // namespace
+
+int cuda_device_compute_capability(ggml_backend_t backend) {
+    return cc_probe(backend);
+}
 
 AttentionPreference parse_attention_preference(const std::string & value, const char * option_name) {
     return parse_preference_value(value, option_name != nullptr ? option_name : "attention");

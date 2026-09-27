@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
+#include <cstdlib>
 #include <regex>
 #include <stdexcept>
 #include <utility>
@@ -105,10 +107,17 @@ std::string normalize_lyrics(const std::string & lyrics) {
         std::string line = lyrics.substr(start, end == std::string::npos ? std::string::npos : end - start);
         std::smatch match;
         if (std::regex_search(line, match, leading_tags)) {
-            line = match.str(1);
-            while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back()))) {
-                line.pop_back();
+            // 保留行首标签序列之后的正文:标签与正文拆成两行。此前实现把整行
+            // 替换成标签(正文被静默丢弃),行内混写 "[Verse] lyrics..." 的输入
+            // 歌词全部丢失,人声退化为无词自由发挥(2026-09-27 修复)。
+            std::string tags = match.str(1);
+            while (!tags.empty() && std::isspace(static_cast<unsigned char>(tags.back()))) {
+                tags.pop_back();
             }
+            std::string rest = line.substr(match.length(1));
+            const size_t rest_begin = rest.find_first_not_of(" \t");
+            rest = rest_begin == std::string::npos ? std::string() : rest.substr(rest_begin);
+            line = rest.empty() ? tags : (tags + "\n" + rest);
         }
         if (!out.empty()) {
             out.push_back('\n');
@@ -175,6 +184,17 @@ MiniMaxMusic3Prompt MiniMaxMusic3PromptBuilder::build(
         kLyricsStart + normalize_lyrics(lyrics) + kLyricsEnd + kImEnd + kAudioStart;
     MiniMaxMusic3Prompt out;
     out.conditional_ids = impl_->tokenizer->encode(text, true);
+    if (std::getenv("AUDIOCPP_DEBUG_TOKENIZE") != nullptr) {
+        // 诊断输出(非 ASCII 歌词条件排查用):规范化文本 + 条件 token 数与前 48 个 id
+        std::fprintf(stderr, "[music3.prompt] normalized prompt (%zu bytes):\n%.400s\n",
+                     text.size(), text.c_str());
+        std::fprintf(stderr, "[music3.prompt] conditional_ids n=%zu, first ids:",
+                     out.conditional_ids.size());
+        for (size_t i = 0; i < out.conditional_ids.size() && i < 48; ++i) {
+            std::fprintf(stderr, " %d", out.conditional_ids[i]);
+        }
+        std::fprintf(stderr, "\n");
+    }
     if (static_cast<int64_t>(out.conditional_ids.size()) > impl_->assets->config.max_prompt_tokens) {
         throw std::runtime_error("MiniMax Music 3 prompt exceeds max_prompt_tokens");
     }

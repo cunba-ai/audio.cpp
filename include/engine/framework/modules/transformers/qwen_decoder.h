@@ -245,6 +245,19 @@ struct QwenDecoderStackOutputs {
     QwenDecoderStackState state;
 };
 
+// Eager (matmul + softmax) SDPA over [batch, heads, steps, dim] tensors with an
+// optional additive F16 attention mask [1, 1, query_steps, kv_steps].
+core::TensorValue attention_from_heads(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & q_heads,
+    const core::TensorValue & k_heads,
+    const core::TensorValue & v_heads,
+    int64_t dim,
+    const std::optional<core::TensorValue> & attention_mask = std::nullopt);
+
+// Repeat GQA KV heads to full query-head count over [batch, kv_heads, steps, dim].
+core::TensorValue repeat_kv_heads(core::ModuleBuildContext & ctx, const core::TensorValue & input, int64_t repeats);
+
 class QwenDecoderStackModule {
 public:
     explicit QwenDecoderStackModule(QwenDecoderStackConfig config);

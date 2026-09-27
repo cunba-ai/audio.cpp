@@ -66,6 +66,8 @@ core::TensorValue reshape_qwen_heads(
         core::TensorShape::from_dims({input.shape.dims[0], input.shape.dims[1], heads, dim}));
 }
 
+}  // namespace
+
 core::TensorValue repeat_kv_heads(core::ModuleBuildContext & ctx, const core::TensorValue & input, int64_t repeats) {
     if (repeats == 1) {
         return input;
@@ -121,6 +123,8 @@ core::TensorValue attention_from_heads(
     auto context = matmul.build(ctx, attn, v_heads);
     return TransposeModule({{0, 2, 1, 3}, context.shape.rank}).build(ctx, context);
 }
+
+namespace {
 
 core::TensorValue attention_from_grouped_query_heads(
     core::ModuleBuildContext & ctx,

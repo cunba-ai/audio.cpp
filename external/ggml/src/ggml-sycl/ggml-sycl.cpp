@@ -4031,7 +4031,9 @@ inline bool ggml_sycl_supports_mmq(enum ggml_type type) {
 
 inline bool ggml_sycl_supports_reorder_mul_mat_sycl(enum ggml_type type) {
     switch (type) {
-        case GGML_TYPE_Q1_0:
+        // Q1_0 deliberately not reorderable: the dequant-to-fp32/fp16 dispatch
+        // in convert.cpp has no reorder-aware Q1_0 reader, so a rewrite would
+        // corrupt any later non-MMVQ consumer of the same tensor.
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q8_0:
             return true;
@@ -4048,7 +4050,6 @@ inline bool ggml_sycl_supports_reorder_mul_mat_sycl(enum ggml_type type) {
 
 inline bool ggml_sycl_supports_reorder_dmmv(enum ggml_type type) {
     switch (type) {
-        case GGML_TYPE_Q1_0:
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q8_0:
         case GGML_TYPE_Q2_K:
@@ -4064,7 +4065,6 @@ inline bool ggml_sycl_supports_reorder_dmmv(enum ggml_type type) {
 
 inline bool ggml_sycl_supports_reorder_mmvq(enum ggml_type type) {
     switch (type) {
-        case GGML_TYPE_Q1_0:
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q8_0:
         case GGML_TYPE_Q2_K:
@@ -4691,6 +4691,11 @@ static bool should_reorder_tensor(ggml_backend_sycl_context& ctx, const ggml_ten
     return g_ggml_sycl_enable_optimize && //allow optimize, controlled by $GGML_SYCL_ENABLE_OPT
            ctx.opt_feature.reorder &&      //allow this device due to good perf, skip the devices with bad perf.
            dst->op == GGML_OP_MUL_MAT &&   //limit to some supported cases of Q4_0, to do for more cases.
+           // never rewrite a tensor that any executed graph has read through GET_ROWS:
+           // the reordered SoA layout is only understood by reorder-aware mul_mat /
+           // dequant kernels, so an in-place rewrite corrupts tied-embedding tables
+           // (embedding shared with the lm_head mul_mat) for later GET_ROWS fetches.
+           ctx.get_rows_sources.find(dst->src[0]->data) == ctx.get_rows_sources.end() &&
            // ne[1] <= 8 so multi-column decode (spec / MTP verify) also bootstraps the reorder;
            // all reorderable types have a _switch_ncols kernel.
            dst->src[1]->ne[1] <= 8 && dst->src[1]->ne[2]==1 && dst->src[1]->ne[3]==1;
@@ -4813,6 +4818,19 @@ static void ggml_sycl_mul_mat(ggml_backend_sycl_context & ctx, const ggml_tensor
 #ifdef SYCL_USE_XMX
     use_mul_mat_q = use_mul_mat_q && (src1->ne[1] <= MMQ_MAX_BATCH_SIZE);
 #endif // SYCL_USE_XMX
+
+    // The batch MMQ kernels read the plain AoS block layout. A tensor already
+    // rewritten in place to the reordered SoA layout by an earlier
+    // decode-shaped mul_mat (ne[1] <= 8) would be misread here — e.g. the
+    // second prefill chunk of a multi-turn conversation running after the
+    // first decode step. Fall back to the dequant (reorder-aware) mul_mat
+    // path for such tensors.
+    if (use_mul_mat_q) {
+        ggml_tensor_extra_gpu * src0_extra = (ggml_tensor_extra_gpu *) src0->extra;
+        if (src0_extra && src0_extra->optimized_feature.reorder) {
+            use_mul_mat_q = false;
+        }
+    }
 
     // When reorder is enabled, both ESIMD, MMVQ and DMMV kernels may be used. For
     // best performance use ESIMD when supported, followed by MMVQ, and finally DMMV.
@@ -6239,6 +6257,70 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
                                     GGML_LOG_ERROR("[nancheck]  + src%d '%s' type=%s n=%lld nonfinite=%lld min=%g max=%g\n",
                                                    s, sp->name, ggml_type_name(sp->type), (long long) sn,
                                                    (long long) sbad, smin, smax);
+                                }
+                            }
+                        }
+                        // GET_ROWS forensics: dump the row indices (src1) and the raw
+                        // src0 bytes of the implicated row, then dequantize on host and
+                        // compare against the actual device output. Distinguishes:
+                        // corrupt src1 index / corrupt src0 upload / kernel bug.
+                        if (node->op == GGML_OP_GET_ROWS && node->src[0] && node->src[1] &&
+                            node->src[1]->type == GGML_TYPE_I32 && node->src[0]->buffer &&
+                            node->src[0]->buffer->iface.get_tensor && node->src[1]->buffer &&
+                            node->src[1]->buffer->iface.get_tensor) {
+                            ggml_tensor * idx = node->src[1];
+                            ggml_tensor * emb = node->src[0];
+                            const int64_t ncols  = node->ne[0];
+                            const int64_t nidx   = ggml_nelements(idx);
+                            const int64_t row    = ncols > 0 ? bad / ncols : 0;
+                            if (nidx > 0 && nidx <= (1 << 22) && ncols > 0) {
+                                std::vector<int32_t> hidx(nidx);
+                                idx->buffer->iface.get_tensor(idx->buffer, idx, hidx.data(), 0, nidx * sizeof(int32_t));
+                                std::string first;
+                                for (int64_t k = 0; k < std::min<int64_t>(nidx, 16); k++) {
+                                    first += std::to_string(hidx[k]) + " ";
+                                }
+                                GGML_LOG_ERROR("[nancheck]  ! getrows idx n=%lld row_of_bad=%lld idx[0..15]=%s\n",
+                                               (long long) nidx, (long long) row, first.c_str());
+                                if (row < nidx) {
+                                    const int32_t sel = hidx[row];
+                                    const int64_t ne01 = emb->ne[1];
+                                    const size_t   nb01 = emb->nb[1];
+                                    GGML_LOG_ERROR("[nancheck]  ! getrows emb type=%s ne0=%lld ne1=%lld nb1=%zu sel(idx[%lld])=%d in_range=%d\n",
+                                                   ggml_type_name(emb->type), (long long) emb->ne[0], (long long) ne01,
+                                                   nb01, (long long) row, sel, sel >= 0 && sel < ne01);
+                                    if (sel >= 0 && sel < ne01 && nb01 > 0 && nb01 <= (1 << 20)) {
+                                        std::vector<char> rowbuf(nb01);
+                                        emb->buffer->iface.get_tensor(emb->buffer, emb, rowbuf.data(),
+                                                                      (size_t) sel * nb01, nb01);
+                                        const int64_t blksz = ggml_blck_size(emb->type);
+                                        const int64_t bbad   = (bad % ncols) / blksz;
+                                        if (emb->type == GGML_TYPE_Q8_0 && blksz == 32 && nb01 % 34 == 0) {
+                                            const int64_t nblk = (int64_t) nb01 / 34;
+                                            for (int64_t b = std::max<int64_t>(0, bbad - 2);
+                                                 b < std::min(nblk, bbad + 3); b++) {
+                                                const ggml_fp16_t d16 = *(const ggml_fp16_t *) (rowbuf.data() + b * 34);
+                                                const float d = GGML_FP16_TO_FP32(d16);
+                                                const int8_t * qs = (const int8_t *) (rowbuf.data() + b * 34 + 2);
+                                                GGML_LOG_ERROR("[nancheck]  ! emb row blk %lld: d=%g(0x%04x) qs[0..7]=%d %d %d %d %d %d %d %d deq[0..3]=%g %g %g %g\n",
+                                                               (long long) b, d, (unsigned) d16,
+                                                               (int) qs[0], (int) qs[1], (int) qs[2], (int) qs[3],
+                                                               (int) qs[4], (int) qs[5], (int) qs[6], (int) qs[7],
+                                                               d * qs[0], d * qs[1], d * qs[2], d * qs[3]);
+                                            }
+                                        }
+                                        if (node->type == GGML_TYPE_F32) {
+                                            const float * out = (const float *) host.data();
+                                            const int64_t base = (bad % ncols) - (bad % ncols) % 32;
+                                            std::string outs;
+                                            for (int64_t k = base; k < std::min<int64_t>(base + 16, ncols); k++) {
+                                                char buf[32];
+                                                snprintf(buf, sizeof(buf), "%g ", out[k]);
+                                                outs += buf;
+                                            }
+                                            GGML_LOG_ERROR("[nancheck]  ! output row vals around bad: %s\n", outs.c_str());
+                                        }
+                                    }
                                 }
                             }
                         }

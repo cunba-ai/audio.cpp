@@ -40,6 +40,24 @@ std::vector<std::pair<std::string, std::string>> shader_fnames;
 // Set when any shader subprocess fails (non-zero exit / stderr / launch failure) so the
 // build is stopped instead of silently producing a broken libggml-vulkan. (issue #24393)
 static std::atomic<bool> compile_failed{false};
+// Set when a compiled shader's SPIR-V turns out empty/unreadable at embed time; checked at
+// the end of main() so the generator exits non-zero instead of emitting declared-but-
+// undefined symbols (undefined reference at link, much later and much less clear).
+static std::atomic<bool> generation_failed{false};
+
+// Spawn-failure helper for execute_command(): throws with the OS-level reason attached so
+// the caller's diagnostics carry what actually went wrong. Windows sites don't restore
+// errno (CRT may not set it for CreatePipe/CreateProcessA), so query GetLastError there;
+// POSIX call sites close descriptors and restore errno before throwing.
+[[noreturn]] static void throw_spawn_failure(const char * what) {
+#ifdef _WIN32
+    const int spawn_errno = (int)GetLastError();
+#else
+    const int spawn_errno = errno;
+#endif
+    throw std::runtime_error(std::string(what) + ": " + std::strerror(spawn_errno));
+}
+
 std::locale c_locale("C");
 
 std::string GLSLC = "glslc";
@@ -473,6 +491,9 @@ void string_to_spv_func(std::string name, std::string in_path, std::string out_p
         shader_fnames.push_back(std::make_pair(name, out_path));
     } catch (const std::exception& e) {
         std::cerr << "Error executing command for " << name << ": " << e.what() << std::endl;
+        // A failure to *start* the compiler is machine-level pressure (EMFILE & co):
+        // back the whole generator off, not just this shader (see note_spawn_pressure()).
+        note_spawn_pressure();
         compile_failed = true;
     }
 }
@@ -1047,6 +1068,20 @@ void process_shaders() {
     string_to_spv("tanh_f32",       "unary.comp",       {{"A_TYPE", "float"},       {"D_TYPE", "float"},     {"OP", "op_tanh"}});
     string_to_spv("sigmoid_f16",    "unary.comp",       {{"A_TYPE", "float16_t"},   {"D_TYPE", "float16_t"}, {"OP", "op_sigmoid"}});
     string_to_spv("sigmoid_f32",    "unary.comp",       {{"A_TYPE", "float"},       {"D_TYPE", "float"},     {"OP", "op_sigmoid"}});
+    // fork: strided variant used by the MUL_MAT+sigmoid fusion path (ggml-vulkan.cpp
+    // pipeline_sigmoid_strided); the 0.25.3 vendoring dropped these registrations while
+    // keeping the .comp files and the C++ references.
+    string_to_spv("sigmoid_strided_f16", "sigmoid_strided.comp", {{"A_TYPE", "float16_t"}, {"D_TYPE", "float16_t"}});
+    string_to_spv("sigmoid_strided_f32", "sigmoid_strided.comp", {{"A_TYPE", "float"},     {"D_TYPE", "float"}});
+    // fork: bf16 activation rounding helper (ggml-vulkan.cpp pipeline_round_bf16[_strided]);
+    // the 0.25.3 vendoring dropped these registrations while keeping the .comp files and
+    // the C++ references (same class as sigmoid_strided above).
+    string_to_spv("round_bf16_f32",  "round_bf16.comp", {{"A_TYPE", "float"},     {"D_TYPE", "float"}});
+    string_to_spv("round_bf16_f16",  "round_bf16.comp", {{"A_TYPE", "float16_t"}, {"D_TYPE", "float"}});
+    string_to_spv("round_bf16_bf16", "round_bf16.comp", {{"A_TYPE", "uint16_t"},  {"D_TYPE", "float"}, {"DATA_A_BF16", "1"}});
+    string_to_spv("round_bf16_strided_f32",  "round_bf16_strided.comp", {{"A_TYPE", "float"},     {"D_TYPE", "float"}});
+    string_to_spv("round_bf16_strided_f16",  "round_bf16_strided.comp", {{"A_TYPE", "float16_t"}, {"D_TYPE", "float"}});
+    string_to_spv("round_bf16_strided_bf16", "round_bf16_strided.comp", {{"A_TYPE", "uint16_t"},  {"D_TYPE", "float"}, {"DATA_A_BF16", "1"}});
     string_to_spv("hardsigmoid_f16","unary.comp",       {{"A_TYPE", "float16_t"},   {"D_TYPE", "float16_t"}, {"OP", "op_hardsigmoid"}});
     string_to_spv("hardsigmoid_f32","unary.comp",       {{"A_TYPE", "float"},       {"D_TYPE", "float"},     {"OP", "op_hardsigmoid"}});
     string_to_spv("hardswish_f16",  "unary.comp",       {{"A_TYPE", "float16_t"},   {"D_TYPE", "float16_t"}, {"OP", "op_hardswish"}});

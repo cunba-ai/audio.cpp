@@ -3289,9 +3289,14 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
 #undef CREATE_UNARY_MUL
 
     // round-to-bf16: f32/f16/bf16 in, always f32 out (index by src type).
-    ggml_vk_create_pipeline(device, device->pipeline_round_bf16[0], "round_bf16_f32", round_bf16_f32_len, round_bf16_f32_data, "main", 2, sizeof(vk_op_push_constants), {512, 1, 1}, {}, 1);
-    ggml_vk_create_pipeline(device, device->pipeline_round_bf16[1], "round_bf16_f16", round_bf16_f16_len, round_bf16_f16_data, "main", 2, sizeof(vk_op_push_constants), {512, 1, 1}, {}, 1);
-    ggml_vk_create_pipeline(device, device->pipeline_round_bf16[2], "round_bf16_bf16", round_bf16_bf16_len, round_bf16_bf16_data, "main", 2, sizeof(vk_op_push_constants), {512, 1, 1}, {}, 1);
+    // fork: non-strided round_bf16 is dispatched via the generic unary path (ggml_vk_unary
+    // passes vk_op_unary_push_constants); the 0.25.3 vendoring kept the small
+    // vk_op_push_constants range from an older dispatch layout, so any contiguous
+    // ROUND_BF16 node tripped the push-constant size assert (yue2 AR graphs).
+    // Widen the declared range to match what dispatch actually pushes (shader only reads p.KX).
+    ggml_vk_create_pipeline(device, device->pipeline_round_bf16[0], "round_bf16_f32", round_bf16_f32_len, round_bf16_f32_data, "main", 2, sizeof(vk_op_unary_push_constants), {512, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_round_bf16[1], "round_bf16_f16", round_bf16_f16_len, round_bf16_f16_data, "main", 2, sizeof(vk_op_unary_push_constants), {512, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_round_bf16[2], "round_bf16_bf16", round_bf16_bf16_len, round_bf16_bf16_data, "main", 2, sizeof(vk_op_unary_push_constants), {512, 1, 1}, {}, 1);
     // strided variant for non-contiguous (e.g. row-strided view) inputs.
     ggml_vk_create_pipeline(device, device->pipeline_round_bf16_strided[0], "round_bf16_strided_f32", round_bf16_strided_f32_len, round_bf16_strided_f32_data, "main", 2, sizeof(vk_op_unary_push_constants), {512, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_round_bf16_strided[1], "round_bf16_strided_f16", round_bf16_strided_f16_len, round_bf16_strided_f16_data, "main", 2, sizeof(vk_op_unary_push_constants), {512, 1, 1}, {}, 1);
@@ -3816,6 +3821,19 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
             return wait_pipeline->compiled.load();
         });
     }
+}
+
+// fork: keep the AMD proprietary-driver emulated integer-dot guard that the 0.25.3
+// vendoring dropped along with the old device-cap helpers; both call sites below
+// (device init) still reference it. On pre-RDNA3 AMD hardware (GCN/RDNA1/RDNA2) the
+// emulated integer dot product path silently produces incorrect quantized matmul
+// results (https://github.com/0xShug0/audio.cpp/issues/192). RADV reports
+// accelerated=false on the same hardware, and RDNA3+ has native dot4 support.
+static bool ggml_vk_amd_proprietary_emulated_int_dot(uint32_t vendor_id, vk::DriverId driver_id, vk_device_architecture architecture) {
+    return vendor_id == VK_VENDOR_ID_AMD && driver_id == vk::DriverId::eAmdProprietary &&
+           (architecture == vk_device_architecture::AMD_GCN ||
+            architecture == vk_device_architecture::AMD_RDNA1 ||
+            architecture == vk_device_architecture::AMD_RDNA2);
 }
 
 vk_device ggml_vk_get_device(size_t idx) {
@@ -8897,14 +8915,6 @@ static vk_pipeline ggml_vk_op_get_pipeline(ggml_backend_vk_context * ctx, const 
             return ctx->device->pipeline_im2col_f32_f16;
         }
         return nullptr;
-    case GGML_OP_COL2IM_1D:
-        if (src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
-            return ctx->device->pipeline_col2im_1d_f32;
-        }
-        if (src0->type == GGML_TYPE_F16 && dst->type == GGML_TYPE_F16) {
-            return ctx->device->pipeline_col2im_1d_f16;
-        }
-        return nullptr;
     case GGML_OP_IM2COL_3D:
         if (src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
             return ctx->device->pipeline_im2col_3d_f32;
@@ -9337,14 +9347,18 @@ static void ggml_vk_op_f32(ggml_backend_vk_context * ctx, vk_context& subctx, co
         } break;
     case GGML_OP_COL2IM_1D:
         {
-            const uint64_t total = uint64_t(dst->ne[0]) * uint64_t(dst->ne[1]);
+            // col2im_1d.comp indexes a 2D grid: x = t_out (dst->ne[0]),
+            // y = oc (dst->ne[1]), with no grid-stride loop. Dispatch must
+            // cover both dimensions; the old 1D flat dispatch (kept from the
+            // pre-rebase fork shader that looped over x) left dst mostly
+            // unwritten, feeding uninitialized memory downstream.
             const uint64_t max_x_elements =
                 uint64_t(ctx->device->properties.limits.maxComputeWorkGroupCount[0]) *
                 uint64_t(pipeline->wg_denoms[0]);
 
             elements = {
-                uint32_t(std::min(total, max_x_elements)),
-                1,
+                uint32_t(std::min(uint64_t(dst->ne[0]), max_x_elements)),
+                std::min(uint32_t(dst->ne[1]), ctx->device->properties.limits.maxComputeWorkGroupCount[1]),
                 1
             };
         } break;
@@ -9377,10 +9391,6 @@ static void ggml_vk_op_f32(ggml_backend_vk_context * ctx, vk_context& subctx, co
     case GGML_OP_CONV_TRANSPOSE_1D:
         {
             elements = {uint32_t(src0->ne[1]), 1, 1}; // parallelize in {Cout, 1, 1}
-        } break;
-    case GGML_OP_COL2IM_1D:
-        {
-            elements = { uint32_t(dst->ne[0]), uint32_t(dst->ne[1]), 1 };
         } break;
     case GGML_OP_POOL_1D:
         {
@@ -12491,10 +12501,6 @@ bool ggml_vk_build_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgraph, in
         ggml_vk_timestep_embedding(ctx, compute_ctx, src0, node);
 
         break;
-    case GGML_OP_COL2IM_1D:
-        ggml_vk_col2im_1d(ctx, compute_ctx, src0, node);
-
-        break;
     case GGML_OP_CONV_TRANSPOSE_1D:
         ggml_vk_conv_transpose_1d(ctx, compute_ctx, src0, src1, node);
 
@@ -14427,6 +14433,17 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
                       (i + ctx->num_additional_fused_ops >= last_node) ||
                       (almost_ready && !ctx->almost_ready_fence_pending);
 
+        // TEMP-DIAG (vulkan regression triage): per-node NaN probe, env GGML_VK_NANCHECK=1.
+        // Forces submission after every node, waits, then scans node outputs for
+        // non-finite values to locate the first offending op. Costly; debug only.
+        static int vk_nancheck_enabled = -1;
+        if (vk_nancheck_enabled < 0) {
+            vk_nancheck_enabled = getenv("GGML_VK_NANCHECK") ? atoi(getenv("GGML_VK_NANCHECK")) : 0;
+        }
+        if (vk_nancheck_enabled) {
+            submit = true;
+        }
+
         bool enqueued = ggml_vk_build_graph(ctx, cgraph, i, cgraph->nodes[submit_node_idx], submit_node_idx, i + ctx->num_additional_fused_ops >= last_node, almost_ready, submit);
 
         if (vk_perf_logger_enabled && enqueued) {
@@ -14456,6 +14473,101 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
 
         if (submit && enqueued) {
             submit_after(submit_node_idx, i + (int)ctx->num_additional_fused_ops);
+        }
+
+        // TEMP-DIAG (vulkan regression triage): scan outputs of node i..i+fused
+        if (vk_nancheck_enabled && enqueued) {
+            ggml_vk_synchronize(ctx);
+            for (int k = 0; k <= (int)ctx->num_additional_fused_ops; ++k) {
+                ggml_tensor * node = cgraph->nodes[i + k];
+                if (!node || ggml_nbytes(node) == 0 ||
+                    !(node->type == GGML_TYPE_F32 || node->type == GGML_TYPE_F16 || node->type == GGML_TYPE_BF16)) {
+                    continue;
+                }
+                const int64_t n = ggml_nelements(node);
+                if (n <= 0 || n > (1 << 27)) {
+                    continue;
+                }
+                std::vector<char> host(ggml_nbytes(node));
+                if (!node->buffer || !node->buffer->iface.get_tensor) {
+                    continue;
+                }
+                node->buffer->iface.get_tensor(node->buffer, node, host.data(), 0, ggml_nbytes(node));
+                const bool inf_is_bad = vk_nancheck_enabled >= 2 && node->op != GGML_OP_DIAG_MASK_INF;
+                int64_t bad = -1;
+                double max_abs = 0.0;
+                if (node->type == GGML_TYPE_F32) {
+                    const float * p = (const float *) host.data();
+                    for (int64_t e = 0; e < n; e++) {
+                        if (std::isnan(p[e]) || (inf_is_bad && std::isinf(p[e]))) { bad = e; break; }
+                        max_abs = std::max(max_abs, std::fabs((double) p[e]));
+                    }
+                } else if (node->type == GGML_TYPE_F16) {
+                    const ggml_fp16_t * p = (const ggml_fp16_t *) host.data();
+                    for (int64_t e = 0; e < n; e++) {
+                        float v = GGML_FP16_TO_FP32(p[e]);
+                        if (std::isnan(v) || (inf_is_bad && std::isinf(v))) { bad = e; break; }
+                        max_abs = std::max(max_abs, std::fabs((double) v));
+                    }
+                } else {
+                    const ggml_bf16_t * p = (const ggml_bf16_t *) host.data();
+                    for (int64_t e = 0; e < n; e++) {
+                        float v = GGML_BF16_TO_FP32(p[e]);
+                        if (std::isnan(v) || (inf_is_bad && std::isinf(v))) { bad = e; break; }
+                        max_abs = std::max(max_abs, std::fabs((double) v));
+                    }
+                }
+                if (bad >= 0) {
+                    GGML_LOG_ERROR("[vk-nancheck] FIRST NAN: node %d/%d '%s' op=%s type=%s "
+                                   "ne=[%lld,%lld,%lld,%lld] first_bad@%lld max_abs=%g\n",
+                                   i + k, cgraph->n_nodes, node->name, ggml_op_name(node->op),
+                                   ggml_type_name(node->type), (long long) node->ne[0], (long long) node->ne[1],
+                                   (long long) node->ne[2], (long long) node->ne[3], (long long) bad, max_abs);
+                    // recursive ancestor stats: walk srcs up to depth 4, print op + value stats
+                    std::function<void(ggml_tensor *, int, int)> dump_anc = [&](ggml_tensor * t, int depth, int slot) {
+                        if (!t || depth > 4) return;
+                        const char * ind = depth == 0 ? "" : "  ";
+                        double mx = 0.0;
+                        int64_t huge = 0, nan_c = 0, inf_c = 0;
+                        bool scanned = false;
+                        if ((t->type == GGML_TYPE_F32 || t->type == GGML_TYPE_F16 || t->type == GGML_TYPE_BF16) &&
+                            t->buffer && t->buffer->iface.get_tensor && ggml_nelements(t) <= (1 << 24)) {
+                            const int64_t tn = ggml_nelements(t);
+                            std::vector<char> th(ggml_nbytes(t));
+                            t->buffer->iface.get_tensor(t->buffer, t, th.data(), 0, ggml_nbytes(t));
+                            auto getv = [&](int64_t e) -> float {
+                                if (t->type == GGML_TYPE_F32) return ((const float *) th.data())[e];
+                                if (t->type == GGML_TYPE_F16) return GGML_FP16_TO_FP32(((const ggml_fp16_t *) th.data())[e]);
+                                return GGML_BF16_TO_FP32(((const ggml_bf16_t *) th.data())[e]);
+                            };
+                            for (int64_t e = 0; e < tn; e++) {
+                                float v = getv(e);
+                                if (std::isnan(v)) { nan_c++; continue; }
+                                if (std::isinf(v)) { inf_c++; continue; }
+                                double a = std::fabs((double) v);
+                                mx = std::max(mx, a);
+                                if (a > 1e6) huge++;
+                            }
+                            scanned = true;
+                        }
+                        GGML_LOG_ERROR("[vk-nancheck]%s src%d:'%s' op=%s type=%s ne=[%lld,%lld,%lld,%lld]%s\n", ind, slot,
+                                       t->name, ggml_op_name(t->op), ggml_type_name(t->type),
+                                       (long long) t->ne[0], (long long) t->ne[1], (long long) t->ne[2], (long long) t->ne[3],
+                                       scanned ? "" : " (not scanned)");
+                        if (scanned) {
+                            GGML_LOG_ERROR("[vk-nancheck]%s   -> max_abs=%g huge(>1e6)=%lld inf=%lld nan=%lld\n",
+                                           ind, mx, (long long) huge, (long long) inf_c, (long long) nan_c);
+                        }
+                        for (int s = 0; s < 2; s++) {
+                            dump_anc(t->src[s], depth + 1, s);
+                        }
+                    };
+                    for (int s = 0; s < 2; s++) {
+                        dump_anc(node->src[s], 1, s);
+                    }
+                    GGML_ABORT("GGML_VK_NANCHECK: first non-finite tensor output");
+                }
+            }
         }
         i += ctx->num_additional_fused_ops;
         ctx->num_additional_fused_ops = 0;
@@ -15666,10 +15778,6 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
             return ggml_is_contiguous(op->src[1])
                 && op->src[1]->type == GGML_TYPE_F32
                 && (op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_F16);
-        case GGML_OP_COL2IM_1D:
-            return ggml_is_contiguous(op->src[0])
-                && (op->src[0]->type == GGML_TYPE_F32 || op->src[0]->type == GGML_TYPE_F16)
-                && op->type == op->src[0]->type;
         case GGML_OP_IM2COL_3D:
             return op->src[1]->type == GGML_TYPE_F32
                 && (op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_F16);

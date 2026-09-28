@@ -32,10 +32,13 @@ OS_DLLS = {
 }
 OS_PREFIXES = ("api-ms-", "ext-ms-")
 WARN_ONLY = {"msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "concrt140.dll",
-             "msvcp140_codecvt_ids.dll"}
+             "msvcp140_codecvt_ids.dll", "ucrtbased.dll", "vcruntime140d.dll"}  # debug CRT: debug dlls must not ship
 # The SYCL runtime loads these via LoadLibrary at runtime - invisible to the
 # static import walk. Pulled in from the directory that provided sycl*.dll.
+# Debug flavors (umfd.dll, tbb12d.dll, ...) are excluded: they pull the debug
+# CRT and must never ship in a release zip.
 DYNAMIC_SIDECAR_PATTERNS = ("ur_adapter_*.dll", "umf*.dll", "libhwloc*.dll")
+DEBUG_SIDECARS = {"umfd.dll", "tbb12d.dll", "ur_win_proxy_loaderd.dll"}
 
 
 def rva_to_offset(data: bytes, pe_off: int, rva: int) -> int:
@@ -133,7 +136,7 @@ def main() -> int:
         for pat in DYNAMIC_SIDECAR_PATTERNS:
             for side in _glob.glob(os.path.join(d, pat)):
                 name = os.path.basename(side).lower()
-                if name in seen or name in OS_DLLS or name.startswith(OS_PREFIXES):
+                if name in seen or name in OS_DLLS or name.startswith(OS_PREFIXES) or name in DEBUG_SIDECARS:
                     continue
                 seen.add(name)
                 shutil.copy2(side, os.path.join(args.out, name))

@@ -1723,7 +1723,7 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
                 ne01, ne11, ne10,
                 src0_ptr, cu_data_type_a, nb01/nb00, sma,
                 src1_ptr, cu_data_type_b, s11,       smb,
-                dst_t,    cu_data_type,   ne0,       ne1*ne0,
+                dst_ptr,  cu_data_type,   ne0,       ne1*ne0,
                 ne12*ne13);
 #else
         CUBLAS_CHECK(
@@ -1740,13 +1740,13 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
 #if defined(GGML_USE_HIP) && defined(GGML_HIP_USE_HIPBLASLT)
         // hipBLASLt has no pointer-array batched GEMM; issue one GEMM per batch element instead.
         GGML_UNUSED_VARS(alpha, beta);
-        const size_t src1_nb2 = (src1->type == src0_type) ? nb12 : s12*sizeof(cuda_t);
-        const size_t src1_nb3 = (src1->type == src0_type) ? nb13 : s13*sizeof(cuda_t);
+        const size_t src1_nb2 = (src1->type == src0->type) ? nb12 : s12*sizeof(cuda_t);
+        const size_t src1_nb3 = (src1->type == src0->type) ? nb13 : s13*sizeof(cuda_t);
         for (int64_t i13 = 0; i13 < ne13; i13++) {
             for (int64_t i12 = 0; i12 < ne12; i12++) {
                 const char * ptr_a = (const char *) src0_ptr + (i12/r2)*nb02 + (i13/r3)*nb03;
                 const char * ptr_b = (const char *) src1_ptr + i12*src1_nb2 + i13*src1_nb3;
-                char *       ptr_c = (      char *) dst_t    + i12*nbd2    + i13*nbd3;
+                char *       ptr_c = (      char *) dst_ptr  + i12*nbd2    + i13*nbd3;
                 ggml_hipblaslt_gemm(ctx, main_stream,
                         ne01, ne11, ne10,
                         ptr_a, cu_data_type_a, nb01/nb00, 0,

@@ -1202,7 +1202,7 @@ std::unique_ptr<FalconStepPlan> build_falcon_step_plan(
         ggml_tensor * ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
         ids->data = &state.ids_value;
 
-        ggml_tensor * scan = ggml_ssm_scan(ctx, ssm_t, x4, dt3, A_t, B4, C4, ids);
+        ggml_tensor * scan = ggml_ssm_scan(ctx, ssm_t, x4, dt3, A_t, B4, C4, ids, /*K=*/1);
         // New ssm state = scan tail (after the d_inner y values), written back
         // into the host state vector in-graph (ordered after the scan read).
         ggml_tensor * next_state = ggml_view_3d(ctx, scan,
@@ -1617,7 +1617,7 @@ SlowForwardOutput falcon_forward_step(
         }
         ids_ts.push_back(ids);
 
-        ggml_tensor * scan = ggml_ssm_scan(ctx.get(), ssm_t, x4, dt3, A_t, B4, C4, ids);
+        ggml_tensor * scan = ggml_ssm_scan(ctx.get(), ssm_t, x4, dt3, A_t, B4, C4, ids, /*K=*/1);
         scan_ts.push_back(scan);
         if (zero_copy) {
             // New ssm state = scan tail (after the d_inner y values), written

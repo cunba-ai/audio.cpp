@@ -56,7 +56,7 @@ static void soft_max_f32(const float *         x,
                                : block_size_template;
     const int nthreads = block_size;
     const int nwarps = nthreads / WARP_SIZE;
-    size_t nreduce = nwarps / WARP_SIZE;
+    const size_t nreduce = nwarps / WARP_SIZE;
 
     const int tid = item_ct1.get_local_id(2);
 
@@ -105,8 +105,6 @@ static void soft_max_f32(const float *         x,
     max_val = warp_reduce_max<WARP_SIZE>(max_val);
 
     if (block_size > WARP_SIZE) {
-        item_ct1.barrier();
-
         if (lane_id == 0) {
             buf_iw[warp_id] = max_val;
         }

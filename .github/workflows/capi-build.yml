@@ -310,12 +310,25 @@ jobs:
           }
 
       # ── Vulkan: LunarG SDK (provides glslang/glslc for shader compilation) ──
+      # Installed via the official installer (release.yml's proven recipe).
+      # The humbletim action stopped exporting a usable VULKAN_SDK for 1.4.x,
+      # leaving CMake's FindVulkan without LIBRARY/INCLUDE_DIRs. 0.25.3's
+      # ggml-vulkan needs the glslc component + SPIRV-Headers CONFIG that
+      # 1.3.x tarballs lacked.
       - name: Setup Vulkan SDK
         if: matrix.config.setup == 'vulkan'
-        uses: humbletim/install-vulkan-sdk@v1.2
-        with:
-          version: 1.4.357.0
-          cache: true
+        shell: pwsh
+        run: |
+          $v = "1.4.357.0"
+          curl.exe -o "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" -L "https://sdk.lunarg.com/sdk/download/${v}/windows/VulkanSDK-${v}-Installer.exe"
+          & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install | Out-Null
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${v}"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${v}\bin"
+          if (-not (Test-Path "C:\VulkanSDK\${v}\Include\vulkan")) {
+            Write-Host "##[error]Vulkan SDK did not install into C:\VulkanSDK\${v}"
+            exit 1
+          }
 
 
       - name: Configure (CUDA)

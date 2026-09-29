@@ -320,7 +320,11 @@ jobs:
         shell: pwsh
         run: |
           $v = "1.4.357.0"
-          curl.exe -o "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" -L "https://sdk.lunarg.com/sdk/download/${v}/windows/VulkanSDK-${v}-Installer.exe"
+          curl.exe -o "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" -L "https://sdk.lunarg.com/sdk/download/${v}/windows/vulkansdk-windows-X64-${v}.exe"
+          if ((Get-Item "$env:RUNNER_TEMP\VulkanSDK-Installer.exe").Length -lt 100MB) {
+            Write-Host "##[error]Vulkan SDK download too small (redirect/error page?)"
+            exit 1
+          }
           & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install | Out-Null
           if ($LASTEXITCODE -ne 0) { exit 1 }
           Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${v}"

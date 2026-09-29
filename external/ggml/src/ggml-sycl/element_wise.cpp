@@ -984,29 +984,47 @@ static inline void ggml_sycl_op_round_bf16(ggml_backend_sycl_context & ctx, ggml
     const int     num_blocks  = ceil_div(k, 256);
     float *       dst_d       = (float *) dst->data;
 
+    // Extract the src data pointer on the HOST before the launch. Capturing the
+    // ggml_tensor* itself in the device lambda (and dereferencing src0->data on
+    // device) reads plain host-malloc memory from the GPU: the launch enqueues
+    // fine, the kernel faults asynchronously, and the Level-Zero context enters
+    // a sticky error state that kills the *next* enqueue on the stream
+    // (observed as UR_RESULT_ERROR_OUT_OF_DEVICE_MEMORY on B50, driver
+    // 1.15.39183; UR_RESULT_ERROR_OUT_OF_RESOURCES on B390, driver 1.15.37858).
+    // This exact pattern was the root cause of the yue2 NAR prefill_state death
+    // after the first round_bf16. The CUDA round_bf16_cuda() extracts pointers
+    // host-side; every other launcher in this file does the same via
+    // cast_data()/CGH-local copies.
     switch (src0->type) {
-        case GGML_TYPE_F32:
+        case GGML_TYPE_F32: {
+            const float * src0_d = (const float *) src0->data;
             stream->parallel_for(
                 sycl::nd_range<1>(sycl::range<1>(num_blocks) * sycl::range<1>(256), sycl::range<1>(256)),
                 [=](sycl::nd_item<1> item_ct1) {
-                    round_bf16_kernel((const float *) src0->data, dst_d, k, item_ct1);
+                    round_bf16_kernel(src0_d, dst_d, k, item_ct1);
                 });
             break;
-        case GGML_TYPE_F16:
+        }
+        case GGML_TYPE_F16: {
+            const sycl::half * src0_d = (const sycl::half *) src0->data;
             stream->parallel_for(
                 sycl::nd_range<1>(sycl::range<1>(num_blocks) * sycl::range<1>(256), sycl::range<1>(256)),
                 [=](sycl::nd_item<1> item_ct1) {
-                    round_bf16_kernel((const sycl::half *) src0->data, dst_d, k, item_ct1);
+                    round_bf16_kernel(src0_d, dst_d, k, item_ct1);
                 });
             break;
+        }
 #ifdef GGML_SYCL_HAS_BF16
-        case GGML_TYPE_BF16:
+        case GGML_TYPE_BF16: {
+            const sycl::ext::oneapi::bfloat16 * src0_d =
+                (const sycl::ext::oneapi::bfloat16 *) src0->data;
             stream->parallel_for(
                 sycl::nd_range<1>(sycl::range<1>(num_blocks) * sycl::range<1>(256), sycl::range<1>(256)),
                 [=](sycl::nd_item<1> item_ct1) {
-                    round_bf16_kernel((const sycl::ext::oneapi::bfloat16 *) src0->data, dst_d, k, item_ct1);
+                    round_bf16_kernel(src0_d, dst_d, k, item_ct1);
                 });
             break;
+        }
 #endif
         default:
             GGML_ABORT("round_bf16: unsupported src type");

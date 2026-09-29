@@ -670,6 +670,7 @@ extern "C" {
         GGML_OP_ROPE_INTERLEAVED_PAIRS,
         GGML_OP_MUL_MAT_ACC,
         GGML_OP_SNAKE_1D,
+        GGML_OP_GRU_SCAN,
         GGML_OP_COUNT,
     };
 
@@ -3168,6 +3169,26 @@ extern "C" {
             struct ggml_context * ctx,
             struct ggml_tensor  * a,
             struct ggml_tensor  * alpha);
+
+    // Fused GRU scan (audio.cpp fork op, used by the RMVPE pitch extractor).
+    // Runs a single-layer GRU over F frames with hidden size H, replacing the
+    // per-timestep unrolled graph (~24 tiny ops per step) with one op.
+    //   x_ih : [3H, F] f32, input projection rows (r|z|n gates), bias_ih included
+    //   h0   : [H] f32, initial hidden state
+    //   w_hh : [H, 3H] f32, hidden weight (ggml linear layout: ne0 = H in, ne1 = 3H out)
+    //   b_hh : [3H] f32, hidden bias
+    //   keep : [F] f32 (or [1, F] / [F, 1]), 1.0 keeps the update, 0.0 freezes the state
+    // reverse: scan frames in reverse order (bidirectional GRU second pass)
+    // Returns [H, F+1] f32: columns 0..F-1 = per-step hidden states (time order),
+    // column F = final hidden state.
+    GGML_API struct ggml_tensor * ggml_gru_scan(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * x_ih,
+            struct ggml_tensor  * h0,
+            struct ggml_tensor  * w_hh,
+            struct ggml_tensor  * b_hh,
+            struct ggml_tensor  * keep,
+            bool                   reverse);
 
     GGML_API struct ggml_tensor * ggml_mul_mat_pack4(
             struct ggml_context * ctx,

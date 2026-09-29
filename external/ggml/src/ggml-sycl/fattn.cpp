@@ -156,7 +156,19 @@ static best_fattn_kernel ggml_sycl_get_best_fattn_kernel(const int device, const
     // head_dim 512, so the cap must include it. Head sizes not a multiple of
     // 64 (72/80/96), MHA (gqa_ratio == 1), and MLA (DKQ != DV, e.g. 576/512)
     // fall through to TILE/VEC; see follow-up work.
+    //
+    // F32 K/V exclusion (audio.cpp fork, B50 measurement 2026-09-29): the
+    // dramabox gemma3 encoder prefill (D=256, nq=nkv=1024, gqa=2, batch=2,
+    // F32 K/V) ran the MKL path at ~4.2 s/call in-engine while the TILE
+    // kernel handled the identical shape in ~21.7 ms (~200x). The MKL path
+    // performs ~50 host-blocking section syncs per call (per batch x KV-head
+    // dequant/GEMM/softmax waits); on the B50 driver in the engine process
+    // each such sync costs tens of milliseconds (GPU idle meanwhile — see
+    // GGML_SYCL_OPTIME attribution in the dramabox-rvc fix report). F16 K/V
+    // binds in place and keeps the historically fast behavior, so non-F16
+    // K/V now falls through to TILE.
     if (g_ggml_sycl_enable_mkl_fa == 1 && mask && !sinks && gqa_ratio >= 2 &&
+        K->type == GGML_TYPE_F16 && V->type == GGML_TYPE_F16 &&
         Q->ne[0] >= 64 && Q->ne[0] <= 512 && Q->ne[0] % 64 == 0 &&
         Q->ne[0] == V->ne[0] &&
         Q->ne[1] >= 32 && K->ne[1] >= 1024 &&

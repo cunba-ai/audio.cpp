@@ -1872,6 +1872,87 @@ static void ggml_compute_forward_snake_1d(
     }
 }
 
+// Max hidden size supported by the stack buffers of the GRU scan reference
+// implementation (RMVPE uses H = 256).
+#define GGML_GRU_SCAN_MAX_H 1024
+
+// ggml_compute_forward_gru_scan
+//
+// Fused single-layer GRU scan (audio.cpp fork op, RMVPE pitch extractor).
+// Semantics mirror the unrolled engine graph exactly:
+//   hi[t]      = W_hh . h[t-1] + b_hh            (3H rows, gate order r|z|n)
+//   r          = sigmoid(x_r[t] + hi_r[t])
+//   z          = sigmoid(x_z[t] + hi_z[t])
+//   n          = tanh(x_n[t] + r * hi_n[t])
+//   updated    = n + z * (h[t-1] - n)
+//   h[t]       = h[t-1] + keep[t] * (updated - h[t-1])
+// Single-threaded reference; the per-row dot products run sequentially in
+// fixed order so CPU/GPU results agree to last-ulp.
+static void ggml_compute_forward_gru_scan(
+        const struct ggml_compute_params * params,
+        struct ggml_tensor * dst) {
+    const struct ggml_tensor * x_ih = dst->src[0]; // [3H, F] (bias_ih included)
+    const struct ggml_tensor * h0   = dst->src[1]; // [H]
+    const struct ggml_tensor * w_hh = dst->src[2]; // [H, 3H]
+    const struct ggml_tensor * b_hh = dst->src[3]; // [3H]
+    const struct ggml_tensor * keep = dst->src[4]; // [F]
+
+    if (params->ith != 0) {
+        return;
+    }
+
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+
+    const int64_t H = h0->ne[0];
+    const int64_t F = x_ih->ne[1];
+    const bool reverse = ggml_get_op_params_i32(dst, 0) != 0;
+
+    const float * xw = (const float *) x_ih->data;
+    const float * hw = (const float *) w_hh->data;
+    const float * bw = (const float *) b_hh->data;
+    const float * kw = (const float *) keep->data;
+    const float * h_init = (const float *) h0->data;
+    float * out = (float *) dst->data;
+
+    // keep may be [F] or [1, F]; both are contiguous with F elements
+    GGML_ASSERT(ggml_nelements(keep) == F);
+
+    float h_cur[GGML_GRU_SCAN_MAX_H];
+    GGML_ASSERT(H <= GGML_GRU_SCAN_MAX_H);
+    for (int64_t i = 0; i < H; i++) {
+        h_cur[i] = h_init[i];
+    }
+
+    for (int64_t s = 0; s < F; s++) {
+        const int64_t t = reverse ? (F - 1 - s) : s;
+
+        float hi[3 * GGML_GRU_SCAN_MAX_H];
+        for (int64_t o = 0; o < 3*H; o++) {
+            float acc = bw[o];
+            const float * wrow = hw + o * H;
+            for (int64_t i = 0; i < H; i++) {
+                acc += h_cur[i] * wrow[i];
+            }
+            hi[o] = acc;
+        }
+
+        const float * xt = xw + t * (3*H);
+        for (int64_t j = 0; j < H; j++) {
+            const float r = 1.0f / (1.0f + expf(-(xt[j]         + hi[j])));
+            const float z = 1.0f / (1.0f + expf(-(xt[H + j]     + hi[H + j])));
+            const float n = tanhf(xt[2*H + j] + r * hi[2*H + j]);
+            const float updated = n + z * (h_cur[j] - n);
+            const float kv = kw[t];
+            const float h_new = h_cur[j] + kv * (updated - h_cur[j]);
+            out[t * H + j] = h_new;
+            h_cur[j] = h_new;
+        }
+    }
+    for (int64_t j = 0; j < H; j++) {
+        out[F * H + j] = h_cur[j];
+    }
+}
+
 /////////////////////////////////
 
 static void ggml_compute_forward(struct ggml_compute_params * params, struct ggml_tensor * tensor) {
@@ -2011,6 +2092,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
         case GGML_OP_SNAKE_1D:
             {
                 ggml_compute_forward_snake_1d(params, tensor);
+            } break;
+        case GGML_OP_GRU_SCAN:
+            {
+                ggml_compute_forward_gru_scan(params, tensor);
             } break;
         case GGML_OP_MUL_MAT_ID:
             {
@@ -2541,6 +2626,7 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
                 n_tasks = 1;
             } break;
         case GGML_OP_SNAKE_1D:
+        case GGML_OP_GRU_SCAN:
             {
                 // reference implementation is single-threaded
                 n_tasks = 1;

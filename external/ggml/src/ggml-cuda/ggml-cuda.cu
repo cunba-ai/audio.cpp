@@ -45,6 +45,7 @@
 #include "ggml-cuda/quantize.cuh"
 #include "ggml-cuda/rope.cuh"
 #include "ggml-cuda/roll.cuh"
+#include "ggml-cuda/gru-scan.cuh"
 #include "ggml-cuda/scale.cuh"
 #include "ggml-cuda/sage-attn2.cuh"
 #include "ggml-cuda/snake.cuh"
@@ -2515,6 +2516,9 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
             break;
         case GGML_OP_ROLL:
             ggml_cuda_op_roll(ctx, dst);
+            break;
+        case GGML_OP_GRU_SCAN:
+            ggml_cuda_op_gru_scan(ctx, dst);
             break;
         case GGML_OP_IM2COL:
         case GGML_OP_IM2COL_FAST_1D:
@@ -5954,6 +5958,27 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                 return true;
             }
             return false;
+        case GGML_OP_GRU_SCAN: {
+#if defined(GGML_USE_HIP) || defined(GGML_USE_MUSA)
+            return false;  // CUDA twin stubbed out; engine falls back to the unrolled graph
+#else
+            if (op->type != GGML_TYPE_F32) {
+                return false;
+            }
+            for (int i = 0; i < 5; ++i) {
+                const ggml_tensor * t = op->src[i];
+                if (t == nullptr || t->type != GGML_TYPE_F32 || !ggml_is_contiguous(t)) {
+                    return false;
+                }
+            }
+            const int64_t H = op->src[1]->ne[0];
+            return H > 0 && H % 8 == 0 &&
+                op->src[0]->ne[0] == 3 * H && op->src[0]->ne[2] == 1 && op->src[0]->ne[3] == 1 &&
+                op->src[2]->ne[0] == H && op->src[2]->ne[1] == 3 * H &&
+                op->src[3]->ne[0] == 3 * H &&
+                ggml_nelements(op->src[4]) == op->src[0]->ne[1];
+#endif
+        }
         case GGML_OP_ROPE:
         case GGML_OP_ROPE_BACK: {
             return op->src[0]->nb[0] == ggml_type_size(op->src[0]->type) && ggml_is_contiguous_2(op->src[0]);

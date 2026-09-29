@@ -17,6 +17,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -801,17 +803,39 @@ public:
         if (inputs.latent == nullptr || inputs.sigma_features == nullptr) {
             throw std::runtime_error("DramaBox DiT inputs are not bound");
         }
+        // DRAMABOX_STEP_TIMING=1: per-phase wall attribution of the sampler
+        // step (audio.cpp fork debug aid; stderr prints, no deps).
+        static const bool s_step_timing = std::getenv("DRAMABOX_STEP_TIMING") != nullptr;
+        const auto t_write0 = Clock::now();
         core::write_tensor_f32(latent_, *inputs.latent);
         core::write_tensor_f32(sigma_features_, *inputs.sigma_features);
+        const auto t_threads = Clock::now();
         core::set_backend_threads(backend_, threads_);
-        const auto compute_start = Clock::now();
+        const auto t_compute0 = Clock::now();
         const ggml_status status = core::compute_backend_graph(backend_, graph_, nullptr, "dramabox.dit");
         if (status != GGML_STATUS_SUCCESS) {
             throw std::runtime_error("DramaBox DiT graph compute failed");
         }
+        const auto t_sync0 = Clock::now();
         ggml_backend_synchronize(backend_);
-        debug::timing_log_scalar("dramabox.dit.graph.compute_ms", debug::elapsed_ms(compute_start, Clock::now()));
+        const auto t_sync1 = Clock::now();
+        debug::timing_log_scalar("dramabox.dit.graph.compute_ms", debug::elapsed_ms(t_compute0, t_sync0));
+        if (s_step_timing) {
+            std::fprintf(
+                stderr,
+                "[DSTEP] write=%.1fms threads=%.1fms compute=%.1fms sync=%.1fms\n",
+                debug::elapsed_ms(t_write0, t_threads),
+                debug::elapsed_ms(t_threads, t_compute0),
+                debug::elapsed_ms(t_compute0, t_sync0),
+                debug::elapsed_ms(t_sync0, t_sync1));
+            std::fflush(stderr);
+        }
+        const auto t_read0 = Clock::now();
         auto out = core::read_tensor_f32(output_);
+        if (s_step_timing) {
+            std::fprintf(stderr, "[DSTEP] read=%.1fms\n", debug::elapsed_ms(t_read0, Clock::now()));
+            std::fflush(stderr);
+        }
         return out;
     }
 

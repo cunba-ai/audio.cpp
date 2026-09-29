@@ -58,6 +58,7 @@
 #include "ggml-sycl/add-id.hpp"
 #include "ggml-sycl/backend.hpp"
 #include "ggml-sycl/common.hpp"
+#include "ggml-sycl/gru-scan.hpp"
 #include "ggml-sycl/conv2d-transpose.hpp"
 #include "ggml-sycl/element_wise.hpp"
 #include "ggml-sycl/fwht.hpp"
@@ -5834,6 +5835,9 @@ static bool ggml_sycl_compute_forward(ggml_backend_sycl_context & ctx, struct gg
         case GGML_OP_ARANGE:
             ggml_sycl_arange(ctx, dst);
             break;
+        case GGML_OP_GRU_SCAN:
+            ggml_sycl_gru_scan(ctx, dst);
+            break;
         case GGML_OP_FLASH_ATTN_EXT:
             ggml_sycl_flash_attn_ext(ctx, dst);
             break;
@@ -6076,6 +6080,18 @@ static int ggml_sycl_try_gdn_cache_fusion(const ggml_cgraph * cgraph, int node_i
 static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * sycl_ctx, ggml_cgraph * cgraph) {
     ggml_sycl_set_main_device(sycl_ctx->device);
 
+    // GGML_SYCL_OPTIME (audio.cpp fork debug aid):
+    //   1 = passive per-op host wall deltas (cheap, launch-overlap skewed)
+    //   2 = per-op stream->wait() before sampling (accurate GPU-inclusive
+    //       per-op cost, adds one sync per node)
+    //   3 = like 2 but only prints ops slower than GGML_SYCL_OPTIME_MIN_US
+    //       (default 1000) — noise-free long-op attribution
+    static int s_optime = ggml_sycl_get_env("GGML_SYCL_OPTIME", 0);
+    static int s_optime_min = ggml_sycl_get_env("GGML_SYCL_OPTIME_MIN_US", 1000);
+    int64_t prev_us = 0;
+    ggml_op prev_op = GGML_OP_NONE;
+    char prev_name[GGML_MAX_NAME] = {0};
+
     for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_tensor * node = cgraph->nodes[i];
         if (ggml_sycl_is_view_or_noop(node)) {
@@ -6083,6 +6099,29 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
         }
         if ((node->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
             continue;
+        }
+
+        if (s_optime >= 4) {
+            // heartbeat: timestamp every 500 dispatched ops
+            if ((i % 500) == 0) {
+                GGML_LOG_INFO("[OPTHB] node_idx=%d t=%lld_us op=%s %s\n", i, (long long)ggml_time_us(), ggml_op_name(node->op), node->name);
+            }
+        }
+        if (s_optime) {
+            if (s_optime >= 2) {
+                sycl_ctx->stream()->wait();
+            }
+            const int64_t now_us = ggml_time_us();
+            if (prev_us != 0) {
+                const int64_t dt = now_us - prev_us;
+                if (dt >= s_optime_min) {
+                    GGML_LOG_INFO("[OPTIME] t=%lldus %8lld us  %-16s %s\n", now_us,
+                        (long long)dt, ggml_op_name(prev_op), prev_name);
+                }
+            }
+            prev_us = now_us;
+            prev_op = node->op;
+            snprintf(prev_name, sizeof(prev_name), "%s", node->name);
         }
 
         const int nodes_to_skip = ggml_sycl_fuse(*sycl_ctx, cgraph, i);
@@ -6972,6 +7011,8 @@ static bool do_ggml_backend_sycl_device_supports_op(ggml_backend_dev_t dev, cons
                    op->src[1]->type == GGML_TYPE_F32;
         case GGML_OP_ROLL:
             return op->type == GGML_TYPE_F32;
+        case GGML_OP_GRU_SCAN:
+            return ggml_sycl_gru_scan_supported(op);
         case GGML_OP_ARANGE:
             return op->type == GGML_TYPE_F32;
         case GGML_OP_SSM_SCAN:

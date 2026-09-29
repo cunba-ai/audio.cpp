@@ -231,7 +231,14 @@ static void set_error(audiocpp_error_t *err, int code, const char *msg) {
 
 static engine::core::BackendType map_backend(int backend) {
     switch (backend) {
-        case AUDIOCPP_BACKEND_CUDA:   return engine::core::BackendType::Cuda;
+        // AUDIOCPP_BACKEND_CUDA is documented to also cover AMD ROCm/HIP and
+        // MUSA builds: those share ggml's ggml-cuda implementation and differ
+        // only in registry name ("ROCm"/"MUSA"). Resolve against the live
+        // registry so load paths agree with audiocpp_backend_available() and
+        // backend_reg_to_id(), which both report the ROCm registry as id 1 —
+        // a HIP-only build gets BackendType::Hip (matching --backend hip and
+        // the config-driven HIP model paths), not a doomed Cuda lookup.
+        case AUDIOCPP_BACKEND_CUDA:   return engine::core::resolve_cuda_family_backend_type();
         case AUDIOCPP_BACKEND_VULKAN: return engine::core::BackendType::Vulkan;
         case AUDIOCPP_BACKEND_METAL:  return engine::core::BackendType::Metal;
         case AUDIOCPP_BACKEND_SYCL:   return engine::core::BackendType::Sycl;
@@ -1327,7 +1334,11 @@ engine::core::BackendConfig parse_utility_backend(const char * options_json) {
     const cJSON * be = cJSON_GetObjectItem(root, "backend");
     if (cJSON_IsString(be)) {
         const std::string s = be->valuestring;
-        if (s == "cuda" || s == "CUDA") cfg.type = engine::core::BackendType::Cuda;
+        // "cuda" resolves through the CUDA-family resolver (ROCm builds
+        // register the GPU backend as "ROCm"; see map_backend above), keeping
+        // the utility paths loadable on HIP builds.
+        if (s == "cuda" || s == "CUDA") cfg.type = engine::core::resolve_cuda_family_backend_type();
+        else if (s == "hip" || s == "Hip") cfg.type = engine::core::BackendType::Hip;
         else if (s == "vulkan" || s == "Vulkan") cfg.type = engine::core::BackendType::Vulkan;
         else if (s == "metal" || s == "Metal") cfg.type = engine::core::BackendType::Metal;
         else if (s == "sycl" || s == "SYCL") cfg.type = engine::core::BackendType::Sycl;

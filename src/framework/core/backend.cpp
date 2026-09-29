@@ -215,6 +215,23 @@ std::vector<BackendDeviceInfo> list_backend_devices() {
     return devices;
 }
 
+BackendType resolve_cuda_family_backend_type() {
+    ensure_backends_loaded();
+    // CUDA (registry "CUDA"/"MUSA") and HIP (registry "ROCm") are mutually
+    // exclusive: both are compiled from ggml's ggml-cuda sources, so exactly
+    // one flavor exists per build. Prefer the true CUDA registry; a HIP-only
+    // build resolves to Hip so every config-driven, HIP-specific model path
+    // (e.g. the Strix Halo graph-cache gates keyed on BackendType::Hip)
+    // engages exactly as it does for an explicit --backend hip request.
+    if (find_reg_by_backend_type(BackendType::Cuda) != nullptr) {
+        return BackendType::Cuda;
+    }
+    if (find_reg_by_backend_type(BackendType::Hip) != nullptr) {
+        return BackendType::Hip;
+    }
+    return BackendType::Cuda;
+}
+
 void print_backend_devices(std::ostream & out) {
     const auto devices = list_backend_devices();
     out << "available_devices=" << devices.size() << "\n";

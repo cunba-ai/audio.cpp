@@ -37,6 +37,17 @@ void print_backend_devices(std::ostream & out);
 // initialized a backend.
 void ensure_backends_loaded();
 
+// Resolve the CUDA-family backend type that is actually registered in this
+// build: BackendType::Cuda when a CUDA (or MUSA-alias) registry exists,
+// BackendType::Hip when only the ROCm registry exists, Cuda as the default
+// when neither does (so the caller's error path reports the CUDA lookup).
+// CUDA, ROCm/HIP and MUSA share ggml's single ggml-cuda implementation — a
+// build registers exactly one of them — so callers that expose one
+// "CUDA-family" slot (the C ABI's AUDIOCPP_BACKEND_CUDA) must resolve through
+// this instead of hardcoding BackendType::Cuda, or load paths break on ROCm
+// builds where the registry is named "ROCm".
+BackendType resolve_cuda_family_backend_type();
+
 struct BackendMemorySnapshot {
     bool available = false;
     int64_t total_bytes = 0;

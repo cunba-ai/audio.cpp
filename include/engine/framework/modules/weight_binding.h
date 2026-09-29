@@ -390,6 +390,104 @@ LinearWeights linear_from_transposed_named_source(
     int64_t in_features,
     int64_t out_features);
 
+// Row-concatenated fused projection weight built from separately stored source
+// tensors (e.g. q|k|v or gate|up projections). GGML stores a 2-D weight as
+// contiguous output-feature rows, so fusing along the output axis is a plain
+// byte concatenation once every source resolves to the same ggml type. The
+// fused tensor lets the decoder issue one mul_mat instead of one per
+// projection, cutting per-token kernel launches on launch-bound backends.
+template <typename Store>
+core::TensorValue packed_linear_from_source(
+    Store & store,
+    const assets::TensorSource & source,
+    const std::vector<std::string> & names,
+    assets::TensorStorageType storage_type,
+    int64_t in_features,
+    const std::vector<int64_t> & out_features) {
+    if (names.empty() || names.size() != out_features.size()) {
+        throw std::runtime_error("packed projection requires matching name/out-feature lists");
+    }
+    std::vector<assets::TensorData> parts;
+    parts.reserve(names.size());
+    int64_t total_rows = 0;
+    for (size_t i = 0; i < names.size(); ++i) {
+        parts.push_back(source.require_tensor(names[i], storage_type, {out_features[i], in_features}));
+        if (parts.back().shape.rank != 2 ||
+            parts.back().shape.dims[1] != in_features ||
+            parts.back().shape.dims[0] != out_features[i]) {
+            throw std::runtime_error("packed projection source tensor shape mismatch for " + names[i]);
+        }
+        total_rows += out_features[i];
+    }
+    const ggml_type type = parts.front().type;
+    size_t total_bytes = 0;
+    for (const auto & part : parts) {
+        if (part.type != type) {
+            throw std::runtime_error("packed projection requires source tensors with matching storage type");
+        }
+        total_bytes += part.bytes.size();
+    }
+    std::vector<std::byte> packed;
+    packed.reserve(total_bytes);
+    for (const auto & part : parts) {
+        packed.insert(packed.end(), part.bytes.begin(), part.bytes.end());
+    }
+    return store.make_tensor(
+        core::TensorShape::from_dims({total_rows, in_features}),
+        type,
+        packed.data(),
+        packed.size());
+}
+
+// Tiled [q_heads + kv_heads, head_dim] RMSNorm weight covering the packed q|k
+// head rows of a fused QKV projection: rows [0, q_heads) repeat the q_norm
+// weight and rows [q_heads, q_heads + kv_heads) repeat the k_norm weight, so a
+// single rms_norm over the packed [.., q_heads + kv_heads, head_dim] tensor
+// reproduces the per-projection q_norm/k_norm exactly.
+template <typename Store>
+core::TensorValue tiled_qk_norm_from_source(
+    Store & store,
+    const assets::TensorSource & source,
+    const std::string & q_norm_name,
+    const std::string & k_norm_name,
+    int64_t q_heads,
+    int64_t kv_heads,
+    int64_t head_dim) {
+    const auto q_values = source.require_f32(q_norm_name + ".weight", {head_dim});
+    const auto k_values = source.require_f32(k_norm_name + ".weight", {head_dim});
+    std::vector<float> tiled;
+    tiled.reserve(static_cast<size_t>(q_heads + kv_heads) * static_cast<size_t>(head_dim));
+    for (int64_t head = 0; head < q_heads; ++head) {
+        tiled.insert(tiled.end(), q_values.begin(), q_values.end());
+    }
+    for (int64_t head = 0; head < kv_heads; ++head) {
+        tiled.insert(tiled.end(), k_values.begin(), k_values.end());
+    }
+    return store.make_f32(core::TensorShape::from_dims({q_heads + kv_heads, head_dim}), std::move(tiled));
+}
+
+// Row-concatenated f32 bias vector for a packed projection (e.g. q|k|v or
+// gate|up biases), mirroring packed_linear_from_source along the feature
+// axis. Returned shape is [sum(sizes)].
+template <typename Store>
+core::TensorValue packed_f32_from_source(
+    Store & store,
+    const assets::TensorSource & source,
+    const std::vector<std::string> & names,
+    const std::vector<int64_t> & sizes) {
+    if (names.empty() || names.size() != sizes.size()) {
+        throw std::runtime_error("packed f32 tensor requires matching name/size lists");
+    }
+    std::vector<float> packed;
+    int64_t total = 0;
+    for (size_t i = 0; i < names.size(); ++i) {
+        const auto values = source.require_f32(names[i], {sizes[i]});
+        packed.insert(packed.end(), values.begin(), values.end());
+        total += sizes[i];
+    }
+    return store.make_f32(core::TensorShape::from_dims({total}), std::move(packed));
+}
+
 template <typename Store>
 LinearWeights hf_conv1d_linear_from_source(
     Store & store,

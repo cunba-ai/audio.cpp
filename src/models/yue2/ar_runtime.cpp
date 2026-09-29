@@ -10,9 +10,12 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <random>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace engine::models::yue2 {
@@ -22,6 +25,19 @@ namespace binding = engine::modules::binding;
 using Clock = std::chrono::steady_clock;
 
 constexpr int64_t kArDecodeChunkTokens = 5120;
+
+// Env-gated stderr progress markers for launch-quota debugging (default off,
+// zero cost otherwise).
+void progress_marker(const std::string & message) {
+    static const bool enabled = std::getenv("AUDIOCPP_PROGRESS") != nullptr;
+    static const auto marker_start = std::chrono::steady_clock::now();
+    if (enabled) {
+        const double elapsed =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - marker_start).count();
+        std::fprintf(stderr, "[yue2.progress %7.1fs] %s\n", elapsed, message.c_str());
+        std::fflush(stderr);
+    }
+}
 
 struct GgmlContextDeleter {
     void operator()(ggml_context * ctx) const noexcept {
@@ -51,21 +67,21 @@ engine::modules::QwenDecoderLayerWeights load_layer(
     const std::string prefix = "model.layers." + std::to_string(layer);
     engine::modules::QwenDecoderLayerWeights out;
     out.input_norm = binding::norm_weight_from_source(store, source, prefix + ".input_layernorm", config.hidden_size);
-    out.self_attention.q_weight = store.load_tensor(
+    // Packed q|k|v projection + tiled q/k norm weights: the per-token decode
+    // graph then runs 1 projection + 1 rmsnorm + 1 rope instead of 3 + 2 + 2
+    // ops per layer (launch-bound SYCL decode needs the reduced dispatch
+    // count). Row order inside the packed weight is [q | k | v].
+    const int64_t q_out = config.attention_heads * config.head_dim;
+    const int64_t kv_out = config.kv_heads * config.head_dim;
+    out.self_attention.qkv_weight = binding::packed_linear_from_source(
+        store,
         source,
-        prefix + ".self_attn.q_proj.weight",
+        {prefix + ".self_attn.q_proj.weight",
+         prefix + ".self_attn.k_proj.weight",
+         prefix + ".self_attn.v_proj.weight"},
         storage_type,
-        {config.attention_heads * config.head_dim, config.hidden_size});
-    out.self_attention.k_weight = store.load_tensor(
-        source,
-        prefix + ".self_attn.k_proj.weight",
-        storage_type,
-        {config.kv_heads * config.head_dim, config.hidden_size});
-    out.self_attention.v_weight = store.load_tensor(
-        source,
-        prefix + ".self_attn.v_proj.weight",
-        storage_type,
-        {config.kv_heads * config.head_dim, config.hidden_size});
+        config.hidden_size,
+        {q_out, kv_out, kv_out});
     out.self_attention.out_weight = store.load_tensor(
         source,
         prefix + ".self_attn.o_proj.weight",
@@ -73,23 +89,27 @@ engine::modules::QwenDecoderLayerWeights load_layer(
         {config.hidden_size, config.attention_heads * config.head_dim});
     out.q_norm = binding::norm_weight_from_source(store, source, prefix + ".self_attn.q_norm", config.head_dim);
     out.k_norm = binding::norm_weight_from_source(store, source, prefix + ".self_attn.k_norm", config.head_dim);
+    out.qk_norm_packed = binding::tiled_qk_norm_from_source(
+        store,
+        source,
+        prefix + ".self_attn.q_norm",
+        prefix + ".self_attn.k_norm",
+        config.attention_heads,
+        config.kv_heads,
+        config.head_dim);
     out.post_norm = binding::norm_weight_from_source(store, source, prefix + ".post_attention_layernorm", config.hidden_size);
-    out.mlp.gate_proj = binding::linear_from_source(
-        store,
-        source,
-        prefix + ".mlp.gate_proj",
-        storage_type,
-        config.intermediate_size,
-        config.hidden_size,
-        false);
-    out.mlp.up_proj = binding::linear_from_source(
-        store,
-        source,
-        prefix + ".mlp.up_proj",
-        storage_type,
-        config.intermediate_size,
-        config.hidden_size,
-        false);
+    // Packed gate|up rows let the MLP run one projection plus the fused
+    // swiglu op instead of two projections + silu + mul.
+    out.mlp.gate_up_proj = engine::modules::LinearWeights{
+        binding::packed_linear_from_source(
+            store,
+            source,
+            {prefix + ".mlp.gate_proj.weight", prefix + ".mlp.up_proj.weight"},
+            storage_type,
+            config.hidden_size,
+            {config.intermediate_size, config.intermediate_size}),
+        std::nullopt,
+    };
     out.mlp.down_proj = binding::linear_from_source(
         store,
         source,
@@ -169,8 +189,12 @@ engine::modules::QwenCausalDecodeRuntimeConfig make_runtime_config(
     out.decoder.stack.runtime.static_cache.update_mode = engine::modules::QwenDecoderStaticCacheUpdateMode::DirectSetRows;
     out.decoder.stack.runtime.static_cache.set_rows_mode =
         engine::modules::QwenDecoderStaticCacheSetRowsMode::BackendViewOptimized;
+    // Packed weights are loaded in load_layer(): route the graphs through the
+    // packed QKV / packed gate-up + fused swiglu lowerings.
+    out.decoder.stack.qkv_layout = engine::modules::QwenDecoderQKVLayout::PackedQKV;
+    out.decoder.stack.runtime.mlp.mode = engine::modules::QwenDecoderMLPMode::PackedGateUp;
     if (backend_type == core::BackendType::Cuda || backend_type == core::BackendType::Hip ||
-        backend_type == core::BackendType::Vulkan) {
+        backend_type == core::BackendType::Vulkan || backend_type == core::BackendType::Sycl) {
         out.decoder.static_cache_type = GGML_TYPE_F16;
     }
     out.decoder.logits_size = logits_size > 0 ? logits_size : config.vocab_size;
@@ -536,56 +560,86 @@ struct Yue2ArRuntime::Impl {
             x = core::reshape_tensor(build, x, core::TensorShape::from_dims({1, steps, config.hidden_size}));
             auto stack = engine::modules::QwenDecoderStackModule(owner.runtime_config.decoder.stack)
                              .build(build, x, pos, owner.runtime_weights.stack, std::nullopt, mask);
-            keys.reserve(stack.state.layers.size());
-            values.reserve(stack.state.layers.size());
             key_values.reserve(stack.state.layers.size());
             value_values.reserve(stack.state.layers.size());
             for (const auto & layer : stack.state.layers) {
                 if (!layer.key.has_value() || !layer.value.has_value()) {
                     throw std::runtime_error("Yue2 AR prefix-state graph did not return K/V state");
                 }
-                const bool skip_bf16_round = owner.execution.backend_type() == core::BackendType::Metal;
-                auto key_value = core::wrap_tensor(
-                    skip_bf16_round ? layer.key->tensor : ggml_round_bf16(ctx.get(), layer.key->tensor),
-                    layer.key->shape,
-                    GGML_TYPE_F32);
-                auto value_value = core::wrap_tensor(
-                    skip_bf16_round ? layer.value->tensor : ggml_round_bf16(ctx.get(), layer.value->tensor),
-                    layer.value->shape,
-                    GGML_TYPE_F32);
-                key_value = core::wrap_tensor(
-                    ggml_cast(ctx.get(), key_value.tensor, GGML_TYPE_F16),
-                    key_value.shape,
-                    GGML_TYPE_F16);
-                value_value = core::wrap_tensor(
-                    ggml_cast(ctx.get(), value_value.tensor, GGML_TYPE_F16),
-                    value_value.shape,
-                    GGML_TYPE_F16);
-                auto * key = ggml_cpy(ctx.get(), key_value.tensor, ggml_dup_tensor(ctx.get(), key_value.tensor));
-                auto * value = ggml_cpy(ctx.get(), value_value.tensor, ggml_dup_tensor(ctx.get(), value_value.tensor));
-                ggml_set_output(key);
-                ggml_set_output(value);
-                keys.push_back(key);
-                values.push_back(value);
                 key_values.push_back(core::make_tensor(state_build, GGML_TYPE_F16, layer.key->shape));
                 value_values.push_back(core::make_tensor(state_build, GGML_TYPE_F16, layer.value->shape));
             }
-            graph = ggml_new_graph_custom(ctx.get(), 65536, false);
-            for (auto * key : keys) {
-                ggml_build_forward_expand(graph, key);
+            // The persistent K/V state buffer is allocated before the graph so
+            // the graph can copy the bf16-rounded f32 K/V straight into f16
+            // state views. This replaces the previous round_bf16 -> cast ->
+            // dup chain plus a per-layer backend device-to-device copy with
+            // direct chunked typed writes: fewer launches, less traffic, and
+            // no full-width single conversion kernel.
+            state_buffer = ggml_backend_alloc_ctx_tensors(state_ctx.get(), owner.execution.backend());
+            if (state_buffer == nullptr) {
+                throw std::runtime_error("failed to allocate Yue2 AR prefix-state cache");
             }
-            for (auto * value : values) {
-                ggml_build_forward_expand(graph, value);
+            constexpr int64_t kStateCopyChunkSteps = 256;
+            auto append_state_copy = [&](ggml_tensor * rounded, core::TensorValue & state) {
+                const size_t src_stride = static_cast<size_t>(rounded->nb[2]);
+                const size_t dst_stride = static_cast<size_t>(state.tensor->nb[2]);
+                ggml_tensor * tail = nullptr;
+                for (int64_t begin = 0; begin < state.shape.dims[1]; begin += kStateCopyChunkSteps) {
+                    const int64_t count = std::min(kStateCopyChunkSteps, state.shape.dims[1] - begin);
+                    auto * src_view = ggml_view_3d(
+                        ctx.get(),
+                        rounded,
+                        state.shape.dims[3],
+                        state.shape.dims[2],
+                        count,
+                        rounded->nb[1],
+                        src_stride,
+                        static_cast<size_t>(begin) * src_stride);
+                    auto * dst_view = ggml_view_3d(
+                        ctx.get(),
+                        state.tensor,
+                        state.shape.dims[3],
+                        state.shape.dims[2],
+                        count,
+                        state.tensor->nb[1],
+                        dst_stride,
+                        static_cast<size_t>(begin) * dst_stride);
+                    tail = ggml_cpy(ctx.get(), src_view, dst_view);
+                    ggml_set_output(tail);
+                    state_copy_nodes.push_back(tail);
+                }
+                return tail;
+            };
+            for (const auto & layer : stack.state.layers) {
+                // Metal skips the intermediate bf16 rounding (platform
+                // semantic). SYCL used to skip it too as a workaround: the old
+                // ggml-sycl round_bf16 launcher captured the host-side
+                // ggml_tensor* in the device lambda, poisoning the Level-Zero
+                // queue after the first launch. The kernel is fixed at the
+                // source (host-side pointer extraction), so SYCL now goes
+                // through the real round_bf16 like CUDA/Vulkan.
+                const bool skip_bf16_round =
+                    owner.execution.backend_type() == core::BackendType::Metal;
+                auto key_rounded = core::wrap_tensor(
+                    skip_bf16_round ? layer.key->tensor : ggml_round_bf16(ctx.get(), layer.key->tensor),
+                    layer.key->shape,
+                    GGML_TYPE_F32);
+                auto value_rounded = core::wrap_tensor(
+                    skip_bf16_round ? layer.value->tensor : ggml_round_bf16(ctx.get(), layer.value->tensor),
+                    layer.value->shape,
+                    GGML_TYPE_F32);
+                append_state_copy(key_rounded.tensor, key_values.back());
+                append_state_copy(value_rounded.tensor, value_values.back());
+            }
+            graph = ggml_new_graph_custom(ctx.get(), 65536, false);
+            for (auto * node : state_copy_nodes) {
+                ggml_build_forward_expand(graph, node);
             }
             gallocr = ggml_gallocr_new(ggml_backend_get_default_buffer_type(owner.execution.backend()));
             if (gallocr == nullptr ||
                 !ggml_gallocr_reserve(gallocr, graph) ||
                 !ggml_gallocr_alloc_graph(gallocr, graph)) {
                 throw std::runtime_error("failed to allocate Yue2 AR prefix-state graph");
-            }
-            state_buffer = ggml_backend_alloc_ctx_tensors(state_ctx.get(), owner.execution.backend());
-            if (state_buffer == nullptr) {
-                throw std::runtime_error("failed to allocate Yue2 AR prefix-state cache");
             }
             position_values = engine::modules::qwen_position_ids(steps);
             mask_values = engine::modules::qwen_causal_prefill_mask_values(1, steps);
@@ -613,12 +667,14 @@ struct Yue2ArRuntime::Impl {
             compute(tokens);
             runtime::TransformerKVState out;
             out.current_end = steps;
-            out.layers.resize(keys.size());
-            for (size_t layer = 0; layer < keys.size(); ++layer) {
+            out.layers.resize(key_values.size());
+            for (size_t layer = 0; layer < key_values.size(); ++layer) {
                 auto & state = out.layers[layer];
                 state.valid_steps = steps;
-                core::read_tensor_f32_into(keys[layer], state.key);
-                core::read_tensor_f32_into(values[layer], state.value);
+                // The graph wrote bf16-rounded f16 state directly; reading
+                // through f32 conversion preserves the previous numerics.
+                core::read_tensor_f32_into(key_values[layer].tensor, state.key);
+                core::read_tensor_f32_into(value_values[layer].tensor, state.value);
                 core::round_f32_to_bf16_in_place(state.key);
                 core::round_f32_to_bf16_in_place(state.value);
             }
@@ -627,10 +683,8 @@ struct Yue2ArRuntime::Impl {
 
         Yue2ArDevicePrefixState run_device(const std::vector<int32_t> & tokens) {
             compute(tokens);
-            for (size_t layer = 0; layer < keys.size(); ++layer) {
-                ggml_backend_tensor_copy(keys[layer], key_values[layer].tensor);
-                ggml_backend_tensor_copy(values[layer], value_values[layer].tensor);
-            }
+            // The graph already wrote the persistent state tensors in place;
+            // no per-layer device-to-device copies are needed.
             Yue2ArDevicePrefixState out;
             out.current_end = steps;
             out.keys = key_values;
@@ -662,8 +716,7 @@ struct Yue2ArRuntime::Impl {
         ggml_tensor * input = nullptr;
         ggml_tensor * positions = nullptr;
         ggml_tensor * attention_mask = nullptr;
-        std::vector<ggml_tensor *> keys;
-        std::vector<ggml_tensor *> values;
+        std::vector<ggml_tensor *> state_copy_nodes;
         std::vector<core::TensorValue> key_values;
         std::vector<core::TensorValue> value_values;
         std::vector<int32_t> position_values;
@@ -707,6 +760,8 @@ struct Yue2ArRuntime::Impl {
             cache_steps_for(
                 static_cast<int64_t>(start_prefix.size()),
                 window.max_tokens - static_cast<int64_t>(emitted.size())));
+        progress_marker("generate prefill done: prefix=" + std::to_string(start_prefix.size()) +
+                        " cache=" + std::to_string(active_runtime->decode_cache_steps()));
         engine::debug::timing_log_scalar("yue2.ar.generate.prefill_ms", engine::debug::elapsed_ms(prefill_start));
         std::mt19937 rng(static_cast<uint32_t>(seed));
         Yue2SamplerScratch scratch;
@@ -724,6 +779,8 @@ struct Yue2ArRuntime::Impl {
                 sample_token(decode_result.logits, emitted, window, rng, scratch);
             sample_ms += engine::debug::elapsed_ms(sample_start);
             if (token == window.stop_token) {
+                progress_marker("generate done: emitted=" + std::to_string(emitted.size()) +
+                                " refills=" + std::to_string(refill_count));
                 engine::debug::timing_log_scalar("yue2.ar.generate.sample_ms", sample_ms);
                 engine::debug::timing_log_scalar("yue2.ar.generate.decode_ms", decode_ms);
                 engine::debug::timing_log_scalar("yue2.ar.generate.refill_prefill_ms", refill_prefill_ms);
@@ -733,6 +790,9 @@ struct Yue2ArRuntime::Impl {
                 return emitted;
             }
             emitted.push_back(token);
+            if (emitted.size() % 200 == 0) {
+                progress_marker("generate decoding: emitted=" + std::to_string(emitted.size()));
+            }
             if (static_cast<int64_t>(emitted.size()) >= window.max_tokens) {
                 break;
             }
@@ -803,6 +863,8 @@ struct Yue2ArRuntime::Impl {
         const auto negative_prefill_start = Clock::now();
         auto negative = positive_runtime->prefill_tokens(negative_tokens);
         engine::debug::timing_log_scalar("yue2.ar.cfg.prefill_negative_ms", engine::debug::elapsed_ms(negative_prefill_start));
+        progress_marker("cfg prefill done: positive=" + std::to_string(positive_tokens.size()) +
+                        " negative=" + std::to_string(negative_tokens.size()));
         const auto start_decode_start = Clock::now();
         const int64_t cache_steps =
             std::max<int64_t>(
@@ -834,6 +896,7 @@ struct Yue2ArRuntime::Impl {
                 sample_token(logits, emitted, window, rng, scratch);
             sample_ms += engine::debug::elapsed_ms(sample_start);
             if (token == window.stop_token) {
+                progress_marker("cfg done: emitted=" + std::to_string(emitted.size()));
                 engine::debug::timing_log_scalar("yue2.ar.cfg.sample_ms", sample_ms);
                 engine::debug::timing_log_scalar("yue2.ar.cfg.decode_batched_ms", decode_batched_ms);
                 engine::debug::timing_log_scalar("yue2.ar.cfg.emitted_tokens", emitted.size());
@@ -841,6 +904,9 @@ struct Yue2ArRuntime::Impl {
                 return emitted;
             }
             emitted.push_back(token);
+            if (emitted.size() % 200 == 0) {
+                progress_marker("cfg decoding: emitted=" + std::to_string(emitted.size()));
+            }
             if (static_cast<int64_t>(emitted.size()) >= window.max_tokens) {
                 break;
             }

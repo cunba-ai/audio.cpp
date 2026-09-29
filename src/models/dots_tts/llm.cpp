@@ -8,6 +8,7 @@
 #include "engine/framework/modules/norm_modules.h"
 #include "engine/framework/modules/transformers/qwen_causal_decode_runtime.h"
 #include "engine/framework/modules/transformers/qwen_decoder.h"
+#include "engine/framework/modules/weight_binding.h"
 #include "engine/framework/runtime/kv_cache.h"
 #include "engine/framework/core/backend.h"
 
@@ -28,6 +29,7 @@ namespace engine::models::dots_tts {
 namespace {
 
 namespace modules = engine::modules;
+namespace binding = modules::binding;
 
 constexpr size_t kWeightContextBytes = 128ull * 1024ull * 1024ull;
 constexpr size_t kSmallGraphContextBytes = 32ull * 1024ull * 1024ull;
@@ -86,6 +88,10 @@ modules::QwenDecoderStackConfig stack_config(const DotsLlmConfig & config) {
     out.runtime.static_cache.update_mode = modules::QwenDecoderStaticCacheUpdateMode::DirectSetRows;
     out.runtime.attention.prefill_mode = modules::QwenDecoderAttentionMode::FlashGroupedViewKV;
     out.runtime.attention.static_mode = modules::QwenDecoderAttentionMode::FlashGroupedViewKV;
+    // Packed weights are loaded in load_layer(): route the graphs through the
+    // packed QKV / packed gate-up + fused swiglu lowerings.
+    out.qkv_layout = modules::QwenDecoderQKVLayout::PackedQKV;
+    out.runtime.mlp.mode = modules::QwenDecoderMLPMode::PackedGateUp;
     return out;
 }
 
@@ -120,16 +126,40 @@ modules::QwenDecoderLayerWeights load_layer(
     const std::string prefix = "llm.model.layers." + std::to_string(layer);
     modules::QwenDecoderLayerWeights out;
     out.input_norm = {store.load_f32_tensor(source, prefix + ".input_layernorm.weight", {config.hidden_size}), std::nullopt};
-    out.self_attention.q_weight = store.load_tensor(source, prefix + ".self_attn.q_proj.weight", storage_type, {config.num_attention_heads * dim, config.hidden_size});
-    out.self_attention.q_bias = store.load_f32_tensor(source, prefix + ".self_attn.q_proj.bias", {config.num_attention_heads * dim});
-    out.self_attention.k_weight = store.load_tensor(source, prefix + ".self_attn.k_proj.weight", storage_type, {config.num_key_value_heads * dim, config.hidden_size});
-    out.self_attention.k_bias = store.load_f32_tensor(source, prefix + ".self_attn.k_proj.bias", {config.num_key_value_heads * dim});
-    out.self_attention.v_weight = store.load_tensor(source, prefix + ".self_attn.v_proj.weight", storage_type, {config.num_key_value_heads * dim, config.hidden_size});
-    out.self_attention.v_bias = store.load_f32_tensor(source, prefix + ".self_attn.v_proj.bias", {config.num_key_value_heads * dim});
+    // Packed q|k|v projection (row order [q | k | v]) with the biases packed
+    // alongside: one GEMM + one bias add instead of three of each per layer.
+    const int64_t q_out = config.num_attention_heads * dim;
+    const int64_t kv_out = config.num_key_value_heads * dim;
+    out.self_attention.qkv_weight = binding::packed_linear_from_source(
+        store,
+        source,
+        {prefix + ".self_attn.q_proj.weight",
+         prefix + ".self_attn.k_proj.weight",
+         prefix + ".self_attn.v_proj.weight"},
+        storage_type,
+        config.hidden_size,
+        {q_out, kv_out, kv_out});
+    out.self_attention.qkv_bias = binding::packed_f32_from_source(
+        store,
+        source,
+        {prefix + ".self_attn.q_proj.bias",
+         prefix + ".self_attn.k_proj.bias",
+         prefix + ".self_attn.v_proj.bias"},
+        {q_out, kv_out, kv_out});
     out.self_attention.out_weight = store.load_tensor(source, prefix + ".self_attn.o_proj.weight", storage_type, {config.hidden_size, config.hidden_size});
     out.post_norm = {store.load_f32_tensor(source, prefix + ".post_attention_layernorm.weight", {config.hidden_size}), std::nullopt};
-    out.mlp.gate_proj = {store.load_tensor(source, prefix + ".mlp.gate_proj.weight", storage_type, {config.intermediate_size, config.hidden_size}), std::nullopt};
-    out.mlp.up_proj = {store.load_tensor(source, prefix + ".mlp.up_proj.weight", storage_type, {config.intermediate_size, config.hidden_size}), std::nullopt};
+    // Packed gate|up rows let the MLP run one projection plus the fused
+    // swiglu op instead of two projections + silu + mul.
+    out.mlp.gate_up_proj = modules::LinearWeights{
+        binding::packed_linear_from_source(
+            store,
+            source,
+            {prefix + ".mlp.gate_proj.weight", prefix + ".mlp.up_proj.weight"},
+            storage_type,
+            config.hidden_size,
+            {config.intermediate_size, config.intermediate_size}),
+        std::nullopt,
+    };
     out.mlp.down_proj = {store.load_tensor(source, prefix + ".mlp.down_proj.weight", storage_type, {config.hidden_size, config.intermediate_size}), std::nullopt};
     return out;
 }

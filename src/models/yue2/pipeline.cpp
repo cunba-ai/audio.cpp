@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstdint>
 #include <sstream>
 #include <stdexcept>
@@ -364,8 +366,23 @@ public:
         ar.reset();
         nar.reset();
         const auto vae_start = Clock::now();
+        {
+            static const bool progress_enabled = std::getenv("AUDIOCPP_PROGRESS") != nullptr;
+            if (progress_enabled) {
+                std::fprintf(stderr, "[yue2.progress] vae decode start: frames=%lld\n",
+                             static_cast<long long>(frames));
+                std::fflush(stderr);
+            }
+        }
         auto audio = decode_audio(latents, frames);
         engine::debug::timing_log_scalar("yue2.vae_decode_ms", engine::debug::elapsed_ms(vae_start, Clock::now()));
+        {
+            static const bool progress_enabled = std::getenv("AUDIOCPP_PROGRESS") != nullptr;
+            if (progress_enabled) {
+                std::fprintf(stderr, "[yue2.progress] vae decode done\n");
+                std::fflush(stderr);
+            }
+        }
         if (vae) {
             vae->release_runtime_graphs();
         }

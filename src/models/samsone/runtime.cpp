@@ -143,12 +143,32 @@ public:
             modules::QwenDecoderLayerWeights weights;
             weights.input_norm = binding::norm_weight_from_source(store_, *assets_->weights, prefix + ".input_layernorm", config.hidden_size);
             weights.post_norm = binding::norm_weight_from_source(store_, *assets_->weights, prefix + ".post_attention_layernorm", config.hidden_size);
-            weights.self_attention.q_weight = store_.load_tensor(*assets_->weights, prefix + ".self_attn.q_proj.weight", Storage::Native, {config.hidden_size, config.hidden_size});
-            weights.self_attention.k_weight = store_.load_tensor(*assets_->weights, prefix + ".self_attn.k_proj.weight", Storage::Native, {config.num_key_value_heads * head_dim, config.hidden_size});
-            weights.self_attention.v_weight = store_.load_tensor(*assets_->weights, prefix + ".self_attn.v_proj.weight", Storage::Native, {config.num_key_value_heads * head_dim, config.hidden_size});
+            // Packed q|k|v projection (row order [q | k | v]): one GEMM
+            // instead of three per layer on every graph.
+            weights.self_attention.qkv_weight = binding::packed_linear_from_source(
+                store_,
+                *assets_->weights,
+                {prefix + ".self_attn.q_proj.weight",
+                 prefix + ".self_attn.k_proj.weight",
+                 prefix + ".self_attn.v_proj.weight"},
+                Storage::Native,
+                config.hidden_size,
+                {config.hidden_size,
+                 config.num_key_value_heads * head_dim,
+                 config.num_key_value_heads * head_dim});
             weights.self_attention.out_weight = store_.load_tensor(*assets_->weights, prefix + ".self_attn.o_proj.weight", Storage::Native, {config.hidden_size, config.hidden_size});
-            weights.mlp.gate_proj = binding::linear_from_source(store_, *assets_->weights, prefix + ".mlp.gate_proj", Storage::Native, config.intermediate_size, config.hidden_size, false);
-            weights.mlp.up_proj = binding::linear_from_source(store_, *assets_->weights, prefix + ".mlp.up_proj", Storage::Native, config.intermediate_size, config.hidden_size, false);
+            // Packed gate|up rows let the MLP run one projection plus the
+            // fused swiglu op.
+            weights.mlp.gate_up_proj = modules::LinearWeights{
+                binding::packed_linear_from_source(
+                    store_,
+                    *assets_->weights,
+                    {prefix + ".mlp.gate_proj.weight", prefix + ".mlp.up_proj.weight"},
+                    Storage::Native,
+                    config.hidden_size,
+                    {config.intermediate_size, config.intermediate_size}),
+                std::nullopt,
+            };
             weights.mlp.down_proj = binding::linear_from_source(store_, *assets_->weights, prefix + ".mlp.down_proj", Storage::Native, config.hidden_size, config.intermediate_size, false);
             decoder_weights.stack.layers.push_back(std::move(weights));
         }
@@ -175,6 +195,10 @@ public:
         stack.runtime.attention.static_mode = modules::QwenDecoderAttentionMode::FlashGroupedViewKV;
         stack.runtime.static_cache.update_mode = modules::QwenDecoderStaticCacheUpdateMode::DirectSetRows;
         stack.runtime.static_cache.set_rows_mode = modules::QwenDecoderStaticCacheSetRowsMode::BackendViewOptimized;
+        // Packed weights are loaded above: route the graphs through the packed
+        // QKV / packed gate-up + fused swiglu lowerings.
+        stack.qkv_layout = modules::QwenDecoderQKVLayout::PackedQKV;
+        stack.runtime.mlp.mode = modules::QwenDecoderMLPMode::PackedGateUp;
 
         projector_linear1_ = binding::linear_from_source(store_, *assets_->weights, "projector.linear1", Storage::Native, config.hidden_size, kWhisperChannels, false);
         projector_linear2_ = binding::linear_from_source(store_, *assets_->weights, "projector.linear2", Storage::Native, config.hidden_size, config.hidden_size, false);

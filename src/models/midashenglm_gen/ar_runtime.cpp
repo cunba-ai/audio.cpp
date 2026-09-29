@@ -66,6 +66,12 @@ modules::QwenCausalDecoderConfig qwen_config(
     out.stack.runtime.attention.prefill_mode = modules::QwenDecoderAttentionMode::FlashGroupedViewKV;
     out.stack.runtime.attention.static_mode = modules::QwenDecoderAttentionMode::FlashGroupedViewKV;
     out.stack.runtime.static_cache.update_mode = modules::QwenDecoderStaticCacheUpdateMode::DirectSetRows;
+    out.stack.runtime.static_cache.set_rows_mode =
+        modules::QwenDecoderStaticCacheSetRowsMode::BackendViewOptimized;
+    // Packed weights are loaded in load_qwen_layer(): route the graphs through
+    // the packed QKV / packed gate-up + fused swiglu lowerings.
+    out.stack.qkv_layout = modules::QwenDecoderQKVLayout::PackedQKV;
+    out.stack.runtime.mlp.mode = modules::QwenDecoderMLPMode::PackedGateUp;
     out.logits_mode = modules::QwenCausalDecoderLogitsMode::LastStep;
     return out;
 }
@@ -79,15 +85,47 @@ modules::QwenDecoderLayerWeights load_qwen_layer(
     const std::string prefix = "model.mdl_model.decoder.model.layers." + std::to_string(layer);
     modules::QwenDecoderLayerWeights out;
     out.input_norm = binding::norm_weight_from_source(store, source, prefix + ".input_layernorm", config.stack.hidden_size);
-    out.self_attention.q_weight = store.load_tensor(source, prefix + ".self_attn.q_proj.weight", storage_type, {config.stack.num_attention_heads * config.stack.head_dim, config.stack.hidden_size});
-    out.self_attention.k_weight = store.load_tensor(source, prefix + ".self_attn.k_proj.weight", storage_type, {config.stack.num_key_value_heads * config.stack.head_dim, config.stack.hidden_size});
-    out.self_attention.v_weight = store.load_tensor(source, prefix + ".self_attn.v_proj.weight", storage_type, {config.stack.num_key_value_heads * config.stack.head_dim, config.stack.hidden_size});
+    // Packed q|k|v projection + tiled q/k norm weights: the single-token
+    // static-cache decode graph (the launch-bound hot loop) then runs 1
+    // projection + 1 rmsnorm + 1 rope instead of 3 + 2 + 2 ops per layer.
+    // Row order inside the packed weight is [q | k | v].
+    const int64_t q_out = config.stack.num_attention_heads * config.stack.head_dim;
+    const int64_t kv_out = config.stack.num_key_value_heads * config.stack.head_dim;
+    out.self_attention.qkv_weight = binding::packed_linear_from_source(
+        store,
+        source,
+        {prefix + ".self_attn.q_proj.weight",
+         prefix + ".self_attn.k_proj.weight",
+         prefix + ".self_attn.v_proj.weight"},
+        storage_type,
+        config.stack.hidden_size,
+        {q_out, kv_out, kv_out});
     out.self_attention.out_weight = store.load_tensor(source, prefix + ".self_attn.o_proj.weight", storage_type, {config.stack.hidden_size, config.stack.num_attention_heads * config.stack.head_dim});
+    // q_norm/k_norm stay separately loaded: the prefill graphs apply the two
+    // norms per projection after slicing the packed projection.
     out.q_norm = binding::norm_weight_from_source(store, source, prefix + ".self_attn.q_norm", config.stack.head_dim);
     out.k_norm = binding::norm_weight_from_source(store, source, prefix + ".self_attn.k_norm", config.stack.head_dim);
+    out.qk_norm_packed = binding::tiled_qk_norm_from_source(
+        store,
+        source,
+        prefix + ".self_attn.q_norm",
+        prefix + ".self_attn.k_norm",
+        config.stack.num_attention_heads,
+        config.stack.num_key_value_heads,
+        config.stack.head_dim);
     out.post_norm = binding::norm_weight_from_source(store, source, prefix + ".post_attention_layernorm", config.stack.hidden_size);
-    out.mlp.gate_proj = binding::linear_from_source(store, source, prefix + ".mlp.gate_proj", storage_type, config.stack.intermediate_size, config.stack.hidden_size, false);
-    out.mlp.up_proj = binding::linear_from_source(store, source, prefix + ".mlp.up_proj", storage_type, config.stack.intermediate_size, config.stack.hidden_size, false);
+    // Packed gate|up rows let the MLP run one projection plus the fused
+    // swiglu op instead of two projections + silu + mul.
+    out.mlp.gate_up_proj = modules::LinearWeights{
+        binding::packed_linear_from_source(
+            store,
+            source,
+            {prefix + ".mlp.gate_proj.weight", prefix + ".mlp.up_proj.weight"},
+            storage_type,
+            config.stack.hidden_size,
+            {config.stack.intermediate_size, config.stack.intermediate_size}),
+        std::nullopt,
+    };
     out.mlp.down_proj = binding::linear_from_source(store, source, prefix + ".mlp.down_proj", storage_type, config.stack.hidden_size, config.stack.intermediate_size, false);
     return out;
 }

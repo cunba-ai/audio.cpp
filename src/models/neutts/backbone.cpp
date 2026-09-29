@@ -63,21 +63,21 @@ modules::QwenDecoderLayerWeights load_layer_weights(
         source,
         prefix + ".input_layernorm",
         config.hidden_size);
-    out.self_attention.q_weight = store.load_tensor(
+    // Packed q|k|v projection + tiled q/k norms: the single-token decode fast
+    // path (active whenever the bf16 autocast policy is off, e.g. Vulkan) runs
+    // 1 projection + 1 rmsnorm + 1 rope instead of 3 + 2 + 2 ops per layer.
+    // Row order inside the packed weight is [q | k | v].
+    out.self_attention.qkv_weight = binding::packed_linear_from_source(
+        store,
         source,
-        prefix + ".self_attn.q_proj.weight",
+        {prefix + ".self_attn.q_proj.weight",
+         prefix + ".self_attn.k_proj.weight",
+         prefix + ".self_attn.v_proj.weight"},
         storage_type,
-        {config.attention_heads * config.head_dim, config.hidden_size});
-    out.self_attention.k_weight = store.load_tensor(
-        source,
-        prefix + ".self_attn.k_proj.weight",
-        storage_type,
-        {config.kv_heads * config.head_dim, config.hidden_size});
-    out.self_attention.v_weight = store.load_tensor(
-        source,
-        prefix + ".self_attn.v_proj.weight",
-        storage_type,
-        {config.kv_heads * config.head_dim, config.hidden_size});
+        config.hidden_size,
+        {config.attention_heads * config.head_dim,
+         config.kv_heads * config.head_dim,
+         config.kv_heads * config.head_dim});
     out.self_attention.out_weight = store.load_tensor(
         source,
         prefix + ".self_attn.o_proj.weight",
@@ -93,27 +93,31 @@ modules::QwenDecoderLayerWeights load_layer_weights(
         source,
         prefix + ".self_attn.k_norm",
         config.head_dim);
+    out.qk_norm_packed = binding::tiled_qk_norm_from_source(
+        store,
+        source,
+        prefix + ".self_attn.q_norm",
+        prefix + ".self_attn.k_norm",
+        config.attention_heads,
+        config.kv_heads,
+        config.head_dim);
     out.post_norm = binding::norm_weight_from_source(
         store,
         source,
         prefix + ".post_attention_layernorm",
         config.hidden_size);
-    out.mlp.gate_proj = binding::linear_from_source(
-        store,
-        source,
-        prefix + ".mlp.gate_proj",
-        storage_type,
-        config.intermediate_size,
-        config.hidden_size,
-        false);
-    out.mlp.up_proj = binding::linear_from_source(
-        store,
-        source,
-        prefix + ".mlp.up_proj",
-        storage_type,
-        config.intermediate_size,
-        config.hidden_size,
-        false);
+    // Packed gate|up rows let the MLP run one projection plus the fused
+    // swiglu op instead of two projections + silu + mul.
+    out.mlp.gate_up_proj = modules::LinearWeights{
+        binding::packed_linear_from_source(
+            store,
+            source,
+            {prefix + ".mlp.gate_proj.weight", prefix + ".mlp.up_proj.weight"},
+            storage_type,
+            config.hidden_size,
+            {config.intermediate_size, config.intermediate_size}),
+        std::nullopt,
+    };
     out.mlp.down_proj = binding::linear_from_source(
         store,
         source,
@@ -147,6 +151,13 @@ modules::QwenCausalDecoderConfig make_neutts_qwen_config(
     out.stack.runtime.attention.prefill_mode = modules::QwenDecoderAttentionMode::FlashGroupedViewKV;
     out.stack.runtime.attention.static_mode = modules::QwenDecoderAttentionMode::FlashGroupedViewKV;
     out.stack.runtime.static_cache.update_mode = modules::QwenDecoderStaticCacheUpdateMode::DirectSetRows;
+    out.stack.runtime.static_cache.set_rows_mode =
+        modules::QwenDecoderStaticCacheSetRowsMode::BackendViewOptimized;
+    // Packed weights are loaded in load_layer_weights(): route the graphs
+    // through the packed QKV / packed gate-up + fused swiglu lowerings (the
+    // fused decode fast path additionally requires the autocast policy off).
+    out.stack.qkv_layout = modules::QwenDecoderQKVLayout::PackedQKV;
+    out.stack.runtime.mlp.mode = modules::QwenDecoderMLPMode::PackedGateUp;
     out.logits_size = config.vocab_size;
     out.logits_mode = modules::QwenCausalDecoderLogitsMode::LastStep;
     out.lm_head_precision = GGML_PREC_DEFAULT;

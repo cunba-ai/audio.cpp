@@ -413,7 +413,12 @@ bool is_conv_transpose1d_col2im_fast_path_eligible(
     const ConvTranspose1dConfig & config) noexcept {
     return (core::uses_ggml_cuda_or_hip_backend(ctx.backend_type) ||
             ctx.backend_type == core::BackendType::Metal ||
-            ctx.backend_type == core::BackendType::Vulkan) &&
+            ctx.backend_type == core::BackendType::Vulkan ||
+            // SYCL: the generic ggml_conv_transpose_1d kernel is
+            // O(L_out * C_in * L_in) and dominates VAE decode on B50;
+            // ggml-sycl implements COL2IM_1D (col2im-1d.cpp), so take the
+            // same GEMM + col2im lowering the other backends use.
+            ctx.backend_type == core::BackendType::Sycl) &&
            config.dilation == 1;
 }
 

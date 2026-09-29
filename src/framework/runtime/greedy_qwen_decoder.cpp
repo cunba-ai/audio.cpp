@@ -10,6 +10,7 @@
 #include "engine/framework/runtime/errors.h"
 #include "engine/framework/runtime/kv_cache.h"
 #include "engine/framework/modules/transformers/qwen_causal_decode_runtime.h"
+#include "engine/framework/modules/weight_binding.h"
 #include "engine/framework/sampling/decode_modules.h"
 
 #include <ggml-backend.h>
@@ -29,6 +30,7 @@ namespace engine::runtime {
 namespace {
 
 namespace modules = engine::modules;
+namespace binding = modules::binding;
 using Clock = std::chrono::steady_clock;
 
 struct GgmlContextDeleter {
@@ -60,9 +62,11 @@ struct DecoderLayerWeights {
     core::TensorValue o_proj;
     core::TensorValue q_norm;
     core::TensorValue k_norm;
+    core::TensorValue qk_norm_packed;
     core::TensorValue post_norm;
     core::TensorValue gate_proj;
     core::TensorValue up_proj;
+    core::TensorValue gate_up_proj;
     core::TensorValue down_proj;
 };
 
@@ -84,15 +88,18 @@ modules::QwenDecoderLayerWeights bind_layer_weights(
     const GreedyQwenDecoderSpec & spec) {
     modules::QwenDecoderLayerWeights out;
     out.input_norm = {weights.input_norm, std::nullopt};
-    out.self_attention.q_weight = weights.q_proj;
-    if (spec.attention_bias) {
-        out.self_attention.q_bias = weights.q_bias;
-        out.self_attention.k_bias = weights.k_bias;
-        out.self_attention.v_bias = weights.v_bias;
+    const bool packed_layout = spec.packed_qkv || spec.pack_separate_qkv;
+    if (!packed_layout) {
+        out.self_attention.q_weight = weights.q_proj;
+        if (spec.attention_bias) {
+            out.self_attention.q_bias = weights.q_bias;
+            out.self_attention.k_bias = weights.k_bias;
+            out.self_attention.v_bias = weights.v_bias;
+        }
     }
     out.self_attention.k_weight = weights.k_proj;
     out.self_attention.v_weight = weights.v_proj;
-    if (spec.packed_qkv) {
+    if (packed_layout) {
         out.self_attention.qkv_weight = weights.qkv_weight;
         if (spec.attention_bias) {
             out.self_attention.qkv_bias = weights.qkv_bias;
@@ -102,10 +109,17 @@ modules::QwenDecoderLayerWeights bind_layer_weights(
     if (spec.decoder.stack.use_qk_norm) {
         out.q_norm = {weights.q_norm, std::nullopt};
         out.k_norm = {weights.k_norm, std::nullopt};
+        if (spec.pack_separate_qkv) {
+            out.qk_norm_packed = weights.qk_norm_packed;
+        }
     }
     out.post_norm = {weights.post_norm, std::nullopt};
-    out.mlp.gate_proj = {weights.gate_proj, std::nullopt};
-    out.mlp.up_proj = {weights.up_proj, std::nullopt};
+    if (spec.pack_separate_qkv) {
+        out.mlp.gate_up_proj = {weights.gate_up_proj, std::nullopt};
+    } else {
+        out.mlp.gate_proj = {weights.gate_proj, std::nullopt};
+        out.mlp.up_proj = {weights.up_proj, std::nullopt};
+    }
     out.mlp.down_proj = {weights.down_proj, std::nullopt};
     return out;
 }
@@ -186,13 +200,36 @@ DecoderWeights load_weights(
         const std::string prefix = spec.layer_prefix + "." + std::to_string(layer);
         DecoderLayerWeights w;
         w.input_norm = weights.store->load_f32_tensor(source, prefix + ".input_layernorm.weight", {stack.hidden_size});
+        const int64_t q_out = stack.num_attention_heads * dim;
+        const int64_t kv_out = stack.num_key_value_heads * dim;
         if (spec.packed_qkv) {
-            const int64_t qkv_rows =
-                (stack.num_attention_heads + 2 * stack.num_key_value_heads) * dim;
+            const int64_t qkv_rows = (stack.num_attention_heads + 2 * stack.num_key_value_heads) * dim;
             w.qkv_weight = weights.store->load_tensor(
                 source, prefix + ".self_attn.qkv_proj.weight", storage_type, {qkv_rows, stack.hidden_size});
             if (spec.attention_bias) {
                 w.qkv_bias = weights.store->load_f32_tensor(source, prefix + ".self_attn.qkv_proj.bias", {qkv_rows});
+            }
+        } else if (spec.pack_separate_qkv) {
+            // Pack the separately stored q|k|v projections (and their biases)
+            // into row-concatenated tensors at load time so the graphs run one
+            // fused projection per layer. Row order is [q | k | v].
+            w.qkv_weight = binding::packed_linear_from_source(
+                *weights.store,
+                source,
+                {prefix + ".self_attn.q_proj.weight",
+                 prefix + ".self_attn.k_proj.weight",
+                 prefix + ".self_attn.v_proj.weight"},
+                storage_type,
+                stack.hidden_size,
+                {q_out, kv_out, kv_out});
+            if (spec.attention_bias) {
+                w.qkv_bias = binding::packed_f32_from_source(
+                    *weights.store,
+                    source,
+                    {prefix + ".self_attn.q_proj.bias",
+                     prefix + ".self_attn.k_proj.bias",
+                     prefix + ".self_attn.v_proj.bias"},
+                    {q_out, kv_out, kv_out});
             }
         } else {
             w.q_proj = weights.store->load_tensor(source, prefix + ".self_attn.q_proj.weight", storage_type, {stack.num_attention_heads * dim, stack.hidden_size});
@@ -208,10 +245,30 @@ DecoderWeights load_weights(
         if (stack.use_qk_norm) {
             w.q_norm = weights.store->load_f32_tensor(source, prefix + ".self_attn.q_norm.weight", {dim});
             w.k_norm = weights.store->load_f32_tensor(source, prefix + ".self_attn.k_norm.weight", {dim});
+            if (spec.pack_separate_qkv) {
+                w.qk_norm_packed = binding::tiled_qk_norm_from_source(
+                    *weights.store,
+                    source,
+                    prefix + ".self_attn.q_norm",
+                    prefix + ".self_attn.k_norm",
+                    stack.num_attention_heads,
+                    stack.num_key_value_heads,
+                    dim);
+            }
         }
         w.post_norm = weights.store->load_f32_tensor(source, prefix + ".post_attention_layernorm.weight", {stack.hidden_size});
-        w.gate_proj = weights.store->load_tensor(source, prefix + ".mlp.gate_proj.weight", storage_type, {stack.intermediate_size, stack.hidden_size});
-        w.up_proj = weights.store->load_tensor(source, prefix + ".mlp.up_proj.weight", storage_type, {stack.intermediate_size, stack.hidden_size});
+        if (spec.pack_separate_qkv) {
+            w.gate_up_proj = binding::packed_linear_from_source(
+                *weights.store,
+                source,
+                {prefix + ".mlp.gate_proj.weight", prefix + ".mlp.up_proj.weight"},
+                storage_type,
+                stack.hidden_size,
+                {stack.intermediate_size, stack.intermediate_size});
+        } else {
+            w.gate_proj = weights.store->load_tensor(source, prefix + ".mlp.gate_proj.weight", storage_type, {stack.intermediate_size, stack.hidden_size});
+            w.up_proj = weights.store->load_tensor(source, prefix + ".mlp.up_proj.weight", storage_type, {stack.intermediate_size, stack.hidden_size});
+        }
         w.down_proj = weights.store->load_tensor(source, prefix + ".mlp.down_proj.weight", storage_type, {stack.hidden_size, stack.intermediate_size});
         weights.layers.push_back(std::move(w));
     }
@@ -250,6 +307,20 @@ bool is_eos(const GreedyQwenDecoderSpec & spec, int32_t token) {
         spec.eos_token_ids.end();
 }
 
+// Apply the packed-layout graph settings implied by spec.pack_separate_qkv so
+// every graph built from this spec (prefill, decode, the reusable runtime)
+// routes through the packed QKV / packed gate-up lowerings.
+GreedyQwenDecoderSpec normalize_packed_spec(GreedyQwenDecoderSpec spec) {
+    if (!spec.pack_separate_qkv || spec.packed_qkv) {
+        return spec;
+    }
+    spec.decoder.stack.qkv_layout = modules::QwenDecoderQKVLayout::PackedQKV;
+    spec.decoder.stack.runtime.mlp.mode = modules::QwenDecoderMLPMode::PackedGateUp;
+    spec.decoder.stack.runtime.static_cache.set_rows_mode =
+        modules::QwenDecoderStaticCacheSetRowsMode::BackendViewOptimized;
+    return spec;
+}
+
 class ThinkerWeightsRuntime {
 public:
     ThinkerWeightsRuntime(
@@ -258,7 +329,7 @@ public:
         core::ExecutionContext & execution,
         size_t weight_context_bytes,
         assets::TensorStorageType storage_type)
-        : spec_(std::make_shared<const GreedyQwenDecoderSpec>(std::move(spec))),
+        : spec_(std::make_shared<const GreedyQwenDecoderSpec>(normalize_packed_spec(std::move(spec)))),
           backend_(execution.backend()),
           backend_type_(execution.backend_type()),
           threads_(std::max(1, execution.config().threads)),

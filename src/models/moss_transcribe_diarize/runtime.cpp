@@ -107,6 +107,10 @@ public:
         stack.runtime.attention.static_mode = modules::QwenDecoderAttentionMode::FlashGroupedViewKV;
         stack.runtime.static_cache.update_mode = modules::QwenDecoderStaticCacheUpdateMode::DirectSetRows;
         stack.runtime.static_cache.set_rows_mode = modules::QwenDecoderStaticCacheSetRowsMode::BackendViewOptimized;
+        // Packed weights are loaded above: route the graphs through the packed
+        // QKV / packed gate-up + fused swiglu lowerings.
+        stack.qkv_layout = modules::QwenDecoderQKVLayout::PackedQKV;
+        stack.runtime.mlp.mode = modules::QwenDecoderMLPMode::PackedGateUp;
         ar_config.decoder.static_cache_type = GGML_TYPE_F16;
         ar_config.decoder.logits_size = vocab_;
 
@@ -120,18 +124,39 @@ public:
             layer.post_norm = binding::norm_weight_from_source(store_, *source_, p + ".post_attention_layernorm", kHidden);
             layer.q_norm = binding::norm_weight_from_source(store_, *source_, p + ".self_attn.q_norm", stack.head_dim);
             layer.k_norm = binding::norm_weight_from_source(store_, *source_, p + ".self_attn.k_norm", stack.head_dim);
-            layer.self_attention.q_weight = store_.load_tensor(*source_, p + ".self_attn.q_proj.weight", Storage::Native,
-                {stack.num_attention_heads * stack.head_dim, kHidden});
-            layer.self_attention.k_weight = store_.load_tensor(*source_, p + ".self_attn.k_proj.weight", Storage::Native,
-                {stack.num_key_value_heads * stack.head_dim, kHidden});
-            layer.self_attention.v_weight = store_.load_tensor(*source_, p + ".self_attn.v_proj.weight", Storage::Native,
-                {stack.num_key_value_heads * stack.head_dim, kHidden});
+            // Packed q|k|v projection + tiled q/k norms: decode runs 1
+            // projection + 1 rmsnorm + 1 rope per layer instead of 3 + 2 + 2
+            // ops. Row order inside the packed weight is [q | k | v].
+            layer.self_attention.qkv_weight = binding::packed_linear_from_source(
+                store_, *source_,
+                {p + ".self_attn.q_proj.weight",
+                 p + ".self_attn.k_proj.weight",
+                 p + ".self_attn.v_proj.weight"},
+                Storage::Native,
+                kHidden,
+                {stack.num_attention_heads * stack.head_dim,
+                 stack.num_key_value_heads * stack.head_dim,
+                 stack.num_key_value_heads * stack.head_dim});
+            layer.qk_norm_packed = binding::tiled_qk_norm_from_source(
+                store_,
+                *source_,
+                p + ".self_attn.q_norm",
+                p + ".self_attn.k_norm",
+                stack.num_attention_heads,
+                stack.num_key_value_heads,
+                stack.head_dim);
             layer.self_attention.out_weight = store_.load_tensor(*source_, p + ".self_attn.o_proj.weight", Storage::Native,
                 {kHidden, stack.num_attention_heads * stack.head_dim});
-            layer.mlp.gate_proj = binding::linear_from_source(store_, *source_, p + ".mlp.gate_proj", Storage::Native,
-                stack.intermediate_size, kHidden, false);
-            layer.mlp.up_proj = binding::linear_from_source(store_, *source_, p + ".mlp.up_proj", Storage::Native,
-                stack.intermediate_size, kHidden, false);
+            layer.mlp.gate_up_proj = modules::LinearWeights{
+                binding::packed_linear_from_source(
+                    store_,
+                    *source_,
+                    {p + ".mlp.gate_proj.weight", p + ".mlp.up_proj.weight"},
+                    Storage::Native,
+                    kHidden,
+                    {stack.intermediate_size, stack.intermediate_size}),
+                std::nullopt,
+            };
             layer.mlp.down_proj = binding::linear_from_source(store_, *source_, p + ".mlp.down_proj", Storage::Native,
                 kHidden, stack.intermediate_size, false);
             ar_weights.stack.layers.push_back(std::move(layer));

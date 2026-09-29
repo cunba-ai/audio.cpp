@@ -32,6 +32,9 @@ runtime::GreedyQwenDecoderSpec make_decoder_spec(const R2T2ASRConfig & config) {
     spec.tie_word_embeddings = config.tie_word_embeddings;
     spec.attention_bias = text.attention_bias;
     spec.packed_qkv = false;
+    // The checkpoint stores separate q|k|v / gate|up projections; pack them at
+    // load time so decode runs the fused packed-QKV + packed gate-up graphs.
+    spec.pack_separate_qkv = true;
 
     // R2T2 ships the legacy `thinker.*` namespace and the tied LM head of the
     // base Qwen3-ASR checkpoint; the HF layout is accepted for converted GGUFs.

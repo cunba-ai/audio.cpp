@@ -225,10 +225,14 @@ core::TensorValue decoder_block(core::ModuleBuildContext &ctx,
   auto hidden =
       modules::Snake1dModule({in_channels}).build(ctx, input, weights.up_snake);
   const int64_t padding = (stride + 1) / 2;
+  // ggml's ggml_conv_transpose_1d contract only allows p0 == 0 (ggml.c
+  // GGML_ASSERT(p0 == 0)); the SYCL kernel has no native padding support.
+  // Backends without native padding run padding=0 and crop the excess here.
   const bool crop_backend_output =
       ctx.backend_type == core::BackendType::Cpu ||
       ctx.backend_type == core::BackendType::Vulkan ||
-      ctx.backend_type == core::BackendType::Metal;
+      ctx.backend_type == core::BackendType::Metal ||
+      ctx.backend_type == core::BackendType::Sycl;
   hidden = modules::ConvTranspose1dModule({
                                               in_channels,
                                               out_channels,

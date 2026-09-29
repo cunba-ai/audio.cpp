@@ -15,6 +15,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -164,6 +167,15 @@ std::shared_ptr<const Yue2NarWeights> load_nar_weights(
         true);
     weights->store->upload();
     return weights;
+}
+
+// Env-gated stderr progress markers for launch-quota debugging (default off).
+void nar_progress_marker(const std::string & message) {
+    static const bool enabled = std::getenv("AUDIOCPP_PROGRESS") != nullptr;
+    if (enabled) {
+        std::fprintf(stderr, "[yue2.progress] %s\n", message.c_str());
+        std::fflush(stderr);
+    }
 }
 
 std::vector<std::pair<int64_t, int64_t>> chunk_ranges(int64_t frames, int64_t prefix_tokens, int64_t context) {
@@ -744,9 +756,11 @@ struct Yue2NarRuntime::Impl {
             const auto prefill_start = Clock::now();
             auto ar_state = prefill_state(ar_tokens);
             prefill_ms += engine::debug::elapsed_ms(prefill_start);
+            nar_progress_marker("nar chunk prefill_state done: tokens=" + std::to_string(ar_tokens.size()));
             const auto solve_start = Clock::now();
             auto chunk = solve_chunk(ar_state, noise, ode_steps);
             solve_ms += engine::debug::elapsed_ms(solve_start);
+            nar_progress_marker("nar chunk solved: [" + std::to_string(begin) + ", " + std::to_string(end) + ")");
             out.insert(out.end(), chunk.begin(), chunk.end());
         }
         engine::debug::timing_log_scalar("yue2.nar.synthesize.prefill_state_ms", prefill_ms);

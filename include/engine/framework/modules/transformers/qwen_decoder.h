@@ -127,6 +127,12 @@ struct QwenDecoderLayerWeights {
     AttentionWeights self_attention;
     NormWeights q_norm;
     NormWeights k_norm;
+    // Tiled [q_heads + kv_heads, head_dim] RMSNorm weight over the packed q|k
+    // rows of self_attention.qkv_weight. When present (together with the
+    // PackedQKV layout, use_qk_norm and Rotary positions), the single-token
+    // static-cache decode path fuses q/k projection, q/k norm and RoPE into
+    // one projection + one norm + one rope instead of 3 + 2 + 2 ops.
+    std::optional<core::TensorValue> qk_norm_packed;
     NormWeights post_norm;
     QwenMLPWeights mlp;
     // Optional per-frequency RoPE divisors (head_dim / 2), used by Llama-3

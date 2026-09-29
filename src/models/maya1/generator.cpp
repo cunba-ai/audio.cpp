@@ -115,27 +115,33 @@ Maya1Weights load_weights(const Maya1Assets &assets, ggml_backend_t backend,
     modules::QwenDecoderLayerWeights layer;
     layer.input_norm = binding::norm_weight_from_source(
         *out.store, source, prefix + ".input_layernorm", config.hidden_size);
-    layer.self_attention.q_weight = out.store->load_tensor(
-        source, prefix + ".self_attn.q_proj.weight", storage_type,
-        {config.attention_heads * config.head_dim, config.hidden_size});
-    layer.self_attention.k_weight = out.store->load_tensor(
-        source, prefix + ".self_attn.k_proj.weight", storage_type,
-        {config.kv_heads * config.head_dim, config.hidden_size});
-    layer.self_attention.v_weight = out.store->load_tensor(
-        source, prefix + ".self_attn.v_proj.weight", storage_type,
-        {config.kv_heads * config.head_dim, config.hidden_size});
+    // Packed q|k|v projection (row order [q | k | v]): one GEMM instead of
+    // three per layer on every graph.
+    layer.self_attention.qkv_weight = binding::packed_linear_from_source(
+        *out.store, source,
+        {prefix + ".self_attn.q_proj.weight",
+         prefix + ".self_attn.k_proj.weight",
+         prefix + ".self_attn.v_proj.weight"},
+        storage_type, config.hidden_size,
+        {config.attention_heads * config.head_dim,
+         config.kv_heads * config.head_dim,
+         config.kv_heads * config.head_dim});
     layer.self_attention.out_weight = out.store->load_tensor(
         source, prefix + ".self_attn.o_proj.weight", storage_type,
         {config.hidden_size, config.attention_heads * config.head_dim});
     layer.post_norm = binding::norm_weight_from_source(
         *out.store, source, prefix + ".post_attention_layernorm",
         config.hidden_size);
-    layer.mlp.gate_proj = binding::linear_from_source(
-        *out.store, source, prefix + ".mlp.gate_proj", storage_type,
-        config.intermediate_size, config.hidden_size, false);
-    layer.mlp.up_proj = binding::linear_from_source(
-        *out.store, source, prefix + ".mlp.up_proj", storage_type,
-        config.intermediate_size, config.hidden_size, false);
+    // Packed gate|up rows let the MLP run one projection plus the fused
+    // swiglu op instead of two projections + silu + mul.
+    layer.mlp.gate_up_proj = modules::LinearWeights{
+        binding::packed_linear_from_source(
+            *out.store, source,
+            {prefix + ".mlp.gate_proj.weight", prefix + ".mlp.up_proj.weight"},
+            storage_type, config.hidden_size,
+            {config.intermediate_size, config.intermediate_size}),
+        std::nullopt,
+    };
     layer.mlp.down_proj = binding::linear_from_source(
         *out.store, source, prefix + ".mlp.down_proj", storage_type,
         config.hidden_size, config.intermediate_size, false);
@@ -196,6 +202,10 @@ decoder_config(const Maya1Config &config, core::BackendType backend_type) {
         modules::QwenDecoderStaticCacheSetRowsMode::BackendViewOptimized;
     out.static_cache_type = GGML_TYPE_F16;
   }
+  // Packed weights are loaded in load_weights(): route the graphs through the
+  // packed QKV / packed gate-up + fused swiglu lowerings.
+  out.stack.qkv_layout = modules::QwenDecoderQKVLayout::PackedQKV;
+  out.stack.runtime.mlp.mode = modules::QwenDecoderMLPMode::PackedGateUp;
   out.logits_size = config.vocab_size;
   out.logits_mode = modules::QwenCausalDecoderLogitsMode::LastStep;
   if (backend_type == core::BackendType::Cuda) {

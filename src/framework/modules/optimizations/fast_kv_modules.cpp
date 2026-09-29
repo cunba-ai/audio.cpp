@@ -8,6 +8,24 @@ namespace engine::modules {
 
 namespace {
 
+// ggml_set_rows only reads each row as row_elems consecutive elements at the
+// row's own stride, so a row-contiguous view at a non-zero byte offset (e.g.
+// the k/v rows sliced out of a fused QKV projection) is directly consumable by
+// the view-based (BackendViewOptimized) lowering. Materializing such rows
+// would add one copy kernel per cache write, which dominates launch-bound
+// backends, so only rows whose first two dims are not contiguous (or the
+// Exact lowering, which needs full contiguity for its reshape) pay for the
+// ggml_cont round trip.
+core::TensorValue ensure_set_rows_row_layout(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & value,
+    bool optimized) {
+    if (optimized && ggml_is_contiguous_rows(value.tensor)) {
+        return value;
+    }
+    return tensor_layout::ensure_contiguous_layout_if_needed(ctx, value);
+}
+
 const core::ModulePortSpec kSetRowsInputs[] = {
     {"cache", core::PortKind::Activation, false},
     {"row", core::PortKind::Activation, false},
@@ -76,7 +94,7 @@ core::TensorValue FastKVSetRowsModule::build(
             throw std::runtime_error("FastKVSetRowsModule single row_index mode requires batch size 1");
         }
         auto flat_cache = core::reshape_tensor(ctx, cache, core::TensorShape::from_dims({steps, row_elems}));
-        auto contiguous_row = tensor_layout::ensure_contiguous_layout_if_needed(ctx, row);
+        auto contiguous_row = ensure_set_rows_row_layout(ctx, row, optimized);
         auto flat_row = optimized
             ? core::wrap_tensor(
                   ggml_view_2d(
@@ -98,7 +116,7 @@ core::TensorValue FastKVSetRowsModule::build(
     }
 
     auto flat_cache = core::reshape_tensor(ctx, cache, core::TensorShape::from_dims({batch * steps, row_elems}));
-    auto contiguous_row = tensor_layout::ensure_contiguous_layout_if_needed(ctx, row);
+    auto contiguous_row = ensure_set_rows_row_layout(ctx, row, optimized);
     auto flat_row = optimized
         ? core::wrap_tensor(
               ggml_view_2d(
@@ -144,7 +162,7 @@ core::TensorValue FastKVSetRowsModule::build_block(
     }
     const int64_t width = cache.shape.dims[2] * cache.shape.dims[3];
     auto flat_cache = core::reshape_tensor(ctx, cache, core::TensorShape::from_dims({cache.shape.dims[1], width}));
-    auto contiguous_rows = tensor_layout::ensure_contiguous_layout_if_needed(ctx, rows);
+    auto contiguous_rows = ensure_set_rows_row_layout(ctx, rows, optimized);
     auto flat_rows = core::reshape_tensor(ctx, contiguous_rows, core::TensorShape::from_dims({queries, width}));
     auto * updated = ggml_set_rows(ctx.ggml, flat_cache.tensor, flat_rows.tensor, indices.tensor);
     if (optimized) { updated->src[2] = cache.tensor; }

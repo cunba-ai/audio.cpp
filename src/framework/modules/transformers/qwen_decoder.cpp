@@ -301,6 +301,131 @@ bool flash_branches_allowed(const QwenDecoderLayerConfig & config) {
     return config.runtime.attention.allow_flash_attention;
 }
 
+// Single-token decode fast path over a packed q|k|v projection: one mul_mat,
+// one fused RMSNorm over the packed [q_heads + kv_heads, head_dim] rows (tiled
+// q/k norm weights), and one RoPE over the same rows, replacing 3 + 2 + 2 ops
+// per layer. Only the q|k head rows enter the norm/rope; the v rows are taken
+// straight from the projection as offset views, so no layout copies are added.
+// Row order inside the packed weight must be [q | k | v].
+struct FusedQKVRows {
+    core::TensorValue q;  // [rows, 1, q_heads, dim], post-rope
+    core::TensorValue k;  // [rows, 1, kv_heads, dim], post-rope (offset view)
+    core::TensorValue v;  // [rows, 1, kv_heads, dim], raw projection (offset view)
+};
+
+bool can_fuse_packed_qkv_rows(
+    const QwenDecoderLayerConfig & config,
+    const QwenDecoderLayerWeights & weights,
+    const core::TensorValue & input,
+    const core::TensorValue & positions) {
+    return config.qkv_layout == QwenDecoderQKVLayout::PackedQKV &&
+        weights.self_attention.qkv_weight.has_value() &&
+        !weights.self_attention.qkv_bias.has_value() &&
+        weights.qk_norm_packed.has_value() &&
+        config.use_qk_norm &&
+        config.position_encoding == QwenDecoderPositionEncoding::Rotary &&
+        !config.activation_cast.enabled &&
+        input.shape.rank == 3 && input.shape.dims[1] == 1 &&
+        positions.shape.rank == 1 &&
+        (positions.shape.dims[0] == 1 || positions.shape.dims[0] == input.shape.dims[0]);
+}
+
+FusedQKVRows build_fused_qkv_rows(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & x_norm,
+    const core::TensorValue & positions,
+    const QwenDecoderLayerWeights & weights,
+    const QwenDecoderLayerConfig & config,
+    int64_t dim) {
+    const int64_t q_out = config.num_attention_heads * dim;
+    const int64_t kv_out = config.num_key_value_heads * dim;
+    const int64_t qk_heads = config.num_attention_heads + config.num_key_value_heads;
+    const int64_t rows = x_norm.shape.dims[0];
+
+    auto qkv = LinearModule(
+                   {
+                       config.hidden_size,
+                       q_out + kv_out * 2,
+                       false,
+                       config.projection_precision,
+                   })
+                   .build(ctx, x_norm, {*weights.self_attention.qkv_weight, std::nullopt});
+    ggml_tensor * src = qkv.tensor;  // ne = [q_out + 2*kv_out, rows], contiguous
+    const size_t esz = ggml_type_size(src->type);
+    const size_t row_stride = static_cast<size_t>(src->nb[1]);
+
+    // Packed q|k rows viewed as [a, b, qk_heads, dim] for the joint norm+rope.
+    // With per-row positions the row axis folds into the RoPE sequence axis
+    // ([1, rows, ..]); with a single shared position it stays a batch axis
+    // ([rows, 1, ..]) exactly like the unfused per-tensor rope shapes. In the
+    // sequence case the row stride is the full projection row (q|k|v), not
+    // the q|k block: the v columns sit between consecutive rows' q|k blocks.
+    const bool rows_as_seq = rows > 1 && positions.shape.dims[0] == rows;
+    ggml_tensor * qk_view = ggml_view_4d(
+        ctx.ggml,
+        src,
+        dim,
+        qk_heads,
+        rows_as_seq ? rows : 1,
+        rows_as_seq ? 1 : rows,
+        esz * static_cast<size_t>(dim),
+        rows_as_seq ? row_stride : esz * static_cast<size_t>(dim) * static_cast<size_t>(qk_heads),
+        row_stride,
+        0);
+    auto qk = core::wrap_tensor(
+        qk_view,
+        core::TensorShape::from_dims(
+            {rows_as_seq ? 1 : rows, rows_as_seq ? rows : 1, qk_heads, dim}),
+        GGML_TYPE_F32);
+    auto normed = core::wrap_tensor(
+        ggml_rms_norm(ctx.ggml, qk.tensor, config.rms_norm_eps),
+        qk.shape,
+        GGML_TYPE_F32);
+    auto scaled = core::wrap_tensor(
+        ggml_mul(ctx.ggml, normed.tensor, weights.qk_norm_packed->tensor),
+        qk.shape,
+        GGML_TYPE_F32);
+    const core::TensorValue * rope_factors = weights.rope_frequency_factors.has_value()
+        ? &*weights.rope_frequency_factors
+        : nullptr;
+    auto roped = RoPEModule({dim, config.rope_type, config.rope_theta})
+                     .build(ctx, scaled, positions, rope_factors);
+
+    // Split the roped q|k rows and the raw v rows back into [rows, 1, heads, dim].
+    const size_t roped_stride = rows_as_seq
+        ? static_cast<size_t>(roped.tensor->nb[2])
+        : static_cast<size_t>(roped.tensor->nb[3]);
+    auto split_rows = [&](int64_t heads, int64_t byte_offset, ggml_tensor * base, size_t batch_stride) {
+        return core::wrap_tensor(
+            ggml_view_4d(
+                ctx.ggml,
+                base,
+                dim,
+                heads,
+                1,
+                rows,
+                esz * static_cast<size_t>(dim),
+                esz * static_cast<size_t>(dim) * static_cast<size_t>(heads),
+                batch_stride,
+                static_cast<size_t>(byte_offset)),
+            core::TensorShape::from_dims({rows, 1, heads, dim}),
+            GGML_TYPE_F32);
+    };
+    FusedQKVRows out;
+    out.q = split_rows(config.num_attention_heads, 0, roped.tensor, roped_stride);
+    out.k = split_rows(
+        config.num_key_value_heads,
+        static_cast<int64_t>(esz) * (config.num_attention_heads * dim),
+        roped.tensor,
+        roped_stride);
+    out.v = split_rows(
+        config.num_key_value_heads,
+        static_cast<int64_t>(esz) * (q_out + kv_out),
+        src,
+        row_stride);
+    return out;
+}
+
 QKVProjections build_qkv_projections(
     core::ModuleBuildContext & ctx,
     const core::TensorValue & input,
@@ -764,38 +889,55 @@ QwenDecoderLayerOutputs QwenDecoderLayerModule::build_static_cache_impl(
     if (config_.activation_cast.enabled && config_.activation_cast.after_input_norm) {
         x_norm = activation_cast(ctx, x_norm, config_.activation_cast);
     }
-    auto qkv = build_qkv_projections(ctx, x_norm, weights, config_, dim);
-    if (config_.activation_cast.enabled && config_.activation_cast.after_qkv_projection) {
-        qkv.q = activation_cast(ctx, qkv.q, config_.activation_cast);
-        qkv.k = activation_cast(ctx, qkv.k, config_.activation_cast);
-        qkv.v = activation_cast(ctx, qkv.v, config_.activation_cast);
-    }
-
-    auto q = reshape_qwen_heads(ctx, qkv.q, config_.num_attention_heads, dim);
-    auto k = reshape_qwen_heads(ctx, qkv.k, config_.num_key_value_heads, dim);
-    if (config_.use_qk_norm) {
-        q = RMSNormModule({dim, config_.rms_norm_eps, true, false}).build(ctx, q, weights.q_norm);
-        k = RMSNormModule({dim, config_.rms_norm_eps, true, false}).build(ctx, k, weights.k_norm);
-        if (config_.activation_cast.enabled && config_.activation_cast.after_qk_norm) {
-            q = activation_cast(ctx, q, config_.activation_cast);
-            k = activation_cast(ctx, k, config_.activation_cast);
+    core::TensorValue q;
+    core::TensorValue k;
+    core::TensorValue v;
+    const bool fuse_packed_rows =
+        !block &&
+        config_.runtime.static_cache.update_mode == QwenDecoderStaticCacheUpdateMode::DirectSetRows &&
+        can_fuse_packed_qkv_rows(config_, weights, input, positions);
+    if (fuse_packed_rows) {
+        // Single-token decode fast path: 1 projection + 1 norm + 1 rope over
+        // the packed q|k rows, v straight from the projection. k/v stay offset
+        // views of fresh tensors; FastKVSetRows consumes them without copying.
+        const auto fused = build_fused_qkv_rows(ctx, x_norm, positions, weights, config_, dim);
+        q = fused.q;
+        k = fused.k;
+        v = fused.v;
+    } else {
+        auto qkv = build_qkv_projections(ctx, x_norm, weights, config_, dim);
+        if (config_.activation_cast.enabled && config_.activation_cast.after_qkv_projection) {
+            qkv.q = activation_cast(ctx, qkv.q, config_.activation_cast);
+            qkv.k = activation_cast(ctx, qkv.k, config_.activation_cast);
+            qkv.v = activation_cast(ctx, qkv.v, config_.activation_cast);
         }
-    }
-    auto v = reshape_qwen_heads(ctx, qkv.v, config_.num_key_value_heads, dim);
 
-    if (config_.position_encoding == QwenDecoderPositionEncoding::Rotary) {
-        const core::TensorValue * rope_factors = weights.rope_frequency_factors.has_value()
-            ? &*weights.rope_frequency_factors
-            : nullptr;
-        q = RoPEModule({dim, config_.rope_type, config_.rope_theta}).build(ctx, q, positions, rope_factors);
-        k = RoPEModule({dim, config_.rope_type, config_.rope_theta}).build(ctx, k, positions, rope_factors);
-        if (config_.activation_cast.enabled && config_.activation_cast.after_rope) {
-            q = activation_cast(ctx, q, config_.activation_cast);
-            k = activation_cast(ctx, k, config_.activation_cast);
+        q = reshape_qwen_heads(ctx, qkv.q, config_.num_attention_heads, dim);
+        k = reshape_qwen_heads(ctx, qkv.k, config_.num_key_value_heads, dim);
+        if (config_.use_qk_norm) {
+            q = RMSNormModule({dim, config_.rms_norm_eps, true, false}).build(ctx, q, weights.q_norm);
+            k = RMSNormModule({dim, config_.rms_norm_eps, true, false}).build(ctx, k, weights.k_norm);
+            if (config_.activation_cast.enabled && config_.activation_cast.after_qk_norm) {
+                q = activation_cast(ctx, q, config_.activation_cast);
+                k = activation_cast(ctx, k, config_.activation_cast);
+            }
         }
+        v = reshape_qwen_heads(ctx, qkv.v, config_.num_key_value_heads, dim);
+
+        if (config_.position_encoding == QwenDecoderPositionEncoding::Rotary) {
+            const core::TensorValue * rope_factors = weights.rope_frequency_factors.has_value()
+                ? &*weights.rope_frequency_factors
+                : nullptr;
+            q = RoPEModule({dim, config_.rope_type, config_.rope_theta}).build(ctx, q, positions, rope_factors);
+            k = RoPEModule({dim, config_.rope_type, config_.rope_theta}).build(ctx, k, positions, rope_factors);
+            if (config_.activation_cast.enabled && config_.activation_cast.after_rope) {
+                q = activation_cast(ctx, q, config_.activation_cast);
+                k = activation_cast(ctx, k, config_.activation_cast);
+            }
+        }
+        k = core::ensure_backend_addressable_layout(ctx, k);
+        v = core::ensure_backend_addressable_layout(ctx, v);
     }
-    k = core::ensure_backend_addressable_layout(ctx, k);
-    v = core::ensure_backend_addressable_layout(ctx, v);
 
     core::TensorValue attention_key_cache = cache_key;
     core::TensorValue attention_value_cache = cache_value;
@@ -943,34 +1085,45 @@ QwenDecoderLayerOutputs QwenDecoderLayerModule::build_with_static_cache_tail_bat
     if (config_.activation_cast.enabled && config_.activation_cast.after_input_norm) {
         x_norm = activation_cast(ctx, x_norm, config_.activation_cast);
     }
-    auto qkv = build_qkv_projections(ctx, x_norm, weights, config_, dim);
-    if (config_.activation_cast.enabled && config_.activation_cast.after_qkv_projection) {
-        qkv.q = activation_cast(ctx, qkv.q, config_.activation_cast);
-        qkv.k = activation_cast(ctx, qkv.k, config_.activation_cast);
-        qkv.v = activation_cast(ctx, qkv.v, config_.activation_cast);
-    }
-
-    auto q = reshape_qwen_heads(ctx, qkv.q, config_.num_attention_heads, dim);
-    auto k = reshape_qwen_heads(ctx, qkv.k, config_.num_key_value_heads, dim);
-    if (config_.use_qk_norm) {
-        q = RMSNormModule({dim, config_.rms_norm_eps, true, false}).build(ctx, q, weights.q_norm);
-        k = RMSNormModule({dim, config_.rms_norm_eps, true, false}).build(ctx, k, weights.k_norm);
-        if (config_.activation_cast.enabled && config_.activation_cast.after_qk_norm) {
-            q = activation_cast(ctx, q, config_.activation_cast);
-            k = activation_cast(ctx, k, config_.activation_cast);
+    core::TensorValue q;
+    core::TensorValue k;
+    core::TensorValue v;
+    if (can_fuse_packed_qkv_rows(config_, weights, input, positions)) {
+        // Batched single-token decode fast path (see build_static_cache_impl).
+        const auto fused = build_fused_qkv_rows(ctx, x_norm, positions, weights, config_, dim);
+        q = fused.q;
+        k = fused.k;
+        v = fused.v;
+    } else {
+        auto qkv = build_qkv_projections(ctx, x_norm, weights, config_, dim);
+        if (config_.activation_cast.enabled && config_.activation_cast.after_qkv_projection) {
+            qkv.q = activation_cast(ctx, qkv.q, config_.activation_cast);
+            qkv.k = activation_cast(ctx, qkv.k, config_.activation_cast);
+            qkv.v = activation_cast(ctx, qkv.v, config_.activation_cast);
         }
-    }
-    auto v = reshape_qwen_heads(ctx, qkv.v, config_.num_key_value_heads, dim);
 
-    if (config_.position_encoding == QwenDecoderPositionEncoding::Rotary) {
-        apply_batched_static_rope(ctx, config_, weights, positions, q, k, dim);
-        if (config_.activation_cast.enabled && config_.activation_cast.after_rope) {
-            q = activation_cast(ctx, q, config_.activation_cast);
-            k = activation_cast(ctx, k, config_.activation_cast);
+        q = reshape_qwen_heads(ctx, qkv.q, config_.num_attention_heads, dim);
+        k = reshape_qwen_heads(ctx, qkv.k, config_.num_key_value_heads, dim);
+        if (config_.use_qk_norm) {
+            q = RMSNormModule({dim, config_.rms_norm_eps, true, false}).build(ctx, q, weights.q_norm);
+            k = RMSNormModule({dim, config_.rms_norm_eps, true, false}).build(ctx, k, weights.k_norm);
+            if (config_.activation_cast.enabled && config_.activation_cast.after_qk_norm) {
+                q = activation_cast(ctx, q, config_.activation_cast);
+                k = activation_cast(ctx, k, config_.activation_cast);
+            }
         }
+        v = reshape_qwen_heads(ctx, qkv.v, config_.num_key_value_heads, dim);
+
+        if (config_.position_encoding == QwenDecoderPositionEncoding::Rotary) {
+            apply_batched_static_rope(ctx, config_, weights, positions, q, k, dim);
+            if (config_.activation_cast.enabled && config_.activation_cast.after_rope) {
+                q = activation_cast(ctx, q, config_.activation_cast);
+                k = activation_cast(ctx, k, config_.activation_cast);
+            }
+        }
+        k = core::ensure_backend_addressable_layout(ctx, k);
+        v = core::ensure_backend_addressable_layout(ctx, v);
     }
-    k = core::ensure_backend_addressable_layout(ctx, k);
-    v = core::ensure_backend_addressable_layout(ctx, v);
 
     const FastKVSetRowsModule set_rows({
         config_.runtime.static_cache.set_rows_mode == QwenDecoderStaticCacheSetRowsMode::BackendViewOptimized

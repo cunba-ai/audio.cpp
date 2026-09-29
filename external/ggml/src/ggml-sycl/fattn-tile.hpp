@@ -731,7 +731,11 @@ static void flash_attn_tile(const char *  Q,
     const sycl::half2 * V_h2 =
         (const sycl::half2 *) (V + nb23 * sequence + nb22 * (head0 / gqa_ratio));  // K and V have same shape
 
-    const sycl::half * maskh = mask ? (const sycl::half *) (mask + nb33 * (sequence % ne33)) : nullptr;
+    // Per-head masks (mask->ne[2] != 1): wrap head0 through the mask head
+    // dimension, mirroring the CUDA tile kernel (fattn-tile.cuh). Masks with
+    // ne[2] == 1 keep the historical shared-mask behavior (head0 % 1 == 0).
+    const sycl::half * maskh =
+        mask ? (const sycl::half *) (mask + nb33 * (sequence % ne33) + nb32 * (head0 % ne32)) : nullptr;
 
     const int stride_K2   = nb11 / sizeof(sycl::half2);
     const int stride_V2   = nb21 / sizeof(sycl::half2);

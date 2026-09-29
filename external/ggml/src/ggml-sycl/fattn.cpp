@@ -127,7 +127,11 @@ static best_fattn_kernel ggml_sycl_get_best_fattn_kernel(const int device, const
     float logit_softcap = 0.0f;
     memcpy(&logit_softcap, (const float *) KQV->op_params + 2, sizeof(float));
 
-    bool gqa_opt_applies = gqa_ratio >= 2 && mask && max_bias == 0.0f && K->ne[1] % FATTN_KQ_STRIDE == 0;
+    // A per-head mask (mask->ne[2] != 1) is supported by the tile/vec kernels
+    // (and the MKL kernel) via the mask head stride; it disables the GQA
+    // fused-block optimization, mirroring the CUDA dispatch.
+    const bool per_head_mask = mask && mask->ne[2] != 1;
+    bool gqa_opt_applies = gqa_ratio >= 2 && mask && !per_head_mask && max_bias == 0.0f && K->ne[1] % FATTN_KQ_STRIDE == 0;
 
     // XMX-accelerated path: oneDNN SDPA (native F16 and dequant+non-F16).
     // ONEDNN requires min 32 query tokens — short-circuit decode to avoid
@@ -235,7 +239,10 @@ static best_fattn_kernel ggml_sycl_get_best_fattn_kernel(const int device, const
             return BEST_FATTN_KERNEL_NONE;
     }
 
-    if (mask && mask->ne[2] != 1) {
+    // Per-head masks wrap head through mask->ne[2]; require the head count to
+    // divide the Q head count so the modulo wrap is well-defined (== 1 is the
+    // broadcast case). oneDNN rejects per-head masks in its own _supported().
+    if (mask && mask->ne[2] != 1 && Q->ne[2] % mask->ne[2] != 0) {
         return BEST_FATTN_KERNEL_NONE;
     }
 

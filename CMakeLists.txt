@@ -503,14 +503,14 @@ add_library(engine_core OBJECT
     src/framework/runtime/host_ops.cpp
     src/framework/runtime/kv_cache.cpp
     src/framework/runtime/bounded_static_kv_decode.cpp
-    src/framework/runtime/greedy_qwen_decoder.cpp
+    src/framework/runtime/greedy_causal_decoder.cpp
     src/framework/runtime/options.cpp
     src/framework/runtime/session_base.cpp
     src/framework/runtime/workspace.cpp
     src/framework/midi/midi_file.cpp
     src/framework/io/filesystem.cpp
-    src/framework/audio/espeak_phonemizer.cpp
-    src/framework/audio/espeak_data.cpp
+    src/framework/text/espeak_phonemizer.cpp
+    src/framework/text/espeak_data.cpp
     src/framework/io/config.cpp
     src/framework/io/json.cpp
     src/framework/io/text.cpp
@@ -550,15 +550,15 @@ add_library(engine_core OBJECT
     src/framework/modules/zipformer_modules.cpp
     src/framework/modules/speech_encoders/whisper_embedding.cpp
     src/framework/modules/speech_encoders/whisper_frontend.cpp
-    src/framework/modules/speech_encoders/campplus_encoder.cpp
+    src/framework/modules/speaker_encoders/campplus_encoder.cpp
     src/framework/modules/speech_encoders/s3_tokenizer.cpp
-    src/framework/modules/codecs/nemo_nano_codec.cpp
+    src/framework/codecs/nemo_nano_codec_runtime.cpp
     src/framework/codecs/wan_video_vae_runtime.cpp
     src/framework/modules/pitch_extractors/rmvpe_pitch_extractor.cpp
     src/framework/modules/vocoders/bigvgan_vocoder.cpp
     src/framework/modules/vocoders/hifigan_vocoder.cpp
     src/framework/modules/vocoders/hift_vocoder.cpp
-    src/framework/modules/speech_encoders/hubert_encoder.cpp
+    src/framework/modules/speech_encoders/wav2vec2_encoder.cpp
     src/framework/modules/speech_encoders/wav2vec2_bert_encoder.cpp
     src/framework/modules/speech_encoders/wavlm_encoder.cpp
     src/framework/modules/speech_encoders/sanm.cpp
@@ -567,7 +567,7 @@ add_library(engine_core OBJECT
     src/framework/modules/recurrent_modules.cpp
     src/framework/modules/streaming_conv_modules.cpp
     src/framework/modules/attention/positional_encoding.cpp
-    src/framework/modules/attention/feed_forward.cpp
+    src/framework/modules/feed_forward_modules.cpp
     src/framework/modules/attention/self_attention.cpp
     src/framework/modules/attention/longformer_attention.cpp
     src/framework/modules/attention/longformer_attention_gpu.cpp
@@ -577,15 +577,15 @@ add_library(engine_core OBJECT
     src/framework/modules/attention/grouped_query_attention.cpp
     src/framework/modules/attention/projected_grouped_self_attention.cpp
     src/framework/modules/attention/streaming_frame_attention_cache.cpp
-    src/framework/modules/transformers/qwen_decoder.cpp
-    src/framework/modules/transformers/qwen_causal_decoder.cpp
-    src/framework/modules/transformers/qwen_causal_decode_runtime.cpp
-    src/framework/modules/transformers/qwen3_vl_encoder_runtime.cpp
+    src/framework/modules/transformers/decoder.cpp
+    src/framework/modules/transformers/causal_decoder.cpp
+    src/framework/modules/transformers/causal_decoder_runtime.cpp
+    src/framework/modules/text_encoders/qwen3_vl_encoder_runtime.cpp
     src/framework/modules/attention/cross_attention.cpp
-    src/framework/modules/attention/transformer_blocks.cpp
+    src/framework/modules/transformers/transformer_blocks.cpp
     src/framework/modules/conditioning_modules.cpp
     src/framework/modules/conformer_modules.cpp
-    src/framework/modules/flow_sampler_runtime.cpp
+    src/framework/sampling/flow_sampler_runtime.cpp
     src/framework/modules/predictor_modules.cpp
     src/framework/modules/positional_modules.cpp
     src/framework/modules/text_encoders/t5_base_encoder.cpp
@@ -602,25 +602,26 @@ add_library(engine_core OBJECT
     src/framework/audio/fft.cpp
     src/framework/audio/kaldi_fbank.cpp
     src/framework/audio/activity.cpp
+    src/framework/audio/activity_graph.cpp
     src/framework/audio/chunking.cpp
     src/framework/audio/conversion.cpp
-    src/framework/audio/deepfilternet2.cpp
+    src/framework/audio/utilities/deepfilternet2.cpp
     src/framework/audio/dsp.cpp
     src/framework/audio/nemo_mel_frontend.cpp
     src/framework/audio/mel_spectrogram_frontend.cpp
     src/framework/audio/reference_audio_frontend.cpp
-    src/framework/audio/flashsr.cpp
-    src/framework/audio/gtcrn.cpp
+    src/framework/audio/utilities/flashsr.cpp
+    src/framework/audio/utilities/gtcrn.cpp
     src/framework/audio/istft_graph.cpp
     src/framework/audio/mixing.cpp
     src/framework/audio/resampling.cpp
     src/framework/audio/output.cpp
-    src/framework/audio/rnnoise.cpp
-    src/framework/audio/utility_api.cpp
+    src/framework/audio/utilities/rnnoise.cpp
+    src/framework/audio/utilities/utility_api.cpp
     src/framework/audio/waveform_ops.cpp
     src/framework/audio/wav_reader.cpp
     src/framework/audio/wav_writer.cpp
-    src/framework/audio/zipenhancer.cpp
+    src/framework/audio/utilities/zipenhancer.cpp
     src/framework/runtime/flow_kv_cache.cpp
     src/framework/modules/speaker_encoders/ecapa_tdnn_runtime.cpp
     src/framework/modules/speaker_encoders/titanet_runtime.cpp
@@ -639,7 +640,7 @@ add_library(engine_core OBJECT
     src/framework/conditioners/open_clip_conditioner_runtime.cpp
     src/framework/conditioners/synchformer_conditioner_runtime.cpp
     src/models/controlfoley/flow_denoiser.cpp
-    src/framework/sampling/decode_modules.cpp
+    src/framework/sampling/greedy_decode.cpp
     src/framework/sampling/diffusion_math.cpp
     src/framework/sampling/hf_sampler.cpp
     src/framework/sampling/noise.cpp
@@ -687,6 +688,21 @@ audiocpp_add_model(universr
         engine::models::universr::make_universr_loader
 )
 
+audiocpp_add_model(sam_audio
+    SOURCES
+        src/models/sam_audio/video.cpp
+        src/models/sam_audio/frontend.cpp
+        src/models/sam_audio/vision.cpp
+        src/models/sam_audio/codec.cpp
+        src/models/sam_audio/conditioner.cpp
+        src/models/sam_audio/dit.cpp
+        src/models/sam_audio/session.cpp
+    INCLUDES
+        engine/models/sam_audio/session.h
+    LOADERS
+        engine::models::sam_audio::make_sam_audio_loader
+)
+
 audiocpp_add_model(apollo
     SOURCES
         src/models/apollo/assets.cpp
@@ -696,6 +712,16 @@ audiocpp_add_model(apollo
         engine/models/apollo/session.h
     LOADERS
         engine::models::apollo::make_apollo_loader
+)
+
+audiocpp_add_model(tone_color_vc
+    SOURCES
+        src/models/tone_color_vc/runtime.cpp
+        src/models/tone_color_vc/session.cpp
+    INCLUDES
+        engine/models/tone_color_vc/session.h
+    LOADERS
+        engine::models::tone_color_vc::make_tone_color_vc_loader
 )
 
 audiocpp_add_model(pulsevad
@@ -3217,10 +3243,13 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
         add_engine_unittest(cuda_rope_rows_test tests/unittests/test_cuda_rope_rows.cpp)
         add_test(NAME cuda_rope_rows_test COMMAND cuda_rope_rows_test)
         set_tests_properties(cuda_rope_rows_test PROPERTIES SKIP_RETURN_CODE 77)
-        add_engine_unittest(cuda_head_convert_test tests/unittests/test_cuda_head_convert.cpp)
-        target_link_libraries(cuda_head_convert_test PRIVATE CUDA::cudart_static)
-        add_test(NAME cuda_head_convert_test COMMAND cuda_head_convert_test)
-        set_tests_properties(cuda_head_convert_test PROPERTIES SKIP_RETURN_CODE 77)
+        # This probe calls an internal CUDA symbol, not the backend registry API.
+        if (NOT GGML_BACKEND_DL)
+            add_engine_unittest(cuda_head_convert_test tests/unittests/test_cuda_head_convert.cpp)
+            target_link_libraries(cuda_head_convert_test PRIVATE CUDA::cudart_static)
+            add_test(NAME cuda_head_convert_test COMMAND cuda_head_convert_test)
+            set_tests_properties(cuda_head_convert_test PROPERTIES SKIP_RETURN_CODE 77)
+        endif()
     endif()
 
     add_engine_unittest(sortformer_v2_aosc_test tests/community_models/sortformer_diar/sortformer_v2_aosc_test.cpp)
@@ -3379,6 +3408,8 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
         add_test(NAME encoder_module_test COMMAND encoder_module_test)
 
         add_engine_unittest(transpose_module_test tests/unittests/test_transpose_module.cpp)
+        add_engine_unittest(lstm_sequence_test tests/unittests/test_lstm_sequence.cpp)
+        add_test(NAME lstm_sequence_test COMMAND lstm_sequence_test --log)
         target_include_directories(transpose_module_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
         add_test(NAME transpose_module_test COMMAND transpose_module_test)
 
@@ -3639,6 +3670,9 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
             endif()
         endif()
         # Model-specific tests and probes.
+        if (ace_step IN_LIST AUDIOCPP_LINKED_MODELS)
+            add_engine_unittest(ace_step_timbre_cache_probe tests/ace_step/timbre_cache_probe.cpp)
+        endif()
         if (zipvoice IN_LIST AUDIOCPP_LINKED_MODELS)
             add_executable(zipvoice_parity tests/zipvoice/zipvoice_parity_main.cpp)
             target_link_libraries(zipvoice_parity PRIVATE engine_runtime ggml)
@@ -3966,14 +4000,14 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
         )
 
         add_engine_unittest(
-            qwen_decoder_packed_projection_test
-            tests/unittests/test_qwen_decoder_packed_projections.cpp
+            decoder_packed_projection_test
+            tests/unittests/test_decoder_packed_projections.cpp
         )
-        add_engine_unittest(qwen_chunked_prefill_test tests/unittests/test_qwen_chunked_prefill.cpp)
-        add_test(NAME qwen_chunked_prefill_test COMMAND qwen_chunked_prefill_test)
+        add_engine_unittest(causal_decoder_chunked_prefill_test tests/unittests/test_causal_decoder_chunked_prefill.cpp)
+        add_test(NAME causal_decoder_chunked_prefill_test COMMAND causal_decoder_chunked_prefill_test)
         add_test(
-            NAME qwen_decoder_packed_projection_test
-            COMMAND qwen_decoder_packed_projection_test
+            NAME decoder_packed_projection_test
+            COMMAND decoder_packed_projection_test
         )
 
         add_engine_unittest(supertonic_vector_convnext_exp_test tests/unittests/test_supertonic_vector_convnext_exp.cpp)
@@ -4023,11 +4057,11 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
             COMMAND mms_forced_aligner_assets_test
         )
 
-        add_engine_unittest(mms_hubert_positional_conv_test tests/unittests/test_mms_hubert_positional_conv.cpp)
-        target_include_directories(mms_hubert_positional_conv_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
+        add_engine_unittest(mms_wav2vec2_positional_conv_test tests/unittests/test_mms_wav2vec2_positional_conv.cpp)
+        target_include_directories(mms_wav2vec2_positional_conv_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
         add_test(
-            NAME mms_hubert_positional_conv_test
-            COMMAND mms_hubert_positional_conv_test
+            NAME mms_wav2vec2_positional_conv_test
+            COMMAND mms_wav2vec2_positional_conv_test
         )
 
         add_engine_unittest(mms_emissions_test tests/unittests/test_mms_emissions.cpp)

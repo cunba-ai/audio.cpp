@@ -88,6 +88,7 @@ Status labels:
 | `marblenet_vad` | Bundled (tiny model) | Pass | --- | --- | --- |
 | `maya1` | Done | --- | Pass | --- | --- |
 | `meanvc2` | Done | --- | --- | Pass | --- |
+| `tone_color_vc` | Done | --- | Pass (F32) | Pass (F16, drift) | No (drift) |
 | `mel_band_roformer` | Done | Pass | --- | Pass (drift) | Pass (drift) |
 | `miocodec` | Done | Pass | Pass | Pass (drift) | Pass (drift) |
 | `miotts` | Done | Pass | Pass | Pass (drift) | Pass (ASR match, drift) |
@@ -113,6 +114,7 @@ Status labels:
 | `qwen3_tts` custom voice | Done | Pass | --- | Pass (ASR match, drift) | Pass (ASR match, drift) |
 | `qwen3_tts` voice design | Done | Pass | --- | Pass (ASR match, drift) | Pass (ASR match, drift) |
 | `rvc` | Done | --- | --- | Pass | --- |
+| `sam_audio` | Done | --- | Pass | --- | --- |
 | `samsone` | Done | --- | --- | Pass | Pass (drift) |
 | `seed_vc` | Done | Pass | --- | Pass (drift) | Pass (drift) |
 | `sopro_tts` | Done | Pass | --- | Pass | Pass |

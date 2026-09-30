@@ -255,6 +255,20 @@ inline void ggml_vk_dispatch_pipeline(ggml_backend_vk_context* ctx, vk_context& 
         std::cerr << "(" << buffer.buffer << ", " << buffer.offset << ", " << buffer.range << "), ";
     }
     std::cerr << "}, (" << wg0 << "," << wg1 << "," << wg2 << "))");
+    if (wg0 > ctx->device->properties.limits.maxComputeWorkGroupCount[0] ||
+        wg1 > ctx->device->properties.limits.maxComputeWorkGroupCount[1] ||
+        wg2 > ctx->device->properties.limits.maxComputeWorkGroupCount[2]) {
+        // Diagnostics for ICD-specific workgroup count limits (e.g. Intel reports
+        // maxComputeWorkGroupCount = 262144 while NVIDIA allows 2^31-1 on x).
+        GGML_LOG_ERROR("ggml_vulkan: dispatch '%s' exceeds maxComputeWorkGroupCount: wg=(%u,%u,%u) "
+                       "elements=(%u,%u,%u) wg_denoms=(%u,%u,%u) limits=(%u,%u,%u)\n",
+                       pipeline->name.c_str(), wg0, wg1, wg2,
+                       elements[0], elements[1], elements[2],
+                       pipeline->wg_denoms[0], pipeline->wg_denoms[1], pipeline->wg_denoms[2],
+                       ctx->device->properties.limits.maxComputeWorkGroupCount[0],
+                       ctx->device->properties.limits.maxComputeWorkGroupCount[1],
+                       ctx->device->properties.limits.maxComputeWorkGroupCount[2]);
+    }
     GGML_ASSERT(wg0 <= ctx->device->properties.limits.maxComputeWorkGroupCount[0] &&
                 wg1 <= ctx->device->properties.limits.maxComputeWorkGroupCount[1] &&
                 wg2 <= ctx->device->properties.limits.maxComputeWorkGroupCount[2]);

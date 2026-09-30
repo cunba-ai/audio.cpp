@@ -9182,6 +9182,33 @@ static vk_pipeline ggml_vk_op_get_pipeline(ggml_backend_vk_context * ctx, const 
     GGML_UNUSED(src2);
 }
 
+// rms_norm dispatches one workgroup per row along x. Devices with a low
+// maxComputeWorkGroupCount (Intel ICDs report 65536 per dimension vs 2^31-1 on
+// NVIDIA x) assert when a tensor has more rows than that (e.g. vibevoice conv
+// features with 264k rows). Chunk the dispatch along x and pass the base row of
+// each chunk through p.param2 (decoded with floatBitsToUint in rms_norm.comp,
+// which derives the dst row stride from p.ne01 instead of gl_NumWorkGroups.x).
+template <typename T>
+static void ggml_vk_dispatch_rms_norm_row_chunked(ggml_backend_vk_context * ctx, vk_context & subctx, vk_pipeline & pipeline,
+                                                  std::initializer_list<vk::DescriptorBufferInfo> const & descriptor_buffer_infos,
+                                                  T & pc, float & row_offset_field, std::array<uint32_t, 3> elements) {
+    const uint32_t max_x = ctx->device->properties.limits.maxComputeWorkGroupCount[0];
+    if (elements[0] <= max_x) {
+        ggml_vk_dispatch_pipeline(ctx, subctx, pipeline, descriptor_buffer_infos, pc, elements);
+        return;
+    }
+    for (uint32_t base = 0; base < elements[0]; base += max_x) {
+        static_assert(sizeof(float) == sizeof(uint32_t));
+        float base_f;
+        std::memcpy(&base_f, &base, sizeof(base_f));
+        row_offset_field = base_f;
+        const uint32_t rows = std::min(elements[0] - base, max_x);
+        ggml_pipeline_request_descriptor_sets(ctx, pipeline, 1);
+        ggml_vk_dispatch_pipeline(ctx, subctx, pipeline, descriptor_buffer_infos, pc, { rows, elements[1], elements[2] });
+    }
+    row_offset_field = 0.0f;
+}
+
 template<typename PC>
 static void ggml_vk_op_f32(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * src2, const ggml_tensor * src3, ggml_tensor * dst, ggml_op op, PC&& pc, vk_pipeline pipeline_override = nullptr) {
     VK_LOG_DEBUG("ggml_vk_op_f32((" << src0 << ", name=" << src0->name << ", type=" << src0->type << ", ne0=" << src0->ne[0] << ", ne1=" << src0->ne[1] << ", ne2=" << src0->ne[2] << ", ne3=" << src0->ne[3] << ", nb0=" << src0->nb[0] << ", nb1=" << src0->nb[1] << ", nb2=" << src0->nb[2] << ", nb3=" << src0->nb[3];
@@ -9555,6 +9582,13 @@ static void ggml_vk_op_f32(ggml_backend_vk_context * ctx, vk_context& subctx, co
         vk_subbuffer a_buf = src0_buf;
         if (ctx->do_add_rms_partials) {
             a_buf = ggml_vk_subbuffer(ctx, ctx->prealloc_add_rms_partials, ctx->prealloc_size_add_rms_partials_offset);
+        }
+        if constexpr (std::is_same_v<std::remove_cv_t<std::remove_reference_t<PC>>, vk_op_binary_push_constants>) {
+            if (op == GGML_OP_RMS_NORM && !ctx->do_add_rms_partials) {
+                ggml_vk_dispatch_rms_norm_row_chunked(ctx, subctx, pipeline,
+                    { src0_buf, src1_buf, dst_buf, a_buf }, pc, pc.param2, elements);
+                return;
+            }
         }
         ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
             { src0_buf, src1_buf, dst_buf, a_buf }, pc, elements);
@@ -10611,13 +10645,13 @@ void ggml_vk_rms_norm(ggml_backend_vk_context * ctx, vk_context& subctx, const s
         vk_pipeline pipeline = set_rows->type == GGML_TYPE_F16 ?
             ctx->device->pipeline_rms_norm_set_rows_f32_f16 : ctx->device->pipeline_rms_norm_set_rows_f32_f32;
         ggml_pipeline_request_descriptor_sets(ctx, pipeline, 1);
-        ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
+        ggml_vk_dispatch_rms_norm_row_chunked(ctx, subctx, pipeline,
             {
                 ggml_vk_tensor_subbuffer(ctx, src0, true),
                 ggml_vk_tensor_subbuffer(ctx, src0, true),
                 ggml_vk_tensor_subbuffer(ctx, set_rows, true),
                 ggml_vk_tensor_subbuffer(ctx, indices),
-            }, pc, { (uint32_t)src0->ne[1], (uint32_t)src0->ne[2], (uint32_t)src0->ne[3] });
+            }, pc, pc.param2, { (uint32_t)src0->ne[1], (uint32_t)src0->ne[2], (uint32_t)src0->ne[3] });
         ggml_vk_rms_norm_finish(ctx, src0);
         return;
     }
@@ -10657,14 +10691,14 @@ void ggml_vk_rms_norm(ggml_backend_vk_context * ctx, vk_context& subctx, const s
                     ggml_vk_tensor_subbuffer(ctx, post_scale),
                 }, pc, { (uint32_t)CEIL_DIV(src0->ne[0], 128), 1, 1 });
         } else {
-            ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
+            ggml_vk_dispatch_rms_norm_row_chunked(ctx, subctx, pipeline,
                 {
                     ggml_vk_tensor_subbuffer(ctx, src0, true),
                     ggml_vk_tensor_subbuffer(ctx, weight, true),
                     ggml_vk_tensor_subbuffer(ctx, dst, true),
                     ggml_vk_tensor_subbuffer(ctx, residual),
                     ggml_vk_tensor_subbuffer(ctx, post_scale),
-                }, pc, { (uint32_t)src0->ne[1], (uint32_t)src0->ne[2], (uint32_t)src0->ne[3] });
+                }, pc, pc.param2, { (uint32_t)src0->ne[1], (uint32_t)src0->ne[2], (uint32_t)src0->ne[3] });
         }
         ggml_vk_rms_norm_finish(ctx, src0);
         return;
@@ -10749,11 +10783,8 @@ void ggml_vk_rms_norm(ggml_backend_vk_context * ctx, vk_context& subctx, const s
         pc.rope.d_offset = get_misalign_bytes(ctx, tensors[5]) / ggml_type_size(tensors[5]->type);
         offset[5] &= ~(size_t(ctx->device->properties.limits.minStorageBufferOffsetAlignment) - 1);
 
-        std::array<uint32_t, 3> elements;
-        elements = { (uint32_t)rms->src[0]->ne[1], (uint32_t)rms->src[0]->ne[2], (uint32_t)rms->src[0]->ne[3] };
-
         static_assert(max_tensors == 7);
-        ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
+        ggml_vk_dispatch_rms_norm_row_chunked(ctx, subctx, pipeline,
             {
                 ggml_vk_subbuffer(ctx, buf[0], offset[0]),
                 ggml_vk_subbuffer(ctx, buf[1], offset[1]),
@@ -10762,7 +10793,7 @@ void ggml_vk_rms_norm(ggml_backend_vk_context * ctx, vk_context& subctx, const s
                 ggml_vk_subbuffer(ctx, buf[4], offset[4]),
                 ggml_vk_subbuffer(ctx, buf[5], offset[5]),
                 ggml_vk_subbuffer(ctx, buf[6], offset[6]),
-            }, pc, elements);
+            }, pc, pc.bin.param2, { (uint32_t)rms->src[0]->ne[1], (uint32_t)rms->src[0]->ne[2], (uint32_t)rms->src[0]->ne[3] });
     } else {
         GGML_ASSERT(ctx->fused_rms_norm_mode == RMS_NORM_MUL || ctx->fused_rms_norm_mode == RMS_NORM_COUNT);
         ggml_vk_op_f32<vk_op_binary_push_constants>(ctx, subctx, src0, src1, nullptr, nullptr, dst, GGML_OP_RMS_NORM, std::move(bin));

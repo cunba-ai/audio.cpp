@@ -62,6 +62,8 @@ extern int g_ggml_sycl_debug;
 extern int g_ggml_sycl_disable_optimize;
 extern int g_ggml_sycl_prioritize_dmmv;
 extern int g_ggml_sycl_enable_flash_attention;
+// audio.cpp fork re-port (8cc95b4a): MKL flash-attn gate
+extern int g_ggml_sycl_enable_mkl_fa;
 
 
 #if defined(__clang__) && __has_builtin(__builtin_expect)
@@ -648,6 +650,8 @@ constexpr size_t ceil_div(const size_t m, const size_t n) {
 }
 
 bool gpu_has_xmx(sycl::device &dev);
+
+int ggml_sycl_get_env(const char *env_name, int default_val);
 
 template <int N, class T> std::string debug_get_array_str(const std::string & prefix, const T array[N]) {
     if (LIKELY(!g_ggml_sycl_debug)) {

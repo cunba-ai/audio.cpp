@@ -172,9 +172,16 @@ static void k_get_rows_quant_soa(
         const int8_t q = ((const int8_t *) base)[ib * qk + iqs];
         dst_row[i00] = (float) d * q;
     } else {
-        // Q4_0-style: one nibble per element, low nibbles first
-        const uint8_t byte = ((const uint8_t *) base)[ib * (qk / 2) + iqs / 2];
-        const int v = (byte >> ((iqs % 2) * 4)) & 0xf;
+        // Q4_0-style. ggml's Q4_0 block stores the quants SPLIT across the
+        // nibbles: the 16 low nibbles of a block's qs bytes hold elements
+        // 0..15 and the 16 high nibbles hold elements 16..31 (see
+        // dequantize_row_q4_0 in ggml-quants.c). The reorder pass copies qs
+        // bytes verbatim, so the SoA region keeps that split layout: element
+        // iqs lives in byte (iqs % 16), low nibble for the first half of the
+        // block and high nibble for the second half.
+        const int half = qk / 2;
+        const uint8_t byte = ((const uint8_t *) base)[ib * half + (iqs % half)];
+        const int v = (byte >> ((iqs / half) * 4)) & 0xf;
         dst_row[i00] = (float) d * (v - 8);
     }
 }
@@ -328,5 +335,113 @@ void ggml_sycl_op_get_rows(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
             // TODO: k-quants
             GGML_LOG_ERROR("%s: unsupported type: %s\n", __func__, ggml_type_name(dst->src[0]->type));
             GGML_ABORT("fatal error");
+    }
+}
+
+// ----------------------------------------------------------------------------
+// audio.cpp fork re-port (8cc95b4a): GET_ROWS_BACK scatter kernel
+
+template <typename src0_t>
+static void k_get_rows_back_float(const src0_t * src0, const int32_t * src1, float * dst,
+                                  const int64_t ncols, const int64_t nrows_grad_10, const int64_t nrows_grad_11, const int64_t nrows_dst,
+                                  const size_t s01, const size_t s02,
+                                  const size_t s10, const size_t s11,
+                                  const size_t s1,
+                                  const int64_t block_num_y,
+                                  const sycl::nd_item<3> & item_ct1) {
+    const int64_t col = item_ct1.get_group(2) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (col >= ncols) {
+        return;
+    }
+
+    // block_num_y is clamped, so stride over destination rows like CUDA k_get_rows_back_float
+    for (int64_t dst_row = item_ct1.get_group(1); dst_row < nrows_dst; dst_row += block_num_y) {
+        float sum = 0.0f;
+
+        const int64_t nrows_grad_total = nrows_grad_10 * nrows_grad_11;
+        for (int64_t i = 0; i < nrows_grad_total; ++i) {
+            const int64_t i10 = i % nrows_grad_10;
+            const int64_t i11 = i / nrows_grad_10;
+            if (src1[i10*s10 + i11*s11] != dst_row) {
+                continue;
+            }
+            sum += (float) src0[col + i10*s01 + i11*s02];
+        }
+
+        dst[col + dst_row*s1] = sum;
+    }
+}
+
+template <typename src0_t>
+static void get_rows_back_sycl_float(ggml_backend_sycl_context & ctx, const ggml_tensor * src0,
+                                     const ggml_tensor * src1, ggml_tensor * dst,
+                                     const src0_t * src0_dd, const int32_t * src1_dd,
+                                     float * dst_dd, queue_ptr stream) {
+
+    GGML_TENSOR_BINARY_OP_LOCALS
+
+    GGML_ASSERT(ne02*ne03 == 1);
+    GGML_ASSERT(ne12*ne13 == 1);
+    GGML_ASSERT(ne2*ne3 == 1);
+    GGML_ASSERT(src0->nb[0] == ggml_type_size(src0->type));
+    GGML_ASSERT(src1->nb[0] == ggml_type_size(src1->type));
+    GGML_ASSERT(dst->nb[0]  == ggml_type_size(dst->type));
+
+    const int64_t ncols = ne00;
+    const int64_t nrows_grad_10 = ne10;
+    const int64_t nrows_grad_11 = ne11;
+    const int64_t nrows_dst = ne1;
+
+    const size_t s01 = nb01 / sizeof(src0_t);
+    const size_t s02 = nb02 / sizeof(src0_t);
+
+    const size_t s10 = nb10 / sizeof(int32_t);
+    const size_t s11 = nb11 / sizeof(int32_t);
+
+    const size_t s1 = nb1 / sizeof(float);
+
+    const sycl::range<3> block_dims(1, 1, SYCL_GET_ROWS_BLOCK_SIZE);
+    const int64_t block_num_x = (ncols + SYCL_GET_ROWS_BLOCK_SIZE - 1) / SYCL_GET_ROWS_BLOCK_SIZE;
+    const int64_t block_num_y = std::min<int64_t>(nrows_dst, (int64_t) UINT16_MAX);
+    const sycl::range<3> block_nums(1, block_num_y, block_num_x);
+
+    stream->parallel_for(sycl::nd_range<3>(block_nums * block_dims, block_dims),
+                         [=](sycl::nd_item<3> item_ct1) {
+                             k_get_rows_back_float(src0_dd, src1_dd, dst_dd,
+                                                   ncols, nrows_grad_10, nrows_grad_11, nrows_dst,
+                                                   s01, s02, s10, s11, s1,
+                                                   block_num_y, item_ct1);
+                         });
+
+    GGML_UNUSED(src0);
+    GGML_UNUSED(src1);
+    GGML_UNUSED(dst);
+    GGML_UNUSED(ctx);
+}
+
+void ggml_sycl_op_get_rows_back(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+    const ggml_tensor * src0 = dst->src[0];
+    const ggml_tensor * src1 = dst->src[1];
+
+    GGML_ASSERT(src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16);
+    GGML_ASSERT(src1->type == GGML_TYPE_I32);
+    GGML_ASSERT(dst->type  == GGML_TYPE_F32);
+
+    GGML_ASSERT(ggml_is_contiguous(dst));
+
+    switch (src0->type) {
+        case GGML_TYPE_F16:
+            get_rows_back_sycl_float(ctx, src0, src1, dst, (const sycl::half *) src0->data,
+                                     (const int32_t *) src1->data, (float *) dst->data,
+                                     ctx.stream());
+            break;
+        case GGML_TYPE_F32:
+            get_rows_back_sycl_float(ctx, src0, src1, dst, (const float *) src0->data,
+                                     (const int32_t *) src1->data, (float *) dst->data,
+                                     ctx.stream());
+            break;
+        default:
+            GGML_ABORT("%s: unsupported src0 type: %s\n", __func__, ggml_type_name(src0->type));
+            break;
     }
 }

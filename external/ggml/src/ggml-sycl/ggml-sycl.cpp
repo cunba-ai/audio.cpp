@@ -65,6 +65,15 @@
 #include "ggml-sycl/diag.hpp"
 #include "ggml-sycl/solve_tri.hpp"
 #include "ggml-sycl/gated_delta_net.hpp"
+// audio.cpp fork re-port (8cc95b4a): conv-family + pool1d + training kernels
+#include "ggml-sycl/col2im-1d.hpp"
+#include "ggml-sycl/conv2d.hpp"
+#include "ggml-sycl/conv2d-dw.hpp"
+#include "ggml-sycl/conv2d-transpose.hpp"
+#include "ggml-sycl/conv3d.hpp"
+#include "ggml-sycl/cross_entropy_loss.hpp"
+#include "ggml-sycl/opt-step.hpp"
+#include "ggml-sycl/pool.hpp"
 
 static bool g_sycl_loaded = false;
 int g_ggml_sycl_debug = 0;
@@ -75,6 +84,8 @@ int g_ggml_sycl_prioritize_dmmv = 0;
 int g_ggml_sycl_use_async_mem_op = 0;
 int g_ggml_sycl_enable_level_zero = 0;
 int g_ggml_sycl_enable_flash_attention = 1;
+// audio.cpp fork re-port (8cc95b4a): MKL flash-attn gate (fattn-mkl.cpp)
+int g_ggml_sycl_enable_mkl_fa = 1;
 
 
 static ggml_sycl_device_info ggml_sycl_init() {
@@ -257,6 +268,9 @@ static void ggml_check_sycl() try {
         g_ggml_sycl_enable_flash_attention = 0;
 #endif
 
+        // audio.cpp fork re-port (8cc95b4a)
+        g_ggml_sycl_enable_mkl_fa = ggml_sycl_get_env("GGML_SYCL_ENABLE_MKL_FA", 1);
+
         GGML_SYCL_DEBUG("[SYCL] call ggml_check_sycl\n");
 
         GGML_LOG_INFO("Build with Macros:\n");
@@ -308,6 +322,7 @@ static void ggml_check_sycl() try {
 
 #ifdef SYCL_FLASH_ATTN
         GGML_LOG_INFO("  GGML_SYCL_ENABLE_FLASH_ATTN: %d\n", g_ggml_sycl_enable_flash_attention);
+        GGML_LOG_INFO("  GGML_SYCL_ENABLE_MKL_FA: %d\n", g_ggml_sycl_enable_mkl_fa);
 #else
         GGML_LOG_INFO("  GGML_SYCL_ENABLE_FLASH_ATTN: %d disabled by compile flag\n",
             g_ggml_sycl_enable_flash_attention);
@@ -3018,6 +3033,32 @@ static void ggml_sycl_get_rows(ggml_backend_sycl_context & ctx, ggml_tensor * ds
     ggml_sycl_op_get_rows(ctx, dst);
 }
 
+static void ggml_sycl_get_rows_back(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/2);
+    ggml_sycl_op_get_rows_back(ctx, dst);
+}
+
+// audio.cpp fork re-port (8cc95b4a): conv-family forwarders
+static void ggml_sycl_conv_2d(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/2);
+    ggml_sycl_op_conv2d(ctx, dst);
+}
+
+static void ggml_sycl_conv_2d_dw(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/2);
+    ggml_sycl_op_conv2d_dw(ctx, dst);
+}
+
+static void ggml_sycl_conv2d_transpose(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/2);
+    ggml_sycl_op_conv2d_transpose(ctx, dst);
+}
+
+static void ggml_sycl_conv_3d(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/2);
+    ggml_sycl_op_conv_3d(ctx, dst);
+}
+
 static void ggml_sycl_norm(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
     scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);
     ggml_sycl_op_norm(ctx, dst);
@@ -4220,6 +4261,16 @@ static void ggml_sycl_pool2d(ggml_backend_sycl_context & ctx, ggml_tensor * dst)
     ggml_sycl_op_pool2d(ctx, dst);
 }
 
+static void ggml_sycl_pool1d(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);
+    ggml_sycl_op_pool1d(ctx, dst);
+}
+
+static void ggml_sycl_col2im_1d(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);
+    ggml_sycl_op_col2im_1d(ctx, dst);
+}
+
 static void ggml_sycl_im2col(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
     scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/2);
     ggml_sycl_op_im2col(ctx, dst);
@@ -4296,6 +4347,18 @@ static bool ggml_sycl_compute_forward(ggml_backend_sycl_context & ctx, struct gg
         case GGML_OP_CONV_TRANSPOSE_1D:
             ggml_sycl_op_conv_transpose_1d(ctx, dst);
             break;
+        case GGML_OP_CONV_2D:
+            ggml_sycl_conv_2d(ctx, dst);
+            break;
+        case GGML_OP_CONV_2D_DW:
+            ggml_sycl_conv_2d_dw(ctx, dst);
+            break;
+        case GGML_OP_CONV_3D:
+            ggml_sycl_conv_3d(ctx, dst);
+            break;
+        case GGML_OP_CONV_TRANSPOSE_2D:
+            ggml_sycl_conv2d_transpose(ctx, dst);
+            break;
         case GGML_OP_REPEAT:
             ggml_sycl_repeat(ctx, dst);
             break;
@@ -4304,6 +4367,9 @@ static bool ggml_sycl_compute_forward(ggml_backend_sycl_context & ctx, struct gg
             break;
         case GGML_OP_GET_ROWS:
             ggml_sycl_get_rows(ctx, dst);
+            break;
+        case GGML_OP_GET_ROWS_BACK:
+            ggml_sycl_get_rows_back(ctx, dst);
             break;
         case GGML_OP_SET:
             ggml_sycl_op_set(ctx, dst);
@@ -4518,6 +4584,12 @@ static bool ggml_sycl_compute_forward(ggml_backend_sycl_context & ctx, struct gg
         case GGML_OP_SOFT_MAX_BACK:
             ggml_sycl_op_soft_max_back(ctx, dst);
             break;
+        case GGML_OP_CROSS_ENTROPY_LOSS:
+            ggml_sycl_cross_entropy_loss(ctx, dst);
+            break;
+        case GGML_OP_CROSS_ENTROPY_LOSS_BACK:
+            ggml_sycl_cross_entropy_loss_back(ctx, dst);
+            break;
         case GGML_OP_ROPE:
             ggml_sycl_rope(ctx, dst);
             break;
@@ -4525,13 +4597,20 @@ static bool ggml_sycl_compute_forward(ggml_backend_sycl_context & ctx, struct gg
             ggml_sycl_rope_back(ctx, dst);
             break;
         case GGML_OP_IM2COL:
+        case GGML_OP_IM2COL_FAST_1D: // audio.cpp fork: same im2col semantics, CUDA-only fast tag
             ggml_sycl_im2col(ctx, dst);
             break;
         case GGML_OP_IM2COL_3D:
             ggml_sycl_im2col_3d(ctx, dst);
             break;
+        case GGML_OP_COL2IM_1D:
+            ggml_sycl_col2im_1d(ctx, dst);
+            break;
         case GGML_OP_POOL_2D:
             ggml_sycl_pool2d(ctx, dst);
+            break;
+        case GGML_OP_POOL_1D:
+            ggml_sycl_pool1d(ctx, dst);
             break;
         case GGML_OP_SUM:
             ggml_sycl_sum(ctx, dst);
@@ -4562,6 +4641,12 @@ static bool ggml_sycl_compute_forward(ggml_backend_sycl_context & ctx, struct gg
             break;
         case GGML_OP_GATED_DELTA_NET:
             ggml_sycl_gated_delta_net(ctx, dst);
+            break;
+        case GGML_OP_OPT_STEP_ADAMW:
+            ggml_sycl_opt_step_adamw(ctx, dst);
+            break;
+        case GGML_OP_OPT_STEP_SGD:
+            ggml_sycl_opt_step_sgd(ctx, dst);
             break;
         case GGML_OP_SSM_CONV:
             ggml_sycl_ssm_conv(ctx, dst);
@@ -5010,6 +5095,10 @@ static bool ggml_backend_sycl_device_supports_op(ggml_backend_dev_t dev, const g
                 }
                 return false;
             }
+        case GGML_OP_CONV_2D:
+        case GGML_OP_CONV_2D_DW:
+        case GGML_OP_CONV_TRANSPOSE_2D:
+            return true;
         case GGML_OP_UNARY:
             switch (ggml_get_unary_op(op)) {
                 case GGML_UNARY_OP_SGN:
@@ -5104,6 +5193,11 @@ static bool ggml_backend_sycl_device_supports_op(ggml_backend_dev_t dev, const g
                         return false;
                 }
             }
+        case GGML_OP_GET_ROWS_BACK:
+            return op->type == GGML_TYPE_F32 &&
+                (op->src[0]->type == GGML_TYPE_F32 || op->src[0]->type == GGML_TYPE_F16) &&
+                op->src[1]->type == GGML_TYPE_I32 &&
+                op->ne[2] == 1 && op->ne[3] == 1;
          case GGML_OP_SET:
                return (op->type == GGML_TYPE_F32) &&
                       (op->src[0] && op->src[1]) &&
@@ -5252,9 +5346,24 @@ static bool ggml_backend_sycl_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_ROPE:
         case GGML_OP_ROPE_BACK:
         case GGML_OP_IM2COL:
+        case GGML_OP_IM2COL_FAST_1D: // audio.cpp fork tag
         case GGML_OP_IM2COL_3D:
         case GGML_OP_UPSCALE:
             return true;
+        case GGML_OP_COL2IM_1D:
+            return ggml_is_contiguous(op->src[0]) &&
+                   (op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_F16
+#ifdef GGML_SYCL_HAS_BF16
+                    || op->type == GGML_TYPE_BF16
+#endif
+                   ) &&
+                   op->src[0]->type == op->type;
+        case GGML_OP_CONV_3D:
+            return op->type == GGML_TYPE_F32 &&
+                   (op->src[0]->type == GGML_TYPE_F32 || op->src[0]->type == GGML_TYPE_F16) &&
+                   op->src[1]->type == GGML_TYPE_F32 &&
+                   ggml_is_contiguous(op->src[0]) &&
+                   ggml_is_contiguous(op->src[1]);
         case GGML_OP_SUM:
         case GGML_OP_SUM_ROWS:
         case GGML_OP_MEAN:
@@ -5272,6 +5381,7 @@ static bool ggml_backend_sycl_device_supports_op(ggml_backend_dev_t dev, const g
                 k > 0 && k <= 32;
         }
         case GGML_OP_POOL_2D:
+        case GGML_OP_POOL_1D:
             return true;
         case GGML_OP_ACC:
             return ggml_is_contiguous(op->src[0]) && ggml_is_contiguous(op->src[1]);
@@ -5286,6 +5396,8 @@ static bool ggml_backend_sycl_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_RWKV_WKV7:
         case GGML_OP_GATED_LINEAR_ATTN:
         case GGML_OP_GATED_DELTA_NET:
+        case GGML_OP_OPT_STEP_ADAMW:
+        case GGML_OP_OPT_STEP_SGD:
             return true;
         case GGML_OP_SSM_CONV:
             return op->type == GGML_TYPE_F32 &&
@@ -5309,6 +5421,8 @@ static bool ggml_backend_sycl_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_FILL:
         case GGML_OP_CUMSUM:
         case GGML_OP_DIAG:
+        case GGML_OP_CROSS_ENTROPY_LOSS:
+        case GGML_OP_CROSS_ENTROPY_LOSS_BACK:
             return true;
         case GGML_OP_SOLVE_TRI:
             return op->src[0]->ne[0] <= SYCL_SOLVE_TRI_MAX_N && op->src[1]->ne[0] <= SYCL_SOLVE_TRI_MAX_K;

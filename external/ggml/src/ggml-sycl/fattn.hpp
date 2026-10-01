@@ -17,6 +17,9 @@
 
 void ggml_sycl_flash_attn_ext(ggml_backend_sycl_context & ctx, ggml_tensor * dst);
 
+// audio.cpp fork re-port (8cc95b4a): MKL GEMM prompt-processing path
+void ggml_sycl_flash_attn_ext_mkl(ggml_backend_sycl_context & ctx, ggml_tensor * dst);
+
 bool ggml_sycl_flash_attn_ext_supported(int device, const ggml_tensor * dst);
 
 #endif // GGML_SYCL_FATTN_HPP

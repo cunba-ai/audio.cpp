@@ -97,6 +97,8 @@ enum best_fattn_kernel {
     BEST_FATTN_KERNEL_NONE     =   0,
     BEST_FATTN_KERNEL_VEC      = 100,
     BEST_FATTN_KERNEL_TILE     = 200,
+    // audio.cpp fork re-port (8cc95b4a): MKL GEMM prompt-processing path
+    BEST_FATTN_KERNEL_MKL      = 300,
 };
 
 static best_fattn_kernel ggml_sycl_get_best_fattn_kernel(const int device, const ggml_tensor * dst) {
@@ -113,18 +115,60 @@ static best_fattn_kernel ggml_sycl_get_best_fattn_kernel(const int device, const
     const ggml_tensor * K     = dst->src[1];
     const ggml_tensor * V     = dst->src[2];
     const ggml_tensor * mask  = dst->src[3];
+    const ggml_tensor * sinks = dst->src[4];
 
     const int gqa_ratio = Q->ne[2] / K->ne[2];
     GGML_ASSERT(Q->ne[2] % K->ne[2] == 0);
 
     float max_bias = 0.0f;
     memcpy(&max_bias, (const float *) KQV->op_params + 1, sizeof(float));
+    float logit_softcap = 0.0f;
+    memcpy(&logit_softcap, (const float *) KQV->op_params + 2, sizeof(float));
 
     // A per-head mask (mask->ne[2] != 1) is supported by the tile/vec kernels
     // via the mask head stride; it disables the GQA fused-block optimization,
     // mirroring the CUDA dispatch.
     const bool per_head_mask = mask && mask->ne[2] != 1;
     bool gqa_opt_applies = gqa_ratio >= 2 && mask && !per_head_mask && max_bias == 0.0f && K->ne[1] % FATTN_KQ_STRIDE == 0;
+
+    // MKL path: XMX-accelerated GEMM for prompt processing (audio.cpp fork
+    // re-port from 8cc95b4a). The MKL kernel converts non-F16 K/V to F16 via
+    // to_fp16_sycl before GEMM, so quantized, F16, BF16, and F32 caches can
+    // all route here; the gating below keeps the B50-validated envelope.
+    // Set GGML_SYCL_ENABLE_MKL_FA=0 to force TILE/VEC path for A/B testing.
+    // Note: MKL GEMM calls are incompatible with SYCL graph capture replay.
+    //
+    // F32 K/V exclusion (audio.cpp fork, B50 measurement 2026-09-29): the
+    // dramabox gemma3 encoder prefill (D=256, nq=nkv=1024, gqa=2, batch=2,
+    // F32 K/V) ran the MKL path at ~4.2 s/call in-engine while the TILE
+    // kernel handled the identical shape in ~21.7 ms (~200x). The MKL path
+    // performs ~50 host-blocking section syncs per call (per batch x KV-head
+    // dequant/GEMM/softmax waits); on the B50 driver in the engine process
+    // each such sync costs tens of milliseconds (GPU idle meanwhile). F16 K/V
+    // binds in place and keeps the historically fast behavior, so non-F16
+    // K/V now falls through to TILE.
+    if (g_ggml_sycl_enable_mkl_fa == 1 && mask && !sinks && gqa_ratio >= 2 &&
+        K->type == GGML_TYPE_F16 && V->type == GGML_TYPE_F16 &&
+        Q->ne[0] >= 64 && Q->ne[0] <= 512 && Q->ne[0] % 64 == 0 &&
+        Q->ne[0] == V->ne[0] &&
+        Q->ne[1] >= 32 && K->ne[1] >= 1024 &&
+        max_bias == 0.0f && logit_softcap == 0.0f &&
+        (Q->ne[3] == K->ne[3] || K->ne[3] == 1)) {
+        // F16 K/V strides must be a multiple of ne[0]*2 (the natural row size
+        // in bytes). This passes both dense (nb1 == ne0*2) and interleaved
+        // (nb1 == H * ne0*2). Only pathological test strides like nb1=32 or
+        // nb1=75 for ne0=40 fall through to TILE.
+        bool kv_strides_ok = true;
+        for (const ggml_tensor * t : {K, V}) {
+            if (t->type == GGML_TYPE_F16 && t->nb[1] % (t->ne[0] * 2) != 0) {
+                kv_strides_ok = false;
+                break;
+            }
+        }
+        if (kv_strides_ok) {
+            return BEST_FATTN_KERNEL_MKL;
+        }
+    }
     for (const ggml_tensor * t : {Q, K, V, mask}) {
         if (t == nullptr || ggml_is_quantized(t->type)) {
             continue;
@@ -225,6 +269,9 @@ void ggml_sycl_flash_attn_ext(ggml_backend_sycl_context & ctx, ggml_tensor * dst
             break;
         case BEST_FATTN_KERNEL_VEC:
             ggml_sycl_flash_attn_ext_vec(ctx, dst);
+            break;
+        case BEST_FATTN_KERNEL_MKL:
+            ggml_sycl_flash_attn_ext_mkl(ctx, dst);
             break;
     }
 }

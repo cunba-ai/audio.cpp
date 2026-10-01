@@ -1138,9 +1138,10 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "ROPE_INTERLEAVED_PAIRS",
     "MUL_MAT_ACC",
     "SNAKE_1D",
+    "GRU_SCAN",
 };
 
-static_assert(GGML_OP_COUNT == 114, "GGML_OP_COUNT != 114");
+static_assert(GGML_OP_COUNT == 115, "GGML_OP_COUNT != 115");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1267,9 +1268,10 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "rope_interleaved_pairs(even, odd, cos, sin)",
     "mul_mat_acc(a, b, acc)",
     "snake_1d(a, alpha)",
+    "gru_scan(x_ih, h0, w_hh, b_hh, keep)",
 };
 
-static_assert(GGML_OP_COUNT == 114, "GGML_OP_COUNT != 114");
+static_assert(GGML_OP_COUNT == 115, "GGML_OP_COUNT != 115");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -3557,6 +3559,54 @@ struct ggml_tensor * ggml_snake_1d(
     result->op     = GGML_OP_SNAKE_1D;
     result->src[0] = a;
     result->src[1] = alpha;
+
+    return result;
+}
+
+// ggml_gru_scan
+
+struct ggml_tensor * ggml_gru_scan(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * x_ih,
+        struct ggml_tensor  * h0,
+        struct ggml_tensor  * w_hh,
+        struct ggml_tensor  * b_hh,
+        struct ggml_tensor  * keep,
+        bool                   reverse) {
+    GGML_ASSERT(x_ih->type == GGML_TYPE_F32);
+    GGML_ASSERT(h0->type   == GGML_TYPE_F32);
+    GGML_ASSERT(w_hh->type == GGML_TYPE_F32);
+    GGML_ASSERT(b_hh->type == GGML_TYPE_F32);
+    GGML_ASSERT(keep->type == GGML_TYPE_F32);
+    GGML_ASSERT(ggml_is_contiguous(x_ih));
+    GGML_ASSERT(ggml_is_contiguous(h0));
+    GGML_ASSERT(ggml_is_contiguous(w_hh));
+    GGML_ASSERT(ggml_is_contiguous(b_hh));
+    GGML_ASSERT(ggml_is_contiguous(keep));
+
+    const int64_t H  = h0->ne[0];
+    const int64_t F  = x_ih->ne[1];
+
+    GGML_ASSERT(H  > 0 && H  % 8 == 0);
+    GGML_ASSERT(F  > 0);
+    GGML_ASSERT(x_ih->ne[0] == 3*H && x_ih->ne[2] == 1 && x_ih->ne[3] == 1);
+    GGML_ASSERT(w_hh->ne[0] == H  && w_hh->ne[1] == 3*H && w_hh->ne[2] == 1 && w_hh->ne[3] == 1);
+    GGML_ASSERT(b_hh->ne[0] == 3*H && b_hh->ne[1] == 1);
+    GGML_ASSERT(h0->ne[1] == 1 && h0->ne[2] == 1 && h0->ne[3] == 1);
+    GGML_ASSERT(keep->ne[0] * keep->ne[1] == F && keep->ne[2] == 1 && keep->ne[3] == 1);
+
+    const int64_t ne[4] = { H, F + 1, 1, 1 };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    int32_t params = reverse ? 1 : 0;
+    ggml_set_op_params(result, &params, sizeof(params));
+
+    result->op     = GGML_OP_GRU_SCAN;
+    result->src[0] = x_ih;
+    result->src[1] = h0;
+    result->src[2] = w_hh;
+    result->src[3] = b_hh;
+    result->src[4] = keep;
 
     return result;
 }

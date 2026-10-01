@@ -126,7 +126,11 @@ static void flash_attn_ext_vec(const char* __restrict__ Q,
     K += nb13*sequence + nb12*(head / gqa_ratio);
     V += nb23*sequence + nb22*(head / gqa_ratio);
 
-    const sycl::half * maskh = (const sycl::half *) (mask + nb33 * (sequence % ne33) + nb31 * ic0);
+    // Per-head masks (mask->ne[2] != 1): wrap head through the mask head
+    // dimension, mirroring the CUDA vec kernel (fattn-vec.cuh). ne32 == 1
+    // keeps the historical shared-mask behavior (head % 1 == 0).
+    const sycl::half * maskh =
+        (const sycl::half *) (mask + nb33 * (sequence % ne33) + nb32 * (head % ne32) + nb31 * ic0);
 
     const float slope = get_alibi_slope(max_bias, head, n_head_log2, m0, m1);
 

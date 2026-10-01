@@ -47,6 +47,7 @@
 #include "ggml-sycl/add-id.hpp"
 #include "ggml-sycl/backend.hpp"
 #include "ggml-sycl/common.hpp"
+#include "ggml-sycl/gru-scan.hpp"
 #include "ggml-sycl/element_wise.hpp"
 #include "ggml-sycl/gemm.hpp"
 #include "ggml-sycl/getrows.hpp"
@@ -3772,6 +3773,11 @@ static bool should_reorder_tensor(ggml_backend_sycl_context& ctx, const ggml_ten
     return !g_ggml_sycl_disable_optimize && //allow optimize, controlled by $GGML_SYCL_DISABLE_OPT
             ctx.opt_feature.reorder &&      //allow this device due to good perf, skip the devices with bad perf.
             dst->op == GGML_OP_MUL_MAT &&   //limit to some supported cases of Q4_0, to do for more cases.
+            // never rewrite a tensor that any executed graph has read through GET_ROWS:
+            // the reordered SoA layout is only understood by reorder-aware mul_mat /
+            // dequant kernels, so an in-place rewrite corrupts tied-embedding tables
+            // (embedding shared with the lm_head mul_mat) for later GET_ROWS fetches.
+            ctx.get_rows_sources.find(dst->src[0]->data) == ctx.get_rows_sources.end() &&
             dst->src[1]->ne[1]==1 && dst->src[1]->ne[2]==1 && dst->src[1]->ne[3]==1;
 }
 
@@ -4581,6 +4587,9 @@ static bool ggml_sycl_compute_forward(ggml_backend_sycl_context & ctx, struct gg
         case GGML_OP_ARANGE:
             ggml_sycl_arange(ctx, dst);
             break;
+        case GGML_OP_GRU_SCAN:
+            ggml_sycl_gru_scan(ctx, dst);
+            break;
         case GGML_OP_FLASH_ATTN_EXT:
             ggml_sycl_flash_attn_ext(ctx, dst);
             break;
@@ -5284,6 +5293,8 @@ static bool ggml_backend_sycl_device_supports_op(ggml_backend_dev_t dev, const g
                    op->src[1]->type == GGML_TYPE_F32;
         case GGML_OP_ROLL:
             return op->type == GGML_TYPE_F32;
+        case GGML_OP_GRU_SCAN:
+            return ggml_sycl_gru_scan_supported(op);
         case GGML_OP_ARANGE:
             return op->type == GGML_TYPE_F32;
         case GGML_OP_SSM_SCAN:

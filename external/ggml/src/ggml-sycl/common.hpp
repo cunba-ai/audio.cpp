@@ -17,6 +17,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <unordered_set>
 
 #include "dpct/helper.hpp"
 #include "ggml.h"
@@ -321,6 +322,16 @@ struct ggml_backend_sycl_context {
     int device;
     std::string name;
     optimize_feature opt_feature;
+
+    // Tensors (by device data pointer) that have ever been the src0 of a
+    // GGML_OP_GET_ROWS executed on this backend. The weight-reorder
+    // optimization rewrites such tensors in place into a SoA layout that only
+    // reorder-aware consumers (mul_mat dmmv/mmvq/dequant paths) understand;
+    // GET_ROWS and other plain readers would see garbage. Tensors recorded
+    // here are excluded from reordering so tied-embedding models (embedding
+    // table shared with the lm_head mul_mat) stay correct for every consumer.
+    // graph_compute runs serialized per backend, so no locking is needed.
+    std::unordered_set<const void *> get_rows_sources;
 
     queue_ptr qptrs[GGML_SYCL_MAX_DEVICES][GGML_SYCL_MAX_STREAMS] = { { nullptr } };
 

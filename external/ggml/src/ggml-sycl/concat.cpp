@@ -12,105 +12,126 @@
 
 #include "concat.hpp"
 
+#include <algorithm>
+#include <climits>
+
 static inline size_t elem_size(ggml_type t) {
     return ggml_type_size(t) / ggml_blck_size(t);
 }
 
 template <typename T>
 static void concat_T_dim0(const T *x, const T *y, T *dst,
-                            const int ne0, const int ne00,
+                            const int64_t ne0, const int64_t ne00,
+                            const int64_t ne1_total, const int64_t i1_off,
                             const sycl::nd_item<3> &item_ct1) {
-  int nidx = item_ct1.get_local_id(2) +
-             item_ct1.get_group(2) * item_ct1.get_local_range(2);
+  const int64_t nidx = int64_t(item_ct1.get_local_id(2)) +
+                       int64_t(item_ct1.get_group(2)) * item_ct1.get_local_range(2);
   if (nidx >= ne0) {
     return;
   }
+  const int64_t i1 = int64_t(item_ct1.get_group(1)) + i1_off;
+  const int64_t i2 = item_ct1.get_group(0);
   // operation
-  int offset_dst = nidx + item_ct1.get_group(1) * ne0 +
-                   item_ct1.get_group(0) * ne0 * item_ct1.get_group_range(1);
+  int64_t offset_dst = nidx + i1 * ne0 + i2 * ne0 * ne1_total;
   if (nidx < ne00) { // src0
-    int offset_src = nidx + item_ct1.get_group(1) * ne00 +
-                     item_ct1.get_group(0) * ne00 * item_ct1.get_group_range(1);
+    int64_t offset_src = nidx + i1 * ne00 + i2 * ne00 * ne1_total;
     dst[offset_dst] = x[offset_src];
   } else {
-    int offset_src =
-        nidx - ne00 + item_ct1.get_group(1) * (ne0 - ne00) +
-        item_ct1.get_group(0) * (ne0 - ne00) * item_ct1.get_group_range(1);
+    int64_t offset_src =
+        nidx - ne00 + i1 * (ne0 - ne00) + i2 * (ne0 - ne00) * ne1_total;
     dst[offset_dst] = y[offset_src];
   }
 }
 
 template <typename T>
 static void concat_T_dim1(const T *x, const T *y, T *dst,
-                            const int ne0, const int ne01,
+                            const int64_t ne0, const int64_t ne01,
+                            const int64_t ne1_total, const int64_t i1_off,
                             const sycl::nd_item<3> &item_ct1) {
-  int nidx = item_ct1.get_local_id(2) +
-             item_ct1.get_group(2) * item_ct1.get_local_range(2);
+  const int64_t nidx = int64_t(item_ct1.get_local_id(2)) +
+                       int64_t(item_ct1.get_group(2)) * item_ct1.get_local_range(2);
   if (nidx >= ne0) {
     return;
   }
+  const int64_t i1 = int64_t(item_ct1.get_group(1)) + i1_off;
+  const int64_t i2 = item_ct1.get_group(0);
   // operation
-  int offset_dst = nidx + item_ct1.get_group(1) * ne0 +
-                   item_ct1.get_group(0) * ne0 * item_ct1.get_group_range(1);
-  if (item_ct1.get_group(1) < (size_t) ne01) { // src0
-    int offset_src =
-        nidx + item_ct1.get_group(1) * ne0 + item_ct1.get_group(0) * ne0 * ne01;
+  int64_t offset_dst = nidx + i1 * ne0 + i2 * ne0 * ne1_total;
+  if (i1 < ne01) { // src0
+    int64_t offset_src =
+        nidx + i1 * ne0 + i2 * ne0 * ne01;
     dst[offset_dst] = x[offset_src];
   } else {
-    int offset_src =
-        nidx + (item_ct1.get_group(1) - ne01) * ne0 +
-        item_ct1.get_group(0) * ne0 * (item_ct1.get_group_range(1) - ne01);
+    int64_t offset_src =
+        nidx + (i1 - ne01) * ne0 +
+        i2 * ne0 * (ne1_total - ne01);
     dst[offset_dst] = y[offset_src];
   }
 }
 
 template <typename T>
 static void concat_T_dim2(const T *x, const T *y, T *dst,
-                            const int ne0, const int ne02,
+                            const int64_t ne0, const int64_t ne02,
+                            const int64_t ne1_total, const int64_t i1_off,
                             const sycl::nd_item<3> &item_ct1) {
-  int nidx = item_ct1.get_local_id(2) +
-             item_ct1.get_group(2) * item_ct1.get_local_range(2);
+  const int64_t nidx = int64_t(item_ct1.get_local_id(2)) +
+                       int64_t(item_ct1.get_group(2)) * item_ct1.get_local_range(2);
   if (nidx >= ne0) {
     return;
   }
+  const int64_t i1 = int64_t(item_ct1.get_group(1)) + i1_off;
+  const int64_t i2 = item_ct1.get_group(0);
   // operation
-  int offset_dst = nidx + item_ct1.get_group(1) * ne0 +
-                   item_ct1.get_group(0) * ne0 * item_ct1.get_group_range(1);
-  if (item_ct1.get_group(0) < (size_t) ne02) { // src0
-    int offset_src = nidx + item_ct1.get_group(1) * ne0 +
-                     item_ct1.get_group(0) * ne0 * item_ct1.get_group_range(1);
+  int64_t offset_dst = nidx + i1 * ne0 + i2 * ne0 * ne1_total;
+  if (i2 < ne02) { // src0
+    int64_t offset_src = nidx + i1 * ne0 +
+                         i2 * ne0 * ne1_total;
     dst[offset_dst] = x[offset_src];
   } else {
-    int offset_src =
-        nidx + item_ct1.get_group(1) * ne0 +
-        (item_ct1.get_group(0) - ne02) * ne0 * item_ct1.get_group_range(1);
+    int64_t offset_src =
+        nidx + i1 * ne0 +
+        (i2 - ne02) * ne0 * ne1_total;
     dst[offset_dst] = y[offset_src];
   }
 }
 
 template <typename T>
 static void concat_T_sycl(const T *x, const T *y, T *dst,
-                            int ne00, int ne01, int ne02, int ne0, int ne1,
-                            int ne2, int dim, queue_ptr stream) {
-  int num_blocks = (ne0 + SYCL_CONCAT_BLOCK_SIZE - 1) / SYCL_CONCAT_BLOCK_SIZE;
-  sycl::range<3> gridDim(ne2, ne1, num_blocks);
-  switch (dim) {
-  case 0:
-      stream->parallel_for(sycl::nd_range<3>(gridDim * sycl::range<3>(1, 1, SYCL_CONCAT_BLOCK_SIZE),
-                                          sycl::range<3>(1, 1, SYCL_CONCAT_BLOCK_SIZE)),
-                        [=](sycl::nd_item<3> item_ct1) { concat_T_dim0<T>(x, y, dst, ne0, ne00, item_ct1); });
-      break;
-  case 1:
-      stream->parallel_for(sycl::nd_range<3>(gridDim * sycl::range<3>(1, 1, SYCL_CONCAT_BLOCK_SIZE),
-                                          sycl::range<3>(1, 1, SYCL_CONCAT_BLOCK_SIZE)),
-                        [=](sycl::nd_item<3> item_ct1) { concat_T_dim1<T>(x, y, dst, ne0, ne01, item_ct1); });
-      break;
-  // dim >=2 will be dispatched to the default path
-  default:
-      stream->parallel_for(sycl::nd_range<3>(gridDim * sycl::range<3>(1, 1, SYCL_CONCAT_BLOCK_SIZE),
-                                          sycl::range<3>(1, 1, SYCL_CONCAT_BLOCK_SIZE)),
-                        [=](sycl::nd_item<3> item_ct1) { concat_T_dim2<T>(x, y, dst, ne0, ne02, item_ct1); });
-      break;
+                            int64_t ne00, int64_t ne01, int64_t ne02, int64_t ne0, int64_t ne1,
+                            int64_t ne2, int64_t dim, queue_ptr stream) {
+  // Do not pad tiny innermost dims up to the full SYCL_CONCAT_BLOCK_SIZE: the
+  // padded launch shape inflates the global work-item count and the SYCL
+  // runtime (built with -fsycl-id-queries-fit-in-int) rejects nd_ranges whose
+  // global size product exceeds INT_MAX ("Provided range and/or offset does
+  // not fit in int"), e.g. seed_vc's [2, 23562, 384] concat => 2.3G items.
+  const int64_t ne0_pad   = GGML_PAD(ne0, WARP_SIZE);
+  const int64_t block_ne0 = ne0_pad < SYCL_CONCAT_BLOCK_SIZE ? ne0_pad : (int64_t) SYCL_CONCAT_BLOCK_SIZE;
+  const int64_t num_blocks = (ne0 + block_ne0 - 1) / block_ne0;
+
+  // Same limit, tensor-size side: submit large dim-1 extents in chunks so the
+  // global size product stays below INT_MAX for any tensor that fits memory.
+  int64_t max_i1 = (int64_t) INT_MAX / std::max<int64_t>(1, ne2 * num_blocks * block_ne0);
+  max_i1 = std::max<int64_t>(max_i1, 1);
+
+  for (int64_t i1_off = 0; i1_off < ne1; i1_off += max_i1) {
+    const int64_t chunk = std::min<int64_t>(max_i1, ne1 - i1_off);
+    sycl::range<3> gridDim(ne2, chunk, num_blocks);
+    sycl::range<3> blockDim(1, 1, block_ne0);
+    switch (dim) {
+    case 0:
+        stream->parallel_for(sycl::nd_range<3>(gridDim * blockDim, blockDim),
+                        [=](sycl::nd_item<3> item_ct1) { concat_T_dim0<T>(x, y, dst, ne0, ne00, ne1, i1_off, item_ct1); });
+        break;
+    case 1:
+        stream->parallel_for(sycl::nd_range<3>(gridDim * blockDim, blockDim),
+                        [=](sycl::nd_item<3> item_ct1) { concat_T_dim1<T>(x, y, dst, ne0, ne01, ne1, i1_off, item_ct1); });
+        break;
+    // dim >=2 will be dispatched to the default path
+    default:
+        stream->parallel_for(sycl::nd_range<3>(gridDim * blockDim, blockDim),
+                        [=](sycl::nd_item<3> item_ct1) { concat_T_dim2<T>(x, y, dst, ne0, ne02, ne1, i1_off, item_ct1); });
+        break;
+    }
   }
 }
 

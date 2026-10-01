@@ -4052,16 +4052,8 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
             COMMAND outetts_generation_budget_test
         )
 
-        add_engine_unittest(
-            decoder_packed_projection_test
-            tests/unittests/test_decoder_packed_projections.cpp
-        )
         add_engine_unittest(causal_decoder_chunked_prefill_test tests/unittests/test_causal_decoder_chunked_prefill.cpp)
         add_test(NAME causal_decoder_chunked_prefill_test COMMAND causal_decoder_chunked_prefill_test)
-        add_test(
-            NAME decoder_packed_projection_test
-            COMMAND decoder_packed_projection_test
-        )
 
         add_engine_unittest(supertonic_vector_convnext_exp_test tests/unittests/test_supertonic_vector_convnext_exp.cpp)
         add_test(

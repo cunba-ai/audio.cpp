@@ -17,7 +17,12 @@ cmake --build build/windows-cpu-release -j 2 --target ^
   asr_vad_model_path_test capi_enum_sync_test capi_shared_lib_surface_test ^
   tensor_source_memory_backed_test progress_callback_test ^
   backend_weight_store_commit_test capi_option_number_test capi_session_options_test ^
-  silero_vad_loader_routing_test capi_denoise_embedded_test fork_policy_test
+  silero_vad_loader_routing_test capi_denoise_embedded_test fork_policy_test ^
+  fork_gru_scan_test fork_round_bf16_test fork_sycl_reorder_getrows_test ^
+  fork_sycl_fattn_per_head_mask_test fork_sycl_concat_blocks_test ^
+  fork_sycl_fattn_mkl_gate_test ^
+  fork_vulkan_dispatch_clamp_test fork_backend_family_resolver_test ^
+  fork_source_anchors_test fork_irodori_codec_crop_test
 if errorlevel 1 exit /b 1
 
 ctest --test-dir build/windows-cpu-release -L fork_regression --output-on-failure

@@ -129,6 +129,10 @@ option(ENGINE_BUILD_TESTS "Build framework unit tests" OFF)
 option(ENGINE_BUILD_EXTENDED_TESTS "Build extended non-model tests and probes" OFF)
 option(ENGINE_BUILD_MODEL_TESTS "Build model-specific tests and probes" OFF)
 option(ENGINE_BUILD_WARMBENCH "Build warmbench helper binaries" OFF)
+# Device-backend (SYCL/CUDA) tests for the fork's GPU-only ggml patches.
+# Default OFF: these need a GPU-enabled configure plus a device; the test
+# skips itself (exit 77) when no device is present.
+option(ENGINE_BUILD_GPU_TESTS "Build GPU-device tests for fork ggml patches" OFF)
 # ---------------------------------------------------------------------------
 # FORK POLICY - upstream C ABI is removed in this fork.
 #
@@ -3277,6 +3281,12 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
     function(add_engine_unittest target source)
         add_executable(${target} ${source})
         target_link_libraries(${target} PRIVATE engine_runtime ggml)
+        if (MSVC)
+            # Test sources are UTF-8 and several carry CJK string literals;
+            # without /utf-8 MSVC on non-English system code pages fails with
+            # C2001/C3688 (same treatment the capi tests apply).
+            target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/utf-8>)
+        endif()
     endfunction()
 
     add_engine_unittest(auk_conditioning_test tests/auk/conditioning_test.cpp)
@@ -3522,6 +3532,92 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests")
         add_test(NAME fork_policy_test COMMAND fork_policy_test)
         set_tests_properties(fork_policy_test PROPERTIES LABELS "fork_regression")
+
+        # ------------------------------------------------------------------
+        # Fork-change regression suite (dc6d1b59 lineage): one CPU-runnable
+        # test per fork-owned ggml/engine patch, so an upstream merge that
+        # drops or rewrites a patch fails `ctest -L fork_regression` on any
+        # machine. See tests/unittests/test_fork_*.cpp for per-test docs.
+        # ------------------------------------------------------------------
+        add_engine_unittest(fork_gru_scan_test tests/unittests/test_fork_gru_scan.cpp)
+        target_include_directories(fork_gru_scan_test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
+        add_test(NAME fork_gru_scan_test COMMAND fork_gru_scan_test)
+        set_tests_properties(fork_gru_scan_test PROPERTIES LABELS "fork_regression")
+
+        add_engine_unittest(fork_round_bf16_test tests/unittests/test_fork_round_bf16.cpp)
+        target_include_directories(fork_round_bf16_test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
+        add_test(NAME fork_round_bf16_test COMMAND fork_round_bf16_test)
+        set_tests_properties(fork_round_bf16_test PROPERTIES LABELS "fork_regression")
+
+        add_engine_unittest(fork_sycl_reorder_getrows_test tests/unittests/test_fork_sycl_reorder_getrows.cpp)
+        target_include_directories(fork_sycl_reorder_getrows_test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
+        add_test(NAME fork_sycl_reorder_getrows_test COMMAND fork_sycl_reorder_getrows_test)
+        set_tests_properties(fork_sycl_reorder_getrows_test PROPERTIES LABELS "fork_regression")
+
+        add_engine_unittest(fork_sycl_fattn_per_head_mask_test tests/unittests/test_fork_sycl_fattn_per_head_mask.cpp)
+        target_include_directories(fork_sycl_fattn_per_head_mask_test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
+        add_test(NAME fork_sycl_fattn_per_head_mask_test COMMAND fork_sycl_fattn_per_head_mask_test)
+        set_tests_properties(fork_sycl_fattn_per_head_mask_test PROPERTIES LABELS "fork_regression")
+
+        add_engine_unittest(fork_sycl_concat_blocks_test tests/unittests/test_fork_sycl_concat_blocks.cpp)
+        target_include_directories(fork_sycl_concat_blocks_test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
+        add_test(NAME fork_sycl_concat_blocks_test COMMAND fork_sycl_concat_blocks_test)
+        set_tests_properties(fork_sycl_concat_blocks_test PROPERTIES LABELS "fork_regression")
+
+        add_engine_unittest(fork_sycl_fattn_mkl_gate_test tests/unittests/test_fork_sycl_fattn_mkl_gate.cpp)
+        target_include_directories(fork_sycl_fattn_mkl_gate_test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
+        add_test(NAME fork_sycl_fattn_mkl_gate_test COMMAND fork_sycl_fattn_mkl_gate_test)
+        set_tests_properties(fork_sycl_fattn_mkl_gate_test PROPERTIES LABELS "fork_regression")
+
+        add_engine_unittest(fork_vulkan_dispatch_clamp_test tests/unittests/test_fork_vulkan_dispatch_clamp.cpp)
+        target_include_directories(fork_vulkan_dispatch_clamp_test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
+        add_test(NAME fork_vulkan_dispatch_clamp_test COMMAND fork_vulkan_dispatch_clamp_test)
+        set_tests_properties(fork_vulkan_dispatch_clamp_test PROPERTIES LABELS "fork_regression")
+
+        add_engine_unittest(fork_backend_family_resolver_test tests/unittests/test_fork_backend_family_resolver.cpp)
+        target_include_directories(fork_backend_family_resolver_test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
+        add_test(NAME fork_backend_family_resolver_test COMMAND fork_backend_family_resolver_test)
+        set_tests_properties(fork_backend_family_resolver_test PROPERTIES LABELS "fork_regression")
+
+        # Source anchors for the GPU-only patches (SYCL/Vulkan sources are
+        # not compiled on CPU machines; this guards them textually).
+        add_executable(fork_source_anchors_test tests/unittests/test_fork_source_anchors.cpp)
+        target_compile_definitions(fork_source_anchors_test PRIVATE
+            AUDIOCPP_FORK_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+        target_include_directories(fork_source_anchors_test PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests")
+        add_test(NAME fork_source_anchors_test COMMAND fork_source_anchors_test)
+        set_tests_properties(fork_source_anchors_test PROPERTIES LABELS "fork_regression")
+
+        # irodori codec crop list (links the model composite, so gate on the
+        # model being part of this build).
+        if(irodori_tts IN_LIST AUDIOCPP_LINKED_MODELS)
+            add_engine_unittest(fork_irodori_codec_crop_test tests/unittests/test_fork_irodori_codec_crop.cpp)
+            target_include_directories(fork_irodori_codec_crop_test PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
+            add_test(NAME fork_irodori_codec_crop_test COMMAND fork_irodori_codec_crop_test)
+            set_tests_properties(fork_irodori_codec_crop_test PROPERTIES LABELS "fork_regression")
+        endif()
+
+        # GPU-device probes (ENGINE_BUILD_GPU_TESTS, default OFF): real
+        # SYCL/CUDA runs of the reorder/getrows, big-concat, per-head-mask
+        # and GRU_SCAN patches. Skips itself when no device is present.
+        if (ENGINE_BUILD_GPU_TESTS)
+            add_engine_unittest(fork_gpu_backend_kernels_test tests/unittests/test_fork_gpu_backend_kernels.cpp)
+            target_include_directories(fork_gpu_backend_kernels_test PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
+            add_test(NAME fork_gpu_backend_kernels_test COMMAND fork_gpu_backend_kernels_test)
+            set_tests_properties(fork_gpu_backend_kernels_test PROPERTIES
+                LABELS "fork_regression" SKIP_RETURN_CODE 77)
+        endif()
     endif()
 
         add_executable(moss_tts_v15_text_normalization_test

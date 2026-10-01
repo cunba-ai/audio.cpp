@@ -16,7 +16,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <cstdlib>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -562,19 +561,6 @@ void copy_hidden_rows_to_chunk(
     }
 }
 
-
-// Split the fused GRU_SCAN output ([F+1][H], time-major) into the per-step
-// sequence (first F rows, all graph frames — padded steps carry the frozen
-// state, matching the unrolled graph) and the final hidden (last row).
-void split_gru_output(
-    const std::vector<float> & gru_out,
-    std::vector<float> & sequence,
-    std::vector<float> & final_hidden) {
-    const int64_t H = kRmvpeHiddenDim;
-    sequence.assign(gru_out.begin(), gru_out.begin() + kRmvpeGruChunkFrames * H);
-    final_hidden.assign(gru_out.begin() + kRmvpeGruChunkFrames * H, gru_out.end());
-}
-
 void copy_hidden_rows(
     const std::vector<float> & source,
     int64_t source_start,
@@ -655,10 +641,6 @@ struct RmvpePitchExtractorComponent::State {
         TensorValue hidden;
         ggml_tensor * sequence = nullptr;
         ggml_tensor * final_hidden = nullptr;
-        // fused GRU_SCAN path: single [H, F+1] output (cols 0..F-1 = per-step
-        // hidden in time order, col F = final hidden); sequence/final_hidden
-        // are nullptr and gru_output is the graph output instead.
-        ggml_tensor * gru_output = nullptr;
     };
 
     struct HeadGraph {
@@ -700,7 +682,6 @@ struct RmvpePitchExtractorComponent::State {
         graph.hidden = {};
         graph.sequence = nullptr;
         graph.final_hidden = nullptr;
-        graph.gru_output = nullptr;
     }
 
     static void release_head_graph(HeadGraph & graph) {
@@ -775,24 +756,6 @@ struct RmvpePitchExtractorComponent::State {
         feature.frames = frames;
     }
 
-    // Fused GRU path: one ggml_gru_scan op per chunk instead of the ~12k-node
-    // per-timestep unroll (512 steps x ~24 tiny dispatches). Available on the
-    // backends with a GRU_SCAN kernel (CPU reference, SYCL, CUDA); Metal and
-    // Vulkan keep the unrolled graph. RVC_GRU_FUSED=0 restores the unrolled
-    // path everywhere for A/B testing.
-    static bool gru_scan_fused_enabled(engine::core::BackendType backend_type) {
-        static const int env = [] {
-            const char * raw = std::getenv("RVC_GRU_FUSED");
-            return raw == nullptr ? 1 : std::atoi(raw);
-        }();
-        if (env == 0) {
-            return false;
-        }
-        return backend_type == engine::core::BackendType::Cpu ||
-               backend_type == engine::core::BackendType::Cuda ||
-               backend_type == engine::core::BackendType::Sycl;
-    }
-
     void ensure_gru_graph(const RmvpePitchExtractorWeights & weights, GruGraph & target, const std::string & suffix, bool reverse_graph) {
         if (target.ctx != nullptr) {
             return;
@@ -825,103 +788,21 @@ struct RmvpePitchExtractorComponent::State {
         ggml_set_input(target.input.tensor);
         ggml_set_input(target.keep.tensor);
         ggml_set_input(target.hidden.tensor);
-        bool fused = gru_scan_fused_enabled(weights.execution_context->backend_type());
-        if (fused) {
-            // projected = x @ W_ih + b_ih  (one batched GEMM, bias included)
-            const auto projected = engine::modules::LinearModule({kRmvpeFeatureDim, kRmvpeHiddenDim * 3, true}).build(
-                build_ctx,
-                target.input,
-                linear_weights(weights, "fc.0.gru.weight_ih_l0" + suffix, "fc.0.gru.bias_ih_l0" + suffix, true));
-            const auto w_hh = contiguous(build_ctx, require_tensor(weights, "fc.0.gru.weight_hh_l0" + suffix));
-            const auto b_hh = contiguous(build_ctx, require_tensor(weights, "fc.0.gru.bias_hh_l0" + suffix));
-            // ggml tensor of the packed [1, H] hidden input; keep [1, F] works too
-            target.gru_output = ggml_gru_scan(
-                build_ctx.ggml,
-                contiguous(build_ctx, projected).tensor,
-                target.hidden.tensor,
-                w_hh.tensor,
-                b_hh.tensor,
-                target.keep.tensor,
-                reverse_graph);
-            // runtime dlls without the fork op (e.g. older CUDA artifacts)
-            // reject the op here; fall back to the unrolled graph below
-            if (!ggml_backend_supports_op(weights.execution_context->backend(), target.gru_output)) {
-                fused = false;
-            }
-        }
-        if (fused) {
-            ggml_set_output(target.gru_output);
-            target.graph = ggml_new_graph_custom(target.ctx, 4096, false);
-            ggml_build_forward_expand(target.graph, target.gru_output);
-        } else {
-            if (target.gru_output != nullptr) {
-                // fused nodes were built but the backend rejected them; start
-                // over with a clean context so only the unrolled graph remains
-                target.gru_output = nullptr;
-                ggml_free(target.ctx);
-                target.ctx = ggml_init(params);
-                if (target.ctx == nullptr) {
-                    throw std::runtime_error("failed to re-initialize RMVPE GRU graph context");
-                }
-                engine::core::ModuleBuildContext rebuild_ctx{
-                    target.ctx,
-                    graph_name.c_str(),
-                    weights.execution_context->backend_type()};
-                target.input = engine::core::make_tensor(
-                    rebuild_ctx,
-                    GGML_TYPE_F32,
-                    TensorShape::from_dims({kRmvpeGruChunkFrames, kRmvpeFeatureDim}));
-                target.keep = engine::core::make_tensor(
-                    rebuild_ctx,
-                    GGML_TYPE_F32,
-                    TensorShape::from_dims({kRmvpeGruChunkFrames, 1}));
-                target.hidden = engine::core::make_tensor(
-                    rebuild_ctx,
-                    GGML_TYPE_F32,
-                    TensorShape::from_dims({1, kRmvpeHiddenDim}));
-                ggml_set_input(target.input.tensor);
-                ggml_set_input(target.keep.tensor);
-                ggml_set_input(target.hidden.tensor);
-                const auto result = build_gru_chunk_graph(
-                    rebuild_ctx,
-                    target.input,
-                    target.keep,
-                    target.hidden,
-                    weights,
-                    suffix,
-                    reverse_graph);
-                target.sequence = result.sequence.tensor;
-                target.final_hidden = result.final_hidden.tensor;
-                ggml_set_output(target.sequence);
-                ggml_set_output(target.final_hidden);
-                target.graph = ggml_new_graph_custom(target.ctx, 40960, false);
-                ggml_build_forward_expand(target.graph, target.sequence);
-                ggml_build_forward_expand(target.graph, target.final_hidden);
-                target.gallocr = ggml_gallocr_new(ggml_backend_get_default_buffer_type(weights.execution_context->backend()));
-                if (target.gallocr == nullptr ||
-                    !ggml_gallocr_reserve(target.gallocr, target.graph) ||
-                    !ggml_gallocr_alloc_graph(target.gallocr, target.graph)) {
-                    release_gru_graph(target);
-                    throw std::runtime_error("failed to allocate RMVPE GRU graph tensors");
-                }
-                return;
-            }
-            const auto result = build_gru_chunk_graph(
-                build_ctx,
-                target.input,
-                target.keep,
-                target.hidden,
-                weights,
-                suffix,
-                reverse_graph);
-            target.sequence = result.sequence.tensor;
-            target.final_hidden = result.final_hidden.tensor;
-            ggml_set_output(target.sequence);
-            ggml_set_output(target.final_hidden);
-            target.graph = ggml_new_graph_custom(target.ctx, 40960, false);
-            ggml_build_forward_expand(target.graph, target.sequence);
-            ggml_build_forward_expand(target.graph, target.final_hidden);
-        }
+        const auto result = build_gru_chunk_graph(
+            build_ctx,
+            target.input,
+            target.keep,
+            target.hidden,
+            weights,
+            suffix,
+            reverse_graph);
+        target.sequence = result.sequence.tensor;
+        target.final_hidden = result.final_hidden.tensor;
+        ggml_set_output(target.sequence);
+        ggml_set_output(target.final_hidden);
+        target.graph = ggml_new_graph_custom(target.ctx, 40960, false);
+        ggml_build_forward_expand(target.graph, target.sequence);
+        ggml_build_forward_expand(target.graph, target.final_hidden);
         target.gallocr = ggml_gallocr_new(ggml_backend_get_default_buffer_type(weights.execution_context->backend()));
         if (target.gallocr == nullptr ||
             !ggml_gallocr_reserve(target.gallocr, target.graph) ||
@@ -1070,16 +951,9 @@ std::vector<float> RmvpePitchExtractorComponent::infer_16k_mono(
         if (engine::core::compute_backend_graph(backend, state_->forward.graph) != GGML_STATUS_SUCCESS) {
             throw std::runtime_error("ggml_backend_graph_compute failed for RMVPE forward GRU graph");
         }
-        if (state_->forward.gru_output != nullptr) {
-            const auto gru_out = engine::core::read_tensor_f32(state_->forward.gru_output);
-            std::vector<float> sequence;
-            split_gru_output(gru_out, sequence, hidden);
-            copy_hidden_rows(sequence, 0, chunk_frames, forward_states, start);
-        } else {
-            const auto sequence = engine::core::read_tensor_f32(state_->forward.sequence);
-            copy_hidden_rows(sequence, 0, chunk_frames, forward_states, start);
-            hidden = engine::core::read_tensor_f32(state_->forward.final_hidden);
-        }
+        const auto sequence = engine::core::read_tensor_f32(state_->forward.sequence);
+        copy_hidden_rows(sequence, 0, chunk_frames, forward_states, start);
+        hidden = engine::core::read_tensor_f32(state_->forward.final_hidden);
     }
 
     std::vector<float> salience(static_cast<size_t>(mel.frames * kRmvpeClasses), 0.0F);
@@ -1095,14 +969,8 @@ std::vector<float> RmvpePitchExtractorComponent::infer_16k_mono(
         if (engine::core::compute_backend_graph(backend, state_->reverse.graph) != GGML_STATUS_SUCCESS) {
             throw std::runtime_error("ggml_backend_graph_compute failed for RMVPE reverse GRU graph");
         }
-        std::vector<float> reverse_sequence;
-        if (state_->reverse.gru_output != nullptr) {
-            const auto gru_out = engine::core::read_tensor_f32(state_->reverse.gru_output);
-            split_gru_output(gru_out, reverse_sequence, reverse_hidden);
-        } else {
-            reverse_sequence = engine::core::read_tensor_f32(state_->reverse.sequence);
-            reverse_hidden = engine::core::read_tensor_f32(state_->reverse.final_hidden);
-        }
+        const auto reverse_sequence = engine::core::read_tensor_f32(state_->reverse.sequence);
+        reverse_hidden = engine::core::read_tensor_f32(state_->reverse.final_hidden);
         const int64_t salience_rows =
             start < mel.frames ? std::min<int64_t>(chunk_frames, mel.frames - start) : 0;
         if (salience_rows > 0) {

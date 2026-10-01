@@ -1,49 +1,50 @@
 # ggml
 
-<div align="center">
+[Manifesto](https://github.com/ggerganov/llama.cpp/discussions/205)
 
-<img src="https://raw.githubusercontent.com/ggml-org/media/refs/heads/master/logo/ggml-logo.jpg" width="256" height="256" alt="ggml logo" />
+Tensor library for machine learning
 
-<b>Tensor library for machine learning</b>
+***Note that this project is under active development. \
+Some of the development is currently happening in the [llama.cpp](https://github.com/ggerganov/llama.cpp) and [whisper.cpp](https://github.com/ggerganov/whisper.cpp) repos***
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Release](https://img.shields.io/github/v/release/ggml-org/ggml?filter=v*)](https://github.com/ggml-org/ggml/releases)
-[![CI](https://github.com/ggml-org/ggml/actions/workflows/build-cpu.yml/badge.svg)](https://github.com/ggml-org/ggml/actions/workflows/build-cpu.yml)
+## Features
 
-</div>
+- Low-level cross-platform implementation
+- Integer quantization support
+- Broad hardware support
+- Automatic differentiation
+- ADAM and L-BFGS optimizers
+- No third-party dependencies
+- Zero memory allocations during runtime
 
-## Quick start
-
-Build from source:
+## Build
 
 ```bash
 git clone https://github.com/ggml-org/ggml
 cd ggml
 
+# install python dependencies in a virtual environment
+python3.10 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# build the examples
 mkdir build && cd build
 cmake ..
 cmake --build . --config Release -j 8
 ```
 
-For a minimal, fully commented example (matrix multiplication), see [examples/simple](examples/simple).
+## GPT inference (example)
 
-## Description
+```bash
+# run the GPT-2 small 117M model
+../examples/gpt-2/download-ggml-model.sh 117M
+./bin/gpt-2-backend -m models/gpt-2-117M/ggml-model.bin -p "This is an example"
+```
 
-The main goal of `ggml` is to be a simple, portable, and efficient tensor library for machine learning with minimal setup.
+For more information, checkout the corresponding programs in the [examples](examples) folder.
 
-- Plain C/C++ implementation without any dependencies
-- Cross-platform - x86, ARM, RISC-V, LoongArch, PowerPC, s390x, and WebAssembly
-- SIMD-optimized kernels for x86, ARM, and RISC-V
-- Broad backend support - CPU, GPU, NPU, and browser
-- 2- to 8-bit integer quantization, plus MXFP4 and NVFP4 microscaling formats
-- Zero memory allocations during runtime
+## Resources
 
-## Documentation
-
-- [The GGUF file format](docs/gguf.md)
 - [Introduction to ggml](https://huggingface.co/blog/introduction-to-ggml)
-- [GGML tips & tricks](https://github.com/ggml-org/llama.cpp/wiki/GGML-Tips-&-Tricks)
-
-## Contributing
-
-- For changes to the core `ggml` library (including to the CMake build system), please open a PR in [llama.cpp](https://github.com/ggml-org/llama.cpp) - doing so will make your PR more visible, better tested, and more likely to be reviewed
+- [The GGUF file format](https://github.com/ggerganov/ggml/blob/master/docs/gguf.md)

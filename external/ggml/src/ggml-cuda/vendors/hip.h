@@ -6,6 +6,10 @@
 #include <hip/hip_fp16.h>
 #include <hip/hip_bf16.h>
 
+#if defined(GGML_HIP_ROCWMMA_FATTN)
+#include <rocwmma/rocwmma-version.hpp>
+#endif // defined(GGML_HIP_ROCWMMA_FATTN)
+
 #ifdef GGML_USE_NCCL
 #include <rccl/rccl.h>
 #endif // GGML_USE_NCCL
@@ -44,7 +48,6 @@
 #define cublasSetMathMode(handle, mode) CUBLAS_STATUS_SUCCESS
 #define cublasSetStream hipblasSetStream
 #define cublasSgemm hipblasSgemm
-#define cublasSgemmBatched hipblasSgemmBatched
 #define cublasSgemmStridedBatched hipblasSgemmStridedBatched
 #define cublasStatus_t hipblasStatus_t
 #define cublasOperation_t hipblasOperation_t
@@ -73,10 +76,6 @@
 #define cudaGetDeviceProperties hipGetDeviceProperties
 #define cudaGetErrorString hipGetErrorString
 #define cudaGetLastError hipGetLastError
-#define cudaHostAlloc hipHostMalloc
-#define cudaHostAllocPortable hipHostMallocPortable
-#define cudaHostAllocMapped hipHostMallocMapped
-#define cudaHostGetDevicePointer hipHostGetDevicePointer
 #define cudaHostRegister hipHostRegister
 #define cudaHostRegisterPortable hipHostRegisterPortable
 #define cudaHostRegisterReadOnly hipHostRegisterReadOnly
@@ -183,9 +182,9 @@
 
 #define __CUDA_ARCH__ 1300
 
-#if defined(__gfx900__) || defined(__gfx906__) || defined(__gfx909__) || defined(__gfx90c__)
+#if defined(__gfx900__) || defined(__gfx906__)
 #define GCN5
-#endif // defined(__gfx900__) || defined(__gfx906__) || defined(__gfx909__) || defined(__gfx90c__)
+#endif // defined(__gfx900__) || defined(__gfx906__)
 
 #if defined(__gfx803__)
 #define GCN4
@@ -223,9 +222,9 @@
 #define RDNA3
 #endif // defined(__GFX11__)
 
-#if defined(__gfx1150__) || defined(__gfx1151__) || defined(__gfx1152__) || defined(__gfx1153__)
+#if defined(__gfx1150__) || defined(__gfx1151__)
 #define RDNA3_5
-#endif // defined(__gfx1150__) || defined(__gfx1151__) || defined(__gfx1152__) || defined(__gfx1153__)
+#endif // defined(__gfx1150__) || defined(__gfx1151__)
 
 #if defined(RDNA3) && !defined(RDNA3_5)
 #define RDNA3_0
@@ -280,15 +279,7 @@ static __device__ __forceinline__ int __vsubss4(const int a, const int b) {
 }
 
 static __device__ __forceinline__ int __vsub4(const int a, const int b) {
-    // do some small modifications to a and b to make the subtraction not underflow
-    const unsigned int a_large = a | 0x80808080;
-    const unsigned int b_small = b & 0x7f7f7f7f;
-    const unsigned int result_low_7bits = a_large - b_small;
-
-    // if two ops share the same high bit, we should flip the high bit of the result
-    const unsigned int should_flip_high_1bit = (a ^ ~b) & 0x80808080;
-
-    return result_low_7bits ^ should_flip_high_1bit;
+    return __vsubss4(a, b);
 }
 
 static __device__ __forceinline__ unsigned int __vcmpeq4(unsigned int a, unsigned int b) {
@@ -304,13 +295,13 @@ static __device__ __forceinline__ unsigned int __vcmpeq4(unsigned int a, unsigne
 }
 
 static __device__ __forceinline__ unsigned int __vcmpne4(unsigned int a, unsigned int b) {
-    const unsigned int x = a ^ b;
-
-    // any non-equal bit in a byte will set the high bit of that byte here
-    // the addition will not overflow in the byte as op1 and op2 are both less than 0x80
-    const unsigned int ne_low_7bits = ((x & 0x7f7f7f7f) + 0x7f7f7f7f) & 0x80808080;
-    const unsigned int ne_high_1bit = x & 0x80808080;
-    const unsigned int ne_any_bit = ne_low_7bits | ne_high_1bit;
-
-    return (ne_any_bit >> 7) * 0xff;
+    const uint8x4_t& va = reinterpret_cast<const uint8x4_t&>(a);
+    const uint8x4_t& vb = reinterpret_cast<const uint8x4_t&>(b);
+    unsigned int c;
+    uint8x4_t& vc = reinterpret_cast<uint8x4_t&>(c);
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        vc[i] = va[i] == vb[i] ? 0x00 : 0xff;
+    }
+    return c;
 }

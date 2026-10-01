@@ -3,19 +3,16 @@
 #include "engine/framework/core/backend.h"
 #include "engine/framework/debug/profiler.h"
 #include "engine/framework/modules/lookup_modules.h"
-#include "engine/framework/modules/transformers/qwen_causal_decoder.h"
+#include "engine/framework/modules/transformers/causal_decoder.h"
 #include "engine/framework/modules/weight_binding.h"
 
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
-#include <cstdio>
-#include <cstdlib>
 #include <limits>
 #include <random>
 #include <stdexcept>
-#include <string>
 #include <utility>
 
 namespace engine::models::yue2 {
@@ -25,19 +22,6 @@ namespace binding = engine::modules::binding;
 using Clock = std::chrono::steady_clock;
 
 constexpr int64_t kArDecodeChunkTokens = 5120;
-
-// Env-gated stderr progress markers for launch-quota debugging (default off,
-// zero cost otherwise).
-void progress_marker(const std::string & message) {
-    static const bool enabled = std::getenv("AUDIOCPP_PROGRESS") != nullptr;
-    static const auto marker_start = std::chrono::steady_clock::now();
-    if (enabled) {
-        const double elapsed =
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - marker_start).count();
-        std::fprintf(stderr, "[yue2.progress %7.1fs] %s\n", elapsed, message.c_str());
-        std::fflush(stderr);
-    }
-}
 
 struct GgmlContextDeleter {
     void operator()(ggml_context * ctx) const noexcept {
@@ -58,30 +42,30 @@ struct Yue2SamplerScratch {
     std::vector<double> weights;
 };
 
-engine::modules::QwenDecoderLayerWeights load_layer(
+engine::modules::DecoderLayerWeights load_layer(
     core::BackendWeightStore & store,
     const assets::TensorSource & source,
     const Yue2ModelConfig & config,
     assets::TensorStorageType storage_type,
     int64_t layer) {
     const std::string prefix = "model.layers." + std::to_string(layer);
-    engine::modules::QwenDecoderLayerWeights out;
+    engine::modules::DecoderLayerWeights out;
     out.input_norm = binding::norm_weight_from_source(store, source, prefix + ".input_layernorm", config.hidden_size);
-    // Packed q|k|v projection + tiled q/k norm weights: the per-token decode
-    // graph then runs 1 projection + 1 rmsnorm + 1 rope instead of 3 + 2 + 2
-    // ops per layer (launch-bound SYCL decode needs the reduced dispatch
-    // count). Row order inside the packed weight is [q | k | v].
-    const int64_t q_out = config.attention_heads * config.head_dim;
-    const int64_t kv_out = config.kv_heads * config.head_dim;
-    out.self_attention.qkv_weight = binding::packed_linear_from_source(
-        store,
+    out.self_attention.q_weight = store.load_tensor(
         source,
-        {prefix + ".self_attn.q_proj.weight",
-         prefix + ".self_attn.k_proj.weight",
-         prefix + ".self_attn.v_proj.weight"},
+        prefix + ".self_attn.q_proj.weight",
         storage_type,
-        config.hidden_size,
-        {q_out, kv_out, kv_out});
+        {config.attention_heads * config.head_dim, config.hidden_size});
+    out.self_attention.k_weight = store.load_tensor(
+        source,
+        prefix + ".self_attn.k_proj.weight",
+        storage_type,
+        {config.kv_heads * config.head_dim, config.hidden_size});
+    out.self_attention.v_weight = store.load_tensor(
+        source,
+        prefix + ".self_attn.v_proj.weight",
+        storage_type,
+        {config.kv_heads * config.head_dim, config.hidden_size});
     out.self_attention.out_weight = store.load_tensor(
         source,
         prefix + ".self_attn.o_proj.weight",
@@ -89,27 +73,23 @@ engine::modules::QwenDecoderLayerWeights load_layer(
         {config.hidden_size, config.attention_heads * config.head_dim});
     out.q_norm = binding::norm_weight_from_source(store, source, prefix + ".self_attn.q_norm", config.head_dim);
     out.k_norm = binding::norm_weight_from_source(store, source, prefix + ".self_attn.k_norm", config.head_dim);
-    out.qk_norm_packed = binding::tiled_qk_norm_from_source(
+    out.post_norm = binding::norm_weight_from_source(store, source, prefix + ".post_attention_layernorm", config.hidden_size);
+    out.mlp.gate_proj = binding::linear_from_source(
         store,
         source,
-        prefix + ".self_attn.q_norm",
-        prefix + ".self_attn.k_norm",
-        config.attention_heads,
-        config.kv_heads,
-        config.head_dim);
-    out.post_norm = binding::norm_weight_from_source(store, source, prefix + ".post_attention_layernorm", config.hidden_size);
-    // Packed gate|up rows let the MLP run one projection plus the fused
-    // swiglu op instead of two projections + silu + mul.
-    out.mlp.gate_up_proj = engine::modules::LinearWeights{
-        binding::packed_linear_from_source(
-            store,
-            source,
-            {prefix + ".mlp.gate_proj.weight", prefix + ".mlp.up_proj.weight"},
-            storage_type,
-            config.hidden_size,
-            {config.intermediate_size, config.intermediate_size}),
-        std::nullopt,
-    };
+        prefix + ".mlp.gate_proj",
+        storage_type,
+        config.intermediate_size,
+        config.hidden_size,
+        false);
+    out.mlp.up_proj = binding::linear_from_source(
+        store,
+        source,
+        prefix + ".mlp.up_proj",
+        storage_type,
+        config.intermediate_size,
+        config.hidden_size,
+        false);
     out.mlp.down_proj = binding::linear_from_source(
         store,
         source,
@@ -121,12 +101,12 @@ engine::modules::QwenDecoderLayerWeights load_layer(
     return out;
 }
 
-engine::modules::QwenCausalDecodeRuntimeWeights load_prefix_weights(
+engine::modules::CausalDecoderRuntimeWeights load_prefix_weights(
     core::BackendWeightStore & store,
     const assets::TensorSource & source,
     const Yue2ModelConfig & config,
     assets::TensorStorageType storage_type) {
-    engine::modules::QwenCausalDecodeRuntimeWeights weights;
+    engine::modules::CausalDecoderRuntimeWeights weights;
     weights.token_embedding = store.load_tensor(
         source,
         "model.embed_tokens.weight",
@@ -140,7 +120,7 @@ engine::modules::QwenCausalDecodeRuntimeWeights load_prefix_weights(
 }
 
 void load_generation_weights(
-    engine::modules::QwenCausalDecodeRuntimeWeights & weights,
+    engine::modules::CausalDecoderRuntimeWeights & weights,
     core::BackendWeightStore & store,
     const assets::TensorSource & source,
     const Yue2ModelConfig & config,
@@ -156,14 +136,13 @@ void load_generation_weights(
         false);
 }
 
-engine::modules::QwenCausalDecodeRuntimeConfig make_runtime_config(
+engine::modules::CausalDecoderRuntimeConfig make_runtime_config(
     const Yue2ModelConfig & config,
     core::BackendType backend_type,
     size_t prefill_graph_arena_bytes,
     size_t decode_graph_arena_bytes,
-    bool allow_flash_attention,
     int64_t logits_size = 0) {
-    engine::modules::QwenCausalDecodeRuntimeConfig out;
+    engine::modules::CausalDecoderRuntimeConfig out;
     out.trace_name = "yue2.ar";
     out.prefill_graph_arena_bytes = prefill_graph_arena_bytes;
     out.decode_graph_arena_bytes = decode_graph_arena_bytes;
@@ -177,28 +156,17 @@ engine::modules::QwenCausalDecodeRuntimeConfig make_runtime_config(
     out.decoder.stack.rope_theta = config.rope_theta;
     out.decoder.stack.rope_type = GGML_ROPE_TYPE_NEOX;
     out.decoder.stack.use_qk_norm = true;
-    // Eager (repeat-KV + matmul/softmax) graph for GPUs without flash-attention
-    // device code (e.g. CUDA sm70/sm75, where the MMA kernels are missing and
-    // large-shape launches die with "no device code compatible with CUDA arch").
-    out.decoder.stack.runtime.attention.allow_flash_attention = allow_flash_attention;
-    const auto attention_mode = allow_flash_attention
-        ? engine::modules::QwenDecoderAttentionMode::FlashGroupedViewKV
-        : engine::modules::QwenDecoderAttentionMode::ManualRepeat;
-    out.decoder.stack.runtime.attention.prefill_mode = attention_mode;
-    out.decoder.stack.runtime.attention.static_mode = attention_mode;
-    out.decoder.stack.runtime.static_cache.update_mode = engine::modules::QwenDecoderStaticCacheUpdateMode::DirectSetRows;
+    out.decoder.stack.runtime.attention.prefill_mode = engine::modules::DecoderAttentionMode::FlashGroupedViewKV;
+    out.decoder.stack.runtime.attention.static_mode = engine::modules::DecoderAttentionMode::FlashGroupedViewKV;
+    out.decoder.stack.runtime.static_cache.update_mode = engine::modules::DecoderStaticCacheUpdateMode::DirectSetRows;
     out.decoder.stack.runtime.static_cache.set_rows_mode =
-        engine::modules::QwenDecoderStaticCacheSetRowsMode::BackendViewOptimized;
-    // Packed weights are loaded in load_layer(): route the graphs through the
-    // packed QKV / packed gate-up + fused swiglu lowerings.
-    out.decoder.stack.qkv_layout = engine::modules::QwenDecoderQKVLayout::PackedQKV;
-    out.decoder.stack.runtime.mlp.mode = engine::modules::QwenDecoderMLPMode::PackedGateUp;
+        engine::modules::DecoderStaticCacheSetRowsMode::BackendViewOptimized;
     if (backend_type == core::BackendType::Cuda || backend_type == core::BackendType::Hip ||
-        backend_type == core::BackendType::Vulkan || backend_type == core::BackendType::Sycl) {
+        backend_type == core::BackendType::Vulkan) {
         out.decoder.static_cache_type = GGML_TYPE_F16;
     }
     out.decoder.logits_size = logits_size > 0 ? logits_size : config.vocab_size;
-    out.decoder.logits_mode = engine::modules::QwenCausalDecoderLogitsMode::LastStep;
+    out.decoder.logits_mode = engine::modules::CausalDecoderLogitsMode::LastStep;
     out.readback_round_type = GGML_TYPE_BF16;
     return out;
 }
@@ -251,7 +219,7 @@ runtime::TransformerBatchedKVState make_cfg_batched_state(
 void apply_repetition_penalty(
     std::vector<float> & logits,
     const std::vector<int32_t> & emitted,
-    const Yue2ArSamplingWindow & window) {
+    const Yue2ARSamplingWindow & window) {
     const float penalty = window.sampling.repetition_penalty;
     if (penalty == 1.0F || emitted.empty()) {
         return;
@@ -389,7 +357,7 @@ int32_t sample_from_allowed_ranges(
 int32_t sample_token(
     std::vector<float> & logits,
     const std::vector<int32_t> & emitted,
-    const Yue2ArSamplingWindow & window,
+    const Yue2ARSamplingWindow & window,
     std::mt19937 & rng,
     Yue2SamplerScratch & scratch) {
     if (window.begin < 0 || window.end <= window.begin ||
@@ -426,7 +394,7 @@ int32_t compact_semantic_index(int32_t token) {
 int32_t sample_semantic_token(
     std::vector<float> & logits,
     const std::vector<int32_t> & emitted,
-    const Yue2ArSamplingWindow & window,
+    const Yue2ARSamplingWindow & window,
     std::mt19937 & rng,
     Yue2SamplerScratch & scratch) {
     if (static_cast<int64_t>(logits.size()) != kCodecSize + 1 ||
@@ -485,15 +453,14 @@ core::TensorValue view_linear_rows(
 
 }  // namespace
 
-struct Yue2ArRuntime::Impl {
+struct Yue2ARRuntime::Impl {
     Impl(
         core::ExecutionContext & execution,
         std::shared_ptr<const Yue2Assets> assets,
         assets::TensorStorageType weight_type,
         size_t weight_context_bytes,
         size_t prefill_graph_arena_bytes,
-        size_t decode_graph_arena_bytes,
-        bool allow_flash_attention)
+        size_t decode_graph_arena_bytes)
         : execution(execution),
           assets(std::move(assets)),
           weight_type(weight_type) {
@@ -513,21 +480,18 @@ struct Yue2ArRuntime::Impl {
             config,
             execution.backend_type(),
             prefill_graph_arena_bytes,
-            decode_graph_arena_bytes,
-            allow_flash_attention);
+            decode_graph_arena_bytes);
         abc_runtime_config = make_runtime_config(
             config,
             execution.backend_type(),
             prefill_graph_arena_bytes,
             decode_graph_arena_bytes,
-            allow_flash_attention,
             kAbcEndToken + 1);
         semantic_runtime_config = make_runtime_config(
             config,
             execution.backend_type(),
             prefill_graph_arena_bytes,
             decode_graph_arena_bytes,
-            allow_flash_attention,
             kCodecSize + 1);
     }
 
@@ -558,82 +522,48 @@ struct Yue2ArRuntime::Impl {
             auto x = engine::modules::EmbeddingModule({config.vocab_size, config.hidden_size})
                          .build(build, ids, owner.runtime_weights.token_embedding);
             x = core::reshape_tensor(build, x, core::TensorShape::from_dims({1, steps, config.hidden_size}));
-            auto stack = engine::modules::QwenDecoderStackModule(owner.runtime_config.decoder.stack)
+            auto stack = engine::modules::DecoderStackModule(owner.runtime_config.decoder.stack)
                              .build(build, x, pos, owner.runtime_weights.stack, std::nullopt, mask);
+            keys.reserve(stack.state.layers.size());
+            values.reserve(stack.state.layers.size());
             key_values.reserve(stack.state.layers.size());
             value_values.reserve(stack.state.layers.size());
             for (const auto & layer : stack.state.layers) {
                 if (!layer.key.has_value() || !layer.value.has_value()) {
                     throw std::runtime_error("Yue2 AR prefix-state graph did not return K/V state");
                 }
-                key_values.push_back(core::make_tensor(state_build, GGML_TYPE_F16, layer.key->shape));
-                value_values.push_back(core::make_tensor(state_build, GGML_TYPE_F16, layer.value->shape));
-            }
-            // The persistent K/V state buffer is allocated before the graph so
-            // the graph can copy the bf16-rounded f32 K/V straight into f16
-            // state views. This replaces the previous round_bf16 -> cast ->
-            // dup chain plus a per-layer backend device-to-device copy with
-            // direct chunked typed writes: fewer launches, less traffic, and
-            // no full-width single conversion kernel.
-            state_buffer = ggml_backend_alloc_ctx_tensors(state_ctx.get(), owner.execution.backend());
-            if (state_buffer == nullptr) {
-                throw std::runtime_error("failed to allocate Yue2 AR prefix-state cache");
-            }
-            constexpr int64_t kStateCopyChunkSteps = 256;
-            auto append_state_copy = [&](ggml_tensor * rounded, core::TensorValue & state) {
-                const size_t src_stride = static_cast<size_t>(rounded->nb[2]);
-                const size_t dst_stride = static_cast<size_t>(state.tensor->nb[2]);
-                ggml_tensor * tail = nullptr;
-                for (int64_t begin = 0; begin < state.shape.dims[1]; begin += kStateCopyChunkSteps) {
-                    const int64_t count = std::min(kStateCopyChunkSteps, state.shape.dims[1] - begin);
-                    auto * src_view = ggml_view_3d(
-                        ctx.get(),
-                        rounded,
-                        state.shape.dims[3],
-                        state.shape.dims[2],
-                        count,
-                        rounded->nb[1],
-                        src_stride,
-                        static_cast<size_t>(begin) * src_stride);
-                    auto * dst_view = ggml_view_3d(
-                        ctx.get(),
-                        state.tensor,
-                        state.shape.dims[3],
-                        state.shape.dims[2],
-                        count,
-                        state.tensor->nb[1],
-                        dst_stride,
-                        static_cast<size_t>(begin) * dst_stride);
-                    tail = ggml_cpy(ctx.get(), src_view, dst_view);
-                    ggml_set_output(tail);
-                    state_copy_nodes.push_back(tail);
-                }
-                return tail;
-            };
-            for (const auto & layer : stack.state.layers) {
-                // Metal skips the intermediate bf16 rounding (platform
-                // semantic). SYCL used to skip it too as a workaround: the old
-                // ggml-sycl round_bf16 launcher captured the host-side
-                // ggml_tensor* in the device lambda, poisoning the Level-Zero
-                // queue after the first launch. The kernel is fixed at the
-                // source (host-side pointer extraction), so SYCL now goes
-                // through the real round_bf16 like CUDA/Vulkan.
-                const bool skip_bf16_round =
-                    owner.execution.backend_type() == core::BackendType::Metal;
-                auto key_rounded = core::wrap_tensor(
+                const bool skip_bf16_round = owner.execution.backend_type() == core::BackendType::Metal;
+                auto key_value = core::wrap_tensor(
                     skip_bf16_round ? layer.key->tensor : ggml_round_bf16(ctx.get(), layer.key->tensor),
                     layer.key->shape,
                     GGML_TYPE_F32);
-                auto value_rounded = core::wrap_tensor(
+                auto value_value = core::wrap_tensor(
                     skip_bf16_round ? layer.value->tensor : ggml_round_bf16(ctx.get(), layer.value->tensor),
                     layer.value->shape,
                     GGML_TYPE_F32);
-                append_state_copy(key_rounded.tensor, key_values.back());
-                append_state_copy(value_rounded.tensor, value_values.back());
+                key_value = core::wrap_tensor(
+                    ggml_cast(ctx.get(), key_value.tensor, GGML_TYPE_F16),
+                    key_value.shape,
+                    GGML_TYPE_F16);
+                value_value = core::wrap_tensor(
+                    ggml_cast(ctx.get(), value_value.tensor, GGML_TYPE_F16),
+                    value_value.shape,
+                    GGML_TYPE_F16);
+                auto * key = ggml_cpy(ctx.get(), key_value.tensor, ggml_dup_tensor(ctx.get(), key_value.tensor));
+                auto * value = ggml_cpy(ctx.get(), value_value.tensor, ggml_dup_tensor(ctx.get(), value_value.tensor));
+                ggml_set_output(key);
+                ggml_set_output(value);
+                keys.push_back(key);
+                values.push_back(value);
+                key_values.push_back(core::make_tensor(state_build, GGML_TYPE_F16, layer.key->shape));
+                value_values.push_back(core::make_tensor(state_build, GGML_TYPE_F16, layer.value->shape));
             }
             graph = ggml_new_graph_custom(ctx.get(), 65536, false);
-            for (auto * node : state_copy_nodes) {
-                ggml_build_forward_expand(graph, node);
+            for (auto * key : keys) {
+                ggml_build_forward_expand(graph, key);
+            }
+            for (auto * value : values) {
+                ggml_build_forward_expand(graph, value);
             }
             gallocr = ggml_gallocr_new(ggml_backend_get_default_buffer_type(owner.execution.backend()));
             if (gallocr == nullptr ||
@@ -641,8 +571,12 @@ struct Yue2ArRuntime::Impl {
                 !ggml_gallocr_alloc_graph(gallocr, graph)) {
                 throw std::runtime_error("failed to allocate Yue2 AR prefix-state graph");
             }
-            position_values = engine::modules::qwen_position_ids(steps);
-            mask_values = engine::modules::qwen_causal_prefill_mask_values(1, steps);
+            state_buffer = ggml_backend_alloc_ctx_tensors(state_ctx.get(), owner.execution.backend());
+            if (state_buffer == nullptr) {
+                throw std::runtime_error("failed to allocate Yue2 AR prefix-state cache");
+            }
+            position_values = engine::modules::decoder_position_ids(steps);
+            mask_values = engine::modules::causal_prefill_mask_values(1, steps);
             ggml_backend_tensor_set(positions, position_values.data(), 0, position_values.size() * sizeof(int32_t));
             ggml_backend_tensor_set(attention_mask, mask_values.data(), 0, mask_values.size() * sizeof(ggml_fp16_t));
             engine::debug::timing_log_scalar("yue2.ar.prefix_state.graph.build_ms", engine::debug::elapsed_ms(build_start));
@@ -667,25 +601,25 @@ struct Yue2ArRuntime::Impl {
             compute(tokens);
             runtime::TransformerKVState out;
             out.current_end = steps;
-            out.layers.resize(key_values.size());
-            for (size_t layer = 0; layer < key_values.size(); ++layer) {
+            out.layers.resize(keys.size());
+            for (size_t layer = 0; layer < keys.size(); ++layer) {
                 auto & state = out.layers[layer];
                 state.valid_steps = steps;
-                // The graph wrote bf16-rounded f16 state directly; reading
-                // through f32 conversion preserves the previous numerics.
-                core::read_tensor_f32_into(key_values[layer].tensor, state.key);
-                core::read_tensor_f32_into(value_values[layer].tensor, state.value);
+                core::read_tensor_f32_into(keys[layer], state.key);
+                core::read_tensor_f32_into(values[layer], state.value);
                 core::round_f32_to_bf16_in_place(state.key);
                 core::round_f32_to_bf16_in_place(state.value);
             }
             return out;
         }
 
-        Yue2ArDevicePrefixState run_device(const std::vector<int32_t> & tokens) {
+        Yue2ARDevicePrefixState run_device(const std::vector<int32_t> & tokens) {
             compute(tokens);
-            // The graph already wrote the persistent state tensors in place;
-            // no per-layer device-to-device copies are needed.
-            Yue2ArDevicePrefixState out;
+            for (size_t layer = 0; layer < keys.size(); ++layer) {
+                ggml_backend_tensor_copy(keys[layer], key_values[layer].tensor);
+                ggml_backend_tensor_copy(values[layer], value_values[layer].tensor);
+            }
+            Yue2ARDevicePrefixState out;
             out.current_end = steps;
             out.keys = key_values;
             out.values = value_values;
@@ -716,7 +650,8 @@ struct Yue2ArRuntime::Impl {
         ggml_tensor * input = nullptr;
         ggml_tensor * positions = nullptr;
         ggml_tensor * attention_mask = nullptr;
-        std::vector<ggml_tensor *> state_copy_nodes;
+        std::vector<ggml_tensor *> keys;
+        std::vector<ggml_tensor *> values;
         std::vector<core::TensorValue> key_values;
         std::vector<core::TensorValue> value_values;
         std::vector<int32_t> position_values;
@@ -725,7 +660,7 @@ struct Yue2ArRuntime::Impl {
 
     std::vector<int32_t> generate(
         const std::vector<int32_t> & prefix,
-        const Yue2ArSamplingWindow & window,
+        const Yue2ARSamplingWindow & window,
         uint64_t seed,
         const std::vector<int32_t> & forced) {
         if (prefix.empty()) {
@@ -760,12 +695,10 @@ struct Yue2ArRuntime::Impl {
             cache_steps_for(
                 static_cast<int64_t>(start_prefix.size()),
                 window.max_tokens - static_cast<int64_t>(emitted.size())));
-        progress_marker("generate prefill done: prefix=" + std::to_string(start_prefix.size()) +
-                        " cache=" + std::to_string(active_runtime->decode_cache_steps()));
         engine::debug::timing_log_scalar("yue2.ar.generate.prefill_ms", engine::debug::elapsed_ms(prefill_start));
         std::mt19937 rng(static_cast<uint32_t>(seed));
         Yue2SamplerScratch scratch;
-        engine::modules::QwenCausalDecodeStepResult decode_result;
+        engine::modules::CausalDecoderStepResult decode_result;
         decode_result.logits = std::move(prefill.logits);
         decode_result.hidden = std::move(prefill.hidden);
         double sample_ms = 0.0;
@@ -779,8 +712,6 @@ struct Yue2ArRuntime::Impl {
                 sample_token(decode_result.logits, emitted, window, rng, scratch);
             sample_ms += engine::debug::elapsed_ms(sample_start);
             if (token == window.stop_token) {
-                progress_marker("generate done: emitted=" + std::to_string(emitted.size()) +
-                                " refills=" + std::to_string(refill_count));
                 engine::debug::timing_log_scalar("yue2.ar.generate.sample_ms", sample_ms);
                 engine::debug::timing_log_scalar("yue2.ar.generate.decode_ms", decode_ms);
                 engine::debug::timing_log_scalar("yue2.ar.generate.refill_prefill_ms", refill_prefill_ms);
@@ -790,9 +721,6 @@ struct Yue2ArRuntime::Impl {
                 return emitted;
             }
             emitted.push_back(token);
-            if (emitted.size() % 200 == 0) {
-                progress_marker("generate decoding: emitted=" + std::to_string(emitted.size()));
-            }
             if (static_cast<int64_t>(emitted.size()) >= window.max_tokens) {
                 break;
             }
@@ -828,7 +756,7 @@ struct Yue2ArRuntime::Impl {
     std::vector<int32_t> generate_cfg(
         const std::vector<int32_t> & positive_prefix,
         const std::vector<int32_t> & negative_prefix,
-        const Yue2ArSamplingWindow & window,
+        const Yue2ARSamplingWindow & window,
         float guidance_scale,
         uint64_t seed,
         const std::vector<int32_t> & forced) {
@@ -863,8 +791,6 @@ struct Yue2ArRuntime::Impl {
         const auto negative_prefill_start = Clock::now();
         auto negative = positive_runtime->prefill_tokens(negative_tokens);
         engine::debug::timing_log_scalar("yue2.ar.cfg.prefill_negative_ms", engine::debug::elapsed_ms(negative_prefill_start));
-        progress_marker("cfg prefill done: positive=" + std::to_string(positive_tokens.size()) +
-                        " negative=" + std::to_string(negative_tokens.size()));
         const auto start_decode_start = Clock::now();
         const int64_t cache_steps =
             std::max<int64_t>(
@@ -896,7 +822,6 @@ struct Yue2ArRuntime::Impl {
                 sample_token(logits, emitted, window, rng, scratch);
             sample_ms += engine::debug::elapsed_ms(sample_start);
             if (token == window.stop_token) {
-                progress_marker("cfg done: emitted=" + std::to_string(emitted.size()));
                 engine::debug::timing_log_scalar("yue2.ar.cfg.sample_ms", sample_ms);
                 engine::debug::timing_log_scalar("yue2.ar.cfg.decode_batched_ms", decode_batched_ms);
                 engine::debug::timing_log_scalar("yue2.ar.cfg.emitted_tokens", emitted.size());
@@ -904,9 +829,6 @@ struct Yue2ArRuntime::Impl {
                 return emitted;
             }
             emitted.push_back(token);
-            if (emitted.size() % 200 == 0) {
-                progress_marker("cfg decoding: emitted=" + std::to_string(emitted.size()));
-            }
             if (static_cast<int64_t>(emitted.size()) >= window.max_tokens) {
                 break;
             }
@@ -936,7 +858,7 @@ struct Yue2ArRuntime::Impl {
         return state;
     }
 
-    Yue2ArDevicePrefixState prefill_device_state(const std::vector<int32_t> & tokens) {
+    Yue2ARDevicePrefixState prefill_device_state(const std::vector<int32_t> & tokens) {
         const int64_t steps = static_cast<int64_t>(tokens.size());
         if (!prefix_state_graph || !prefix_state_graph->matches(steps)) {
             prefix_state_graph = std::make_unique<PrefixStateGraph>(*this, steps);
@@ -945,13 +867,13 @@ struct Yue2ArRuntime::Impl {
         return state;
     }
 
-    static bool is_semantic_window(const Yue2ArSamplingWindow & window) noexcept {
+    static bool is_semantic_window(const Yue2ARSamplingWindow & window) noexcept {
         return window.begin == kCodecOffset &&
             window.end == kCodecOffset + kCodecSize &&
             window.stop_token == kMusicEndToken;
     }
 
-    static bool is_abc_window(const Yue2ArSamplingWindow & window) noexcept {
+    static bool is_abc_window(const Yue2ARSamplingWindow & window) noexcept {
         return window.begin == 0 &&
             window.end == kEodToken &&
             window.stop_token == kAbcEndToken;
@@ -1009,13 +931,13 @@ struct Yue2ArRuntime::Impl {
             };
         }
         if (!active_runtime) {
-            active_runtime = std::make_unique<engine::modules::QwenCausalDecodeRuntime>(
+            active_runtime = std::make_unique<engine::modules::CausalDecoderRuntime>(
                 execution,
                 active_config,
                 compact_semantic ? semantic_runtime_weights : (compact_abc ? abc_runtime_weights : runtime_weights));
         }
         if (require_negative && !active_negative_runtime) {
-            active_negative_runtime = std::make_unique<engine::modules::QwenCausalDecodeRuntime>(
+            active_negative_runtime = std::make_unique<engine::modules::CausalDecoderRuntime>(
                 execution,
                 active_config,
                 compact_semantic ? semantic_runtime_weights : (compact_abc ? abc_runtime_weights : runtime_weights));
@@ -1029,67 +951,65 @@ struct Yue2ArRuntime::Impl {
     std::shared_ptr<core::BackendWeightStore> generation_store;
     std::unique_ptr<ggml_context, GgmlContextDeleter> generation_view_ctx;
     assets::TensorStorageType weight_type;
-    engine::modules::QwenCausalDecodeRuntimeConfig runtime_config;
-    engine::modules::QwenCausalDecodeRuntimeConfig abc_runtime_config;
-    engine::modules::QwenCausalDecodeRuntimeConfig semantic_runtime_config;
-    engine::modules::QwenCausalDecodeRuntimeWeights runtime_weights;
-    engine::modules::QwenCausalDecodeRuntimeWeights abc_runtime_weights;
-    engine::modules::QwenCausalDecodeRuntimeWeights semantic_runtime_weights;
-    std::unique_ptr<engine::modules::QwenCausalDecodeRuntime> runtime;
-    std::unique_ptr<engine::modules::QwenCausalDecodeRuntime> negative_runtime;
-    std::unique_ptr<engine::modules::QwenCausalDecodeRuntime> abc_runtime;
-    std::unique_ptr<engine::modules::QwenCausalDecodeRuntime> abc_negative_runtime;
-    std::unique_ptr<engine::modules::QwenCausalDecodeRuntime> semantic_runtime;
-    std::unique_ptr<engine::modules::QwenCausalDecodeRuntime> semantic_negative_runtime;
+    engine::modules::CausalDecoderRuntimeConfig runtime_config;
+    engine::modules::CausalDecoderRuntimeConfig abc_runtime_config;
+    engine::modules::CausalDecoderRuntimeConfig semantic_runtime_config;
+    engine::modules::CausalDecoderRuntimeWeights runtime_weights;
+    engine::modules::CausalDecoderRuntimeWeights abc_runtime_weights;
+    engine::modules::CausalDecoderRuntimeWeights semantic_runtime_weights;
+    std::unique_ptr<engine::modules::CausalDecoderRuntime> runtime;
+    std::unique_ptr<engine::modules::CausalDecoderRuntime> negative_runtime;
+    std::unique_ptr<engine::modules::CausalDecoderRuntime> abc_runtime;
+    std::unique_ptr<engine::modules::CausalDecoderRuntime> abc_negative_runtime;
+    std::unique_ptr<engine::modules::CausalDecoderRuntime> semantic_runtime;
+    std::unique_ptr<engine::modules::CausalDecoderRuntime> semantic_negative_runtime;
     std::unique_ptr<PrefixStateGraph> prefix_state_graph;
 };
 
-Yue2ArRuntime::Yue2ArRuntime(
+Yue2ARRuntime::Yue2ARRuntime(
     core::ExecutionContext & execution,
     std::shared_ptr<const Yue2Assets> assets,
     assets::TensorStorageType weight_type,
     size_t weight_context_bytes,
     size_t prefill_graph_arena_bytes,
-    size_t decode_graph_arena_bytes,
-    bool allow_flash_attention)
+    size_t decode_graph_arena_bytes)
     : impl_(std::make_unique<Impl>(
           execution,
           std::move(assets),
           weight_type,
           weight_context_bytes,
           prefill_graph_arena_bytes,
-          decode_graph_arena_bytes,
-          allow_flash_attention)) {}
+          decode_graph_arena_bytes)) {}
 
-Yue2ArRuntime::~Yue2ArRuntime() = default;
+Yue2ARRuntime::~Yue2ARRuntime() = default;
 
-std::vector<int32_t> Yue2ArRuntime::generate(
+std::vector<int32_t> Yue2ARRuntime::generate(
     const std::vector<int32_t> & prefix,
-    const Yue2ArSamplingWindow & window,
+    const Yue2ARSamplingWindow & window,
     uint64_t seed,
     const std::vector<int32_t> & forced) {
     return impl_->generate(prefix, window, seed, forced);
 }
 
-std::vector<int32_t> Yue2ArRuntime::generate_cfg(
+std::vector<int32_t> Yue2ARRuntime::generate_cfg(
     const std::vector<int32_t> & positive_prefix,
     const std::vector<int32_t> & negative_prefix,
-    const Yue2ArSamplingWindow & window,
+    const Yue2ARSamplingWindow & window,
     float guidance_scale,
     uint64_t seed,
     const std::vector<int32_t> & forced) {
     return impl_->generate_cfg(positive_prefix, negative_prefix, window, guidance_scale, seed, forced);
 }
 
-runtime::TransformerKVState Yue2ArRuntime::prefill_state(const std::vector<int32_t> & tokens) {
+runtime::TransformerKVState Yue2ARRuntime::prefill_state(const std::vector<int32_t> & tokens) {
     return impl_->prefill_state(tokens);
 }
 
-Yue2ArDevicePrefixState Yue2ArRuntime::prefill_device_state(const std::vector<int32_t> & tokens) {
+Yue2ARDevicePrefixState Yue2ARRuntime::prefill_device_state(const std::vector<int32_t> & tokens) {
     return impl_->prefill_device_state(tokens);
 }
 
-void Yue2ArRuntime::release_runtime_graphs() {
+void Yue2ARRuntime::release_runtime_graphs() {
     impl_->prefix_state_graph.reset();
     if (impl_->runtime) {
         impl_->runtime->release_runtime_graphs();

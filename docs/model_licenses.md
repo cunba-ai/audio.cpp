@@ -63,6 +63,7 @@ Licenses change. If a row is wrong or out of date, please open a PR.
 | `irodori_tts` | [Aratako/Irodori-TTS-500M-v3](https://huggingface.co/Aratako/Irodori-TTS-500M-v3)<br>[Aratako/Irodori-TTS-600M-v3-VoiceDesign](https://huggingface.co/Aratako/Irodori-TTS-600M-v3-VoiceDesign)<br>[Aratako/Irodori-TTS-v4.1-Small](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small) | MIT | Yes | | 2026-09-21 |
 | `kitten_tts` | [KittenML/kitten-tts-mini-0.8](https://huggingface.co/KittenML/kitten-tts-mini-0.8) | Apache-2.0 | Yes | | 2026-09-21 |
 | `kokoro_tts` | [hexgrad/Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) | Apache-2.0 | Yes | | 2026-09-21 |
+| `kugelaudio` | [kugelaudio/kugelaudio-0-open](https://huggingface.co/kugelaudio/kugelaudio-0-open) | MIT | Yes | Includes the upstream preset voice features. | 2026-09-28 |
 | `kroko_asr` | [Banafo/Kroko-ASR](https://huggingface.co/Banafo/Kroko-ASR) | CC-BY-SA | Yes | Stated in the model card text only: the LICENSE file is empty and no version is named. Applies to the community models; Kroko's commercial models are licensed separately. | 2026-09-21 |
 | `liveavatar` | [Quark-Vision/Live-Avatar](https://huggingface.co/Quark-Vision/Live-Avatar)<br>[Wan-AI/Wan2.2-S2V-14B](https://huggingface.co/Wan-AI/Wan2.2-S2V-14B) | Apache-2.0 | Yes | | 2026-09-21 |
 | `magpie_tts` | [nvidia/magpie_tts_multilingual_357m](https://huggingface.co/nvidia/magpie_tts_multilingual_357m) | [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/) | Yes | | 2026-09-21 |
@@ -100,14 +101,17 @@ Licenses change. If a row is wrong or out of date, please open a PR.
 | `qwen3_asr` | [Qwen/Qwen3-ASR-0.6B](https://huggingface.co/Qwen/Qwen3-ASR-0.6B)<br>[Qwen/Qwen3-ASR-1.7B-hf](https://huggingface.co/Qwen/Qwen3-ASR-1.7B-hf) | Apache-2.0 | Yes | | 2026-09-21 |
 | `qwen3_forced_aligner` | [Qwen/Qwen3-ForcedAligner-0.6B](https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B) | Apache-2.0 | Yes | | 2026-09-21 |
 | `qwen3_tts` | [Qwen/Qwen3-TTS-12Hz-0.6B-Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base)<br>[Qwen/Qwen3-TTS-12Hz-1.7B-Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base)<br>[Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice)<br>[Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign) | Apache-2.0 | Yes | | 2026-09-21 |
+| `reuse` | [nvidia/RE-USE](https://huggingface.co/nvidia/RE-USE) | [NVIDIA One-Way Noncommercial License (NSCLv1)](https://github.com/NVlabs/HMAR/blob/main/LICENSE) | No | Research and noncommercial use only. | 2026-09-27 |
 | `rvc` | [lj1995/VoiceConversionWebUI](https://huggingface.co/lj1995/VoiceConversionWebUI) | MIT | Unclear | The base models (HuBERT, RMVPE) are MIT. The packaged voices (`manthos`, `chocola`, `fraise`) have no documented source or license. | 2026-09-21 |
 | `sam_audio` | [facebook/sam-audio-small](https://huggingface.co/facebook/sam-audio-small) | [SAM License](https://huggingface.co/facebook/sam-audio-small/blob/main/LICENSE) | Yes | The packaged Google T5 Base text encoder retains its Apache-2.0 license. | 2026-09-26 |
 | `samsone` | [SamsungLabs/samsone](https://github.com/SamsungLabs/samsone) | Not stated | Unclear | The upstream repository and v1.0.0 release do not publish model-weight license terms. | 2026-09-26 |
+| `sidon` | [sarulab-speech/sidon-v0.1](https://huggingface.co/sarulab-speech/sidon-v0.1) | MIT | Yes | | 2026-09-28 |
 | `sanotts` | [ampixa/sanoTTS](https://huggingface.co/ampixa/sanoTTS) | GPL-3.0 | Yes | Copyleft. | 2026-09-21 |
 | `seed_vc` | [Plachta/Seed-VC](https://huggingface.co/Plachta/Seed-VC)<br>[mlx-community/SeedVC-MLX](https://huggingface.co/mlx-community/SeedVC-MLX) | GPL-3.0 | Yes | Copyleft. | 2026-09-21 |
 | `sense_asr` | [FunAudioLLM/SenseVoiceSmall](https://huggingface.co/FunAudioLLM/SenseVoiceSmall) | [FunASR Model Open Source License v1.1](https://github.com/modelscope/FunASR/blob/main/MODEL_LICENSE) | Yes | Credit the source and authors, and keep the model names. | 2026-09-21 |
 | `sheetsage2` | [m-a-p/SheetSage2](https://huggingface.co/m-a-p/SheetSage2) | CC-BY-NC-4.0 | No | | 2026-09-21 |
 | `silero_vad` | [snakers4/silero-vad](https://github.com/snakers4/silero-vad) | MIT | Yes | Bundled in `assets/framework/models`. | 2026-09-21 |
+| `smart_turn` | [pipecat-ai/smart-turn](https://github.com/pipecat-ai/smart-turn) | BSD-2-Clause | Yes | Smart Turn v3.2. | 2026-09-30 |
 | `soprano_tts` | [ekwek/Soprano-1.1-80M](https://huggingface.co/ekwek/Soprano-1.1-80M) | Apache-2.0 | Yes | | 2026-09-21 |
 | `sopro_tts` | [samuel-vitorino/sopro-v2-turbo](https://huggingface.co/samuel-vitorino/sopro-v2-turbo) | Apache-2.0 | Yes | | 2026-09-21 |
 | `sortformer_diar` | [nvidia/diar_sortformer_4spk-v1](https://huggingface.co/nvidia/diar_sortformer_4spk-v1) | CC-BY-NC-4.0 | No | | 2026-09-21 |

@@ -714,6 +714,17 @@ audiocpp_add_model(apollo
         engine::models::apollo::make_apollo_loader
 )
 
+audiocpp_add_model(sidon
+    SOURCES
+        src/models/sidon/runtime.cpp
+        src/models/sidon/frontend.cpp
+        src/models/sidon/session.cpp
+    INCLUDES
+        engine/models/sidon/session.h
+    LOADERS
+        engine::models::sidon::make_sidon_loader
+)
+
 audiocpp_add_model(tone_color_vc
     SOURCES
         src/models/tone_color_vc/runtime.cpp
@@ -732,6 +743,16 @@ audiocpp_add_model(pulsevad
         engine/models/pulsevad/session.h
     LOADERS
         engine::models::pulsevad::make_pulsevad_loader
+)
+
+audiocpp_add_model(smart_turn
+    SOURCES
+        src/models/smart_turn/runtime.cpp
+        src/models/smart_turn/session.cpp
+    INCLUDES
+        engine/models/smart_turn/session.h
+    LOADERS
+        engine::models::smart_turn::make_smart_turn_loader
 )
 
 audiocpp_add_model(roformer
@@ -802,6 +823,17 @@ audiocpp_add_model(omnivoice
         engine::models::omnivoice::make_omnivoice_loader
 )
 
+audiocpp_add_model(reuse
+    SOURCES
+        src/community_models/reuse/frontend.cpp
+        src/community_models/reuse/runtime.cpp
+        src/community_models/reuse/session.cpp
+    INCLUDES
+        engine/community_models/reuse/session.h
+    LOADERS
+        engine::models::reuse::make_reuse_loader
+)
+
 audiocpp_add_model(glm_tts
     SOURCES
         src/community_models/glm_tts/assets.cpp
@@ -849,6 +881,21 @@ audiocpp_add_model(outetts
     DEPENDS
         qwen3_asr
         qwen3_forced_aligner
+)
+
+audiocpp_add_model(kugelaudio
+    SOURCES
+        src/models/kugelaudio/ar.cpp
+        src/models/kugelaudio/assets.cpp
+        src/models/kugelaudio/codec.cpp
+        src/models/kugelaudio/diffusion.cpp
+        src/models/kugelaudio/generator.cpp
+        src/models/kugelaudio/scheduler.cpp
+        src/models/kugelaudio/session.cpp
+    INCLUDES
+        engine/models/kugelaudio/session.h
+    LOADERS
+        engine::models::kugelaudio::make_kugelaudio_loader
 )
 
 audiocpp_add_model(maya1
@@ -3789,6 +3836,12 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
                 NAME test_sopro_tts_audio_ops
                 COMMAND test_sopro_tts_audio_ops
             )
+        endif()
+
+        if (reuse IN_LIST AUDIOCPP_LINKED_MODELS)
+            add_executable(test_reuse_scan tests/reuse/test_scan.cpp app/cli/args.cpp)
+            target_link_libraries(test_reuse_scan PRIVATE engine_runtime ggml)
+            target_include_directories(test_reuse_scan PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
         endif()
 
         if (audio8_asr IN_LIST AUDIOCPP_LINKED_MODELS)

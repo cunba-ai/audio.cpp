@@ -3,7 +3,7 @@
 #include "engine/framework/core/backend.h"
 #include "engine/framework/core/backend_weight_store.h"
 #include "engine/framework/debug/profiler.h"
-#include "engine/framework/modules/transformers/qwen_causal_decode_runtime.h"
+#include "engine/framework/modules/transformers/causal_decoder_runtime.h"
 #include "engine/framework/modules/weight_binding.h"
 #include "engine/framework/sampling/hf_sampler.h"
 #include "engine/framework/sampling/torch_random.h"
@@ -34,11 +34,11 @@ constexpr float kRasTau = 0.1F;
 constexpr std::array<int32_t, 11> kSilentTokens{1, 2, 28, 29, 55, 248, 494, 2241, 2242, 2322, 2323};
 constexpr int64_t kMaxConsecutiveSilentTokens = 5;
 
-modules::QwenCausalDecodeRuntimeConfig make_qwen_config(
+modules::CausalDecoderRuntimeConfig make_qwen_config(
     const CosyVoice3Config & config,
     core::BackendType backend_type,
     size_t graph_arena_bytes) {
-    modules::QwenCausalDecodeRuntimeConfig out;
+    modules::CausalDecoderRuntimeConfig out;
     out.trace_name = "cosyvoice3.ar";
     out.prefill_graph_arena_bytes = graph_arena_bytes;
     out.decode_graph_arena_bytes = graph_arena_bytes;
@@ -54,17 +54,13 @@ modules::QwenCausalDecodeRuntimeConfig make_qwen_config(
     out.decoder.stack.use_qk_norm = false;
     out.decoder.stack.attention_precision = GGML_PREC_F32;
     out.decoder.stack.projection_precision = GGML_PREC_DEFAULT;
-    out.decoder.stack.runtime.attention.prefill_mode = modules::QwenDecoderAttentionMode::FlashGroupedViewKV;
-    out.decoder.stack.runtime.attention.static_mode = modules::QwenDecoderAttentionMode::FlashGroupedViewKV;
-    out.decoder.stack.runtime.static_cache.update_mode = modules::QwenDecoderStaticCacheUpdateMode::DirectSetRows;
-    out.decoder.stack.runtime.static_cache.set_rows_mode = modules::QwenDecoderStaticCacheSetRowsMode::BackendViewOptimized;
-    // Packed weights are loaded in load_qwen_layer(): route the graphs
-    // through the packed QKV / packed gate-up + fused swiglu lowerings.
-    out.decoder.stack.qkv_layout = modules::QwenDecoderQKVLayout::PackedQKV;
-    out.decoder.stack.runtime.mlp.mode = modules::QwenDecoderMLPMode::PackedGateUp;
+    out.decoder.stack.runtime.attention.prefill_mode = modules::DecoderAttentionMode::FlashGroupedViewKV;
+    out.decoder.stack.runtime.attention.static_mode = modules::DecoderAttentionMode::FlashGroupedViewKV;
+    out.decoder.stack.runtime.static_cache.update_mode = modules::DecoderStaticCacheUpdateMode::DirectSetRows;
+    out.decoder.stack.runtime.static_cache.set_rows_mode = modules::DecoderStaticCacheSetRowsMode::BackendViewOptimized;
     out.decoder.logits_size = config.speech_token_size + config.speech_reserved_tokens;
-    out.decoder.logits_mode = modules::QwenCausalDecoderLogitsMode::LastStep;
-    out.output_mode = modules::QwenCausalDecodeOutputMode::Logits;
+    out.decoder.logits_mode = modules::CausalDecoderLogitsMode::LastStep;
+    out.output_mode = modules::CausalDecoderOutputMode::Logits;
     out.logits_readback_token_ids.reserve(static_cast<size_t>(out.decoder.logits_size));
     for (int32_t token = 0; token < static_cast<int32_t>(out.decoder.logits_size); ++token) {
         out.logits_readback_token_ids.push_back(token);
@@ -77,53 +73,64 @@ modules::QwenCausalDecodeRuntimeConfig make_qwen_config(
     return out;
 }
 
-modules::QwenDecoderLayerWeights load_qwen_layer(
+modules::DecoderLayerWeights load_qwen_layer(
     core::BackendWeightStore & store,
     const assets::TensorSource & source,
     const CosyVoice3Config & config,
     assets::TensorStorageType storage_type,
     int64_t layer) {
     const std::string prefix = "llm.model.model.layers." + std::to_string(layer);
-    modules::QwenDecoderLayerWeights out;
+    modules::DecoderLayerWeights out;
     out.input_norm = binding::norm_weight_from_source(store, source, prefix + ".input_layernorm", config.hidden_size);
-    // Packed q|k|v projection (row order [q | k | v]) with the biases packed
-    // alongside: one GEMM + one bias add instead of three of each per layer.
-    const int64_t q_out = config.heads * config.head_dim;
-    const int64_t kv_out = config.kv_heads * config.head_dim;
-    out.self_attention.qkv_weight = binding::packed_linear_from_source(
-        store,
+    out.self_attention.q_weight = store.load_tensor(
         source,
-        {prefix + ".self_attn.q_proj.weight",
-         prefix + ".self_attn.k_proj.weight",
-         prefix + ".self_attn.v_proj.weight"},
+        prefix + ".self_attn.q_proj.weight",
         storage_type,
-        config.hidden_size,
-        {q_out, kv_out, kv_out});
-    out.self_attention.qkv_bias = binding::packed_f32_from_source(
-        store,
+        {config.heads * config.head_dim, config.hidden_size});
+    out.self_attention.q_bias = store.load_f32_tensor(
         source,
-        {prefix + ".self_attn.q_proj.bias",
-         prefix + ".self_attn.k_proj.bias",
-         prefix + ".self_attn.v_proj.bias"},
-        {q_out, kv_out, kv_out});
+        prefix + ".self_attn.q_proj.bias",
+        {config.heads * config.head_dim});
+    out.self_attention.k_weight = store.load_tensor(
+        source,
+        prefix + ".self_attn.k_proj.weight",
+        storage_type,
+        {config.kv_heads * config.head_dim, config.hidden_size});
+    out.self_attention.k_bias = store.load_f32_tensor(
+        source,
+        prefix + ".self_attn.k_proj.bias",
+        {config.kv_heads * config.head_dim});
+    out.self_attention.v_weight = store.load_tensor(
+        source,
+        prefix + ".self_attn.v_proj.weight",
+        storage_type,
+        {config.kv_heads * config.head_dim, config.hidden_size});
+    out.self_attention.v_bias = store.load_f32_tensor(
+        source,
+        prefix + ".self_attn.v_proj.bias",
+        {config.kv_heads * config.head_dim});
     out.self_attention.out_weight = store.load_tensor(
         source,
         prefix + ".self_attn.o_proj.weight",
         storage_type,
         {config.hidden_size, config.heads * config.head_dim});
     out.post_norm = binding::norm_weight_from_source(store, source, prefix + ".post_attention_layernorm", config.hidden_size);
-    // Packed gate|up rows let the MLP run one projection plus the fused
-    // swiglu op instead of two projections + silu + mul.
-    out.mlp.gate_up_proj = modules::LinearWeights{
-        binding::packed_linear_from_source(
-            store,
-            source,
-            {prefix + ".mlp.gate_proj.weight", prefix + ".mlp.up_proj.weight"},
-            storage_type,
-            config.hidden_size,
-            {config.intermediate_size, config.intermediate_size}),
-        std::nullopt,
-    };
+    out.mlp.gate_proj = binding::linear_from_source(
+        store,
+        source,
+        prefix + ".mlp.gate_proj",
+        storage_type,
+        config.intermediate_size,
+        config.hidden_size,
+        false);
+    out.mlp.up_proj = binding::linear_from_source(
+        store,
+        source,
+        prefix + ".mlp.up_proj",
+        storage_type,
+        config.intermediate_size,
+        config.hidden_size,
+        false);
     out.mlp.down_proj = binding::linear_from_source(
         store,
         source,
@@ -135,20 +142,20 @@ modules::QwenDecoderLayerWeights load_qwen_layer(
     return out;
 }
 
-struct CosyVoice3ArWeights {
+struct CosyVoice3Qwen2ARWeights {
     std::shared_ptr<core::BackendWeightStore> store;
-    modules::QwenCausalDecodeRuntimeWeights qwen;
+    modules::CausalDecoderRuntimeWeights qwen;
     std::vector<float> text_embedding;
     std::vector<float> speech_embedding;
 };
 
-std::shared_ptr<CosyVoice3ArWeights> load_ar_weights(
+std::shared_ptr<CosyVoice3Qwen2ARWeights> load_ar_weights(
     const CosyVoice3Assets & assets,
     core::ExecutionContext & execution,
     size_t weight_context_bytes,
     assets::TensorStorageType storage_type,
-    const modules::QwenCausalDecodeRuntimeConfig & qwen_config) {
-    auto weights = std::make_shared<CosyVoice3ArWeights>();
+    const modules::CausalDecoderRuntimeConfig & qwen_config) {
+    auto weights = std::make_shared<CosyVoice3Qwen2ARWeights>();
     weights->store = std::make_shared<core::BackendWeightStore>(
         execution.backend(),
         execution.backend_type(),
@@ -375,7 +382,7 @@ bool is_silent_token(int32_t token) {
 
 }  // namespace
 
-class CosyVoice3ArRuntime::Impl {
+class CosyVoice3Qwen2ARRuntime::Impl {
 public:
     Impl(
         std::shared_ptr<const CosyVoice3Assets> assets,
@@ -396,13 +403,13 @@ public:
         }
         qwen_config_ = make_qwen_config(assets_->config, execution_.backend_type(), graph_arena_bytes);
         weights_ = load_ar_weights(*assets_, execution_, weight_context_bytes, storage_type, qwen_config_);
-        qwen_runtime_ = std::make_unique<modules::QwenCausalDecodeRuntime>(
+        qwen_runtime_ = std::make_unique<modules::CausalDecoderRuntime>(
             execution_,
             qwen_config_,
             weights_->qwen);
     }
 
-    CosyVoice3ArOutput generate(const CosyVoice3ArRequest & request) {
+    CosyVoice3AROutput generate(const CosyVoice3ARRequest & request) {
         const auto & config = assets_->config;
         if (request.target_text_tokens.empty()) {
             throw std::runtime_error("CosyVoice3 AR target text tokens are empty");
@@ -473,7 +480,7 @@ public:
         uint64_t sample_call_index = 0;
         uint64_t rng_offset_blocks = 0;
 
-        CosyVoice3ArOutput out;
+        CosyVoice3AROutput out;
         std::vector<int32_t> decoded_tokens;
         int64_t consecutive_silent_tokens = 0;
         int64_t filtered_silent_tokens = 0;
@@ -533,13 +540,13 @@ public:
 private:
     std::shared_ptr<const CosyVoice3Assets> assets_;
     core::ExecutionContext & execution_;
-    modules::QwenCausalDecodeRuntimeConfig qwen_config_;
-    std::shared_ptr<CosyVoice3ArWeights> weights_;
-    std::unique_ptr<modules::QwenCausalDecodeRuntime> qwen_runtime_;
+    modules::CausalDecoderRuntimeConfig qwen_config_;
+    std::shared_ptr<CosyVoice3Qwen2ARWeights> weights_;
+    std::unique_ptr<modules::CausalDecoderRuntime> qwen_runtime_;
     sampling::TorchCudaSamplingPolicy sampling_policy_;
 };
 
-CosyVoice3ArRuntime::CosyVoice3ArRuntime(
+CosyVoice3Qwen2ARRuntime::CosyVoice3Qwen2ARRuntime(
     std::shared_ptr<const CosyVoice3Assets> assets,
     engine::core::ExecutionContext & execution,
     size_t graph_arena_bytes,
@@ -552,13 +559,13 @@ CosyVoice3ArRuntime::CosyVoice3ArRuntime(
           weight_context_bytes,
           storage_type)) {}
 
-CosyVoice3ArRuntime::~CosyVoice3ArRuntime() = default;
+CosyVoice3Qwen2ARRuntime::~CosyVoice3Qwen2ARRuntime() = default;
 
-CosyVoice3ArOutput CosyVoice3ArRuntime::generate(const CosyVoice3ArRequest & request) {
+CosyVoice3AROutput CosyVoice3Qwen2ARRuntime::generate(const CosyVoice3ARRequest & request) {
     return impl_->generate(request);
 }
 
-void CosyVoice3ArRuntime::release_graphs() {
+void CosyVoice3Qwen2ARRuntime::release_graphs() {
     impl_->release_graphs();
 }
 

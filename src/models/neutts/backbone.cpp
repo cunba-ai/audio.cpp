@@ -12,8 +12,8 @@ namespace {
 
 namespace binding = engine::modules::binding;
 
-modules::QwenDecoderActivationCastPolicy neutts_activation_cast_policy(core::BackendType backend_type) {
-    modules::QwenDecoderActivationCastPolicy policy;
+modules::DecoderActivationCastPolicy neutts_activation_cast_policy(core::BackendType backend_type) {
+    modules::DecoderActivationCastPolicy policy;
     if (backend_type == core::BackendType::Cpu || backend_type == core::BackendType::Vulkan ||
         backend_type == core::BackendType::Metal) {
         return policy;
@@ -50,34 +50,34 @@ void validate_backbone_storage_type(assets::TensorStorageType storage_type) {
     }
 }
 
-modules::QwenDecoderLayerWeights load_layer_weights(
+modules::DecoderLayerWeights load_layer_weights(
     core::BackendWeightStore & store,
     const assets::TensorSource & source,
     const NeuTTSBackboneConfig & config,
     assets::TensorStorageType storage_type,
     int64_t layer) {
     const std::string prefix = "model.layers." + std::to_string(layer);
-    modules::QwenDecoderLayerWeights out;
+    modules::DecoderLayerWeights out;
     out.input_norm = binding::norm_weight_from_source(
         store,
         source,
         prefix + ".input_layernorm",
         config.hidden_size);
-    // Packed q|k|v projection + tiled q/k norms: the single-token decode fast
-    // path (active whenever the bf16 autocast policy is off, e.g. Vulkan) runs
-    // 1 projection + 1 rmsnorm + 1 rope instead of 3 + 2 + 2 ops per layer.
-    // Row order inside the packed weight is [q | k | v].
-    out.self_attention.qkv_weight = binding::packed_linear_from_source(
-        store,
+    out.self_attention.q_weight = store.load_tensor(
         source,
-        {prefix + ".self_attn.q_proj.weight",
-         prefix + ".self_attn.k_proj.weight",
-         prefix + ".self_attn.v_proj.weight"},
+        prefix + ".self_attn.q_proj.weight",
         storage_type,
-        config.hidden_size,
-        {config.attention_heads * config.head_dim,
-         config.kv_heads * config.head_dim,
-         config.kv_heads * config.head_dim});
+        {config.attention_heads * config.head_dim, config.hidden_size});
+    out.self_attention.k_weight = store.load_tensor(
+        source,
+        prefix + ".self_attn.k_proj.weight",
+        storage_type,
+        {config.kv_heads * config.head_dim, config.hidden_size});
+    out.self_attention.v_weight = store.load_tensor(
+        source,
+        prefix + ".self_attn.v_proj.weight",
+        storage_type,
+        {config.kv_heads * config.head_dim, config.hidden_size});
     out.self_attention.out_weight = store.load_tensor(
         source,
         prefix + ".self_attn.o_proj.weight",
@@ -93,31 +93,27 @@ modules::QwenDecoderLayerWeights load_layer_weights(
         source,
         prefix + ".self_attn.k_norm",
         config.head_dim);
-    out.qk_norm_packed = binding::tiled_qk_norm_from_source(
-        store,
-        source,
-        prefix + ".self_attn.q_norm",
-        prefix + ".self_attn.k_norm",
-        config.attention_heads,
-        config.kv_heads,
-        config.head_dim);
     out.post_norm = binding::norm_weight_from_source(
         store,
         source,
         prefix + ".post_attention_layernorm",
         config.hidden_size);
-    // Packed gate|up rows let the MLP run one projection plus the fused
-    // swiglu op instead of two projections + silu + mul.
-    out.mlp.gate_up_proj = modules::LinearWeights{
-        binding::packed_linear_from_source(
-            store,
-            source,
-            {prefix + ".mlp.gate_proj.weight", prefix + ".mlp.up_proj.weight"},
-            storage_type,
-            config.hidden_size,
-            {config.intermediate_size, config.intermediate_size}),
-        std::nullopt,
-    };
+    out.mlp.gate_proj = binding::linear_from_source(
+        store,
+        source,
+        prefix + ".mlp.gate_proj",
+        storage_type,
+        config.intermediate_size,
+        config.hidden_size,
+        false);
+    out.mlp.up_proj = binding::linear_from_source(
+        store,
+        source,
+        prefix + ".mlp.up_proj",
+        storage_type,
+        config.intermediate_size,
+        config.hidden_size,
+        false);
     out.mlp.down_proj = binding::linear_from_source(
         store,
         source,
@@ -131,10 +127,10 @@ modules::QwenDecoderLayerWeights load_layer_weights(
 
 }  // namespace
 
-modules::QwenCausalDecoderConfig make_neutts_qwen_config(
+modules::CausalDecoderConfig make_neutts_qwen3_config(
     const NeuTTSBackboneConfig & config,
     core::BackendType backend_type) {
-    modules::QwenCausalDecoderConfig out;
+    modules::CausalDecoderConfig out;
     out.stack.hidden_size = config.hidden_size;
     out.stack.num_attention_heads = config.attention_heads;
     out.stack.num_key_value_heads = config.kv_heads;
@@ -148,18 +144,11 @@ modules::QwenCausalDecoderConfig make_neutts_qwen_config(
     out.stack.projection_precision = GGML_PREC_DEFAULT;
     out.stack.activation_cast = neutts_activation_cast_policy(backend_type);
     out.stack.use_qk_norm = true;
-    out.stack.runtime.attention.prefill_mode = modules::QwenDecoderAttentionMode::FlashGroupedViewKV;
-    out.stack.runtime.attention.static_mode = modules::QwenDecoderAttentionMode::FlashGroupedViewKV;
-    out.stack.runtime.static_cache.update_mode = modules::QwenDecoderStaticCacheUpdateMode::DirectSetRows;
-    out.stack.runtime.static_cache.set_rows_mode =
-        modules::QwenDecoderStaticCacheSetRowsMode::BackendViewOptimized;
-    // Packed weights are loaded in load_layer_weights(): route the graphs
-    // through the packed QKV / packed gate-up + fused swiglu lowerings (the
-    // fused decode fast path additionally requires the autocast policy off).
-    out.stack.qkv_layout = modules::QwenDecoderQKVLayout::PackedQKV;
-    out.stack.runtime.mlp.mode = modules::QwenDecoderMLPMode::PackedGateUp;
+    out.stack.runtime.attention.prefill_mode = modules::DecoderAttentionMode::FlashGroupedViewKV;
+    out.stack.runtime.attention.static_mode = modules::DecoderAttentionMode::FlashGroupedViewKV;
+    out.stack.runtime.static_cache.update_mode = modules::DecoderStaticCacheUpdateMode::DirectSetRows;
     out.logits_size = config.vocab_size;
-    out.logits_mode = modules::QwenCausalDecoderLogitsMode::LastStep;
+    out.logits_mode = modules::CausalDecoderLogitsMode::LastStep;
     out.lm_head_precision = GGML_PREC_DEFAULT;
     if (backend_type == core::BackendType::Vulkan || backend_type == core::BackendType::Metal) {
         out.lm_head_input_type = GGML_TYPE_F16;
@@ -169,7 +158,7 @@ modules::QwenCausalDecoderConfig make_neutts_qwen_config(
     return out;
 }
 
-NeuTTSBackboneWeights load_neutts_backbone_weights(
+NeuTTSQwen3Weights load_neutts_backbone_weights(
     const NeuTTSAssets & assets,
     ggml_backend_t backend,
     core::BackendType backend_type,
@@ -178,7 +167,7 @@ NeuTTSBackboneWeights load_neutts_backbone_weights(
     validate_backbone_storage_type(storage_type);
     const auto & config = assets.backbone;
     const auto & source = *assets.backbone_weights;
-    NeuTTSBackboneWeights weights;
+    NeuTTSQwen3Weights weights;
     weights.store = std::make_shared<core::BackendWeightStore>(
         backend,
         backend_type,

@@ -31,7 +31,7 @@ runtime::GreedyCausalDecoderSpec make_qwen2_decoder_spec(const Audio8ASRDecoderC
     // The checkpoint stores separate q|k|v (and gate|up) projections with
     // biases; pack them at load time so decode runs one fused packed-QKV
     // projection (+ one bias add) and one packed gate-up + swiglu per layer.
-    spec.pack_separate_qkv = true;
+    spec.packed_qkv = true;
     spec.token_embedding_tensor = "language_model.model.embed_tokens.weight";
     spec.lm_head_tensor = "language_model.lm_head.weight";
     spec.final_norm_tensor = "language_model.model.norm.weight";

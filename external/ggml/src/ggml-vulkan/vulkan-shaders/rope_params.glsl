@@ -5,7 +5,6 @@ struct rope_params {
     uint rope_mode;
     uint nrows;
     uint n_dims;
-    uint n_offs;
     float freq_scale;
     float freq_base;
     float ext_factor;
@@ -27,9 +26,6 @@ struct rope_params {
     uint nb11;
     uint nb12;
     uint nb13;
-
-    uint a_offset;
-    uint d_offset;
 };
 
 #endif // !defined(GGML_ROPE_PARAMS)

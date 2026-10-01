@@ -1,18 +1,56 @@
-#include "common.cuh"
 #include "ssm-conv.cuh"
 #include "unary.cuh"
 
+// Token-major projections allow coalesced channel loads without materializing
+// the transposed causal pad. Each block keeps its four-sample window in registers.
+static __global__ void ssm_conv_causal_f32(
+        const float * __restrict__ x, const float * __restrict__ w,
+        const float * __restrict__ bias, float * __restrict__ y,
+        int64_t tokens, int64_t channels, int64_t stride_t, int64_t stride_s) {
+    const int64_t channel = blockIdx.y * blockDim.x + threadIdx.x;
+    const int64_t first = blockIdx.z * 32;
+    const int64_t sequence = blockIdx.x;
+    float window[4] = {};
+    float weights[4];
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        weights[j] = w[channel * 4 + j];
+        const int64_t t = first + j - 3;
+        if (j < 3 && t >= 0) {
+            window[j] = x[sequence * stride_s + t * stride_t + channel];
+        }
+    }
+    for (int64_t t = first; t < tokens && t < first + 32; ++t) {
+        window[3] = x[sequence * stride_s + t * stride_t + channel];
+        float sum = 0.0f;
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            sum += window[j] * weights[j];
+        }
+        y[(sequence * tokens + t) * channels + channel] = ggml_cuda_op_silu_single(sum + bias[channel]);
+#pragma unroll
+        for (int j = 0; j < 3; ++j) {
+            window[j] = window[j + 1];
+        }
+    }
+}
+
+void ggml_cuda_op_ssm_conv_causal(ggml_backend_cuda_context & ctx, ggml_tensor * conv, ggml_tensor * bias, ggml_tensor * dst) {
+    const auto * x = conv->src[0]->src[0];
+    const auto * w = conv->src[1];
+    const dim3 blocks(x->ne[2], x->ne[1] / 128, (x->ne[0] + 31) / 32);
+    ssm_conv_causal_f32<<<blocks, 128, 0, ctx.stream()>>>(
+        static_cast<const float *>(x->data), static_cast<const float *>(w->data),
+        static_cast<const float *>(bias->data), static_cast<float *>(dst->data),
+        x->ne[0], x->ne[1], x->nb[0] / sizeof(float), x->nb[2] / sizeof(float));
+}
+
 template <bool apply_silu, size_t split_d_inner, size_t d_conv>
-static __global__ void ssm_conv_f32(const float * src0_ptr, const float * src1_ptr,
-                                    const float * bias_ptr,
+static __global__ void ssm_conv_f32(const float * __restrict__ src0, const float * __restrict__ src1,
+                                    const float * __restrict__ bias,
                                     const int src0_nb0, const int src0_nb1, const int src0_nb2, const int src1_nb1,
-                                    float * dst_ptr, const int dst_nb0, const int dst_nb1, const int dst_nb2,
+                                    float * __restrict__ dst, const int dst_nb0, const int dst_nb1, const int dst_nb2,
                                     const int64_t n_t) {
-    ggml_cuda_pdl_lc();
-    const float * GGML_CUDA_RESTRICT src0 = src0_ptr;
-    const float * GGML_CUDA_RESTRICT src1 = src1_ptr;
-    const float * GGML_CUDA_RESTRICT bias = bias_ptr;
-    float       * GGML_CUDA_RESTRICT dst  = dst_ptr;
     GGML_UNUSED(src0_nb0);
     const int tid  = threadIdx.x;
     const int bidx = blockIdx.x;
@@ -29,7 +67,6 @@ static __global__ void ssm_conv_f32(const float * src0_ptr, const float * src1_p
     float x[d_conv] = { 0.0f };
     float w[d_conv] = { 0.0f };
 
-    ggml_cuda_pdl_sync();
 #pragma unroll
     for (size_t j = 0; j < d_conv; j++) {
         w[j] = w_block[tid * stride_w + j];
@@ -135,9 +172,8 @@ static void ssm_conv_f32_cuda(const float * src0, const float * src1, const floa
         constexpr int kNC = decltype(NC)::value;
         if (n_t <= 32) {
             const dim3 blocks(n_s, (nr + threads - 1) / threads, 1);
-            const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(blocks, threads, 0, stream);
-            ggml_cuda_kernel_launch(ssm_conv_f32<apply_silu, threads, kNC>, launch_params, src0, src1, bias, src0_nb0, src0_nb1,
-                                                                        src0_nb2, src1_nb1, dst, dst_nb0, dst_nb1, dst_nb2, n_t);
+            ssm_conv_f32<apply_silu, threads, kNC><<<blocks, threads, 0, stream>>>(src0, src1, bias, src0_nb0, src0_nb1, src0_nb2, src1_nb1,
+                                                                       dst, dst_nb0, dst_nb1, dst_nb2, n_t);
         } else {
             const int64_t split_n_t = 32;
             dim3          blocks(n_s, (nr + threads - 1) / threads, (n_t + split_n_t - 1) / split_n_t);
@@ -148,12 +184,11 @@ static void ssm_conv_f32_cuda(const float * src0, const float * src1, const floa
     };
 
     switch (nc) {
-        case 3:  launch_kernel(std::integral_constant<int, 3 >{}); break;
-        case 4:  launch_kernel(std::integral_constant<int, 4 >{}); break;
-        case 5:  launch_kernel(std::integral_constant<int, 5 >{}); break;
-        case 9:  launch_kernel(std::integral_constant<int, 9 >{}); break;
-        case 15: launch_kernel(std::integral_constant<int, 15>{}); break;
-        default: GGML_ABORT("Only support kernel sizes 3, 4, 5, 9, 15 right now.");
+        case 3: launch_kernel(std::integral_constant<int, 3>{}); break;
+        case 4: launch_kernel(std::integral_constant<int, 4>{}); break;
+        case 5: launch_kernel(std::integral_constant<int, 5>{}); break;
+        case 9: launch_kernel(std::integral_constant<int, 9>{}); break;
+        default: GGML_ABORT("Only support kernel sizes 3, 4, 5, 9 right now.");
     }
 }
 

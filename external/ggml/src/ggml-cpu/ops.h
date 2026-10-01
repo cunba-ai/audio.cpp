@@ -5,16 +5,17 @@
 //
 // cache line
 //
-// TODO: rework CACHE_LINE_SIZE so std::hardware_destructive_interference_size
-// can be used consistently between C and C++ TUs; the previous macro form
-// diverged based on include order and undersized the work buffer.
-// ref: https://github.com/ggml-org/llama.cpp/pull/28882
+
+#if defined(__cpp_lib_hardware_interference_size)
+#define CACHE_LINE_SIZE std::hardware_destructive_interference_size
+#else
 #if defined(__POWER9_VECTOR__)
 #define CACHE_LINE_SIZE 128
 #elif defined(__VXE__) || defined(__VXE2__)
 #define CACHE_LINE_SIZE 256
 #else
 #define CACHE_LINE_SIZE 64
+#endif
 #endif
 
 static const size_t CACHE_LINE_SIZE_F32 = CACHE_LINE_SIZE/sizeof(float);
@@ -64,17 +65,10 @@ void ggml_compute_forward_rope(const struct ggml_compute_params * params, struct
 void ggml_compute_forward_rope_back(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_clamp(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_conv_transpose_1d(const struct ggml_compute_params * params, struct ggml_tensor * dst);
-void ggml_compute_forward_im2col_fast_1d(const struct ggml_compute_params * params, struct ggml_tensor * dst);
-void ggml_compute_forward_add_scaled(const struct ggml_compute_params * params, struct ggml_tensor * dst);
-void ggml_compute_forward_rms_norm_scaled(const struct ggml_compute_params * params, struct ggml_tensor * dst);
-void ggml_compute_forward_mul_mat_add(const struct ggml_compute_params * params, struct ggml_tensor * dst);
-void ggml_compute_forward_mul_mat_add_relu(const struct ggml_compute_params * params, struct ggml_tensor * dst);
-void ggml_compute_forward_mul_mat_i2_s(const struct ggml_compute_params * params, struct ggml_tensor * dst);
-void ggml_compute_forward_im2col_asym(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_im2col(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+void ggml_compute_forward_im2col_fast_1d(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_im2col_back_f32(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_im2col_3d(const struct ggml_compute_params * params, struct ggml_tensor * dst);
-void ggml_compute_forward_col2im_1d(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_conv_2d(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_conv_3d(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_conv_transpose_2d(const struct ggml_compute_params * params, struct ggml_tensor * dst);
@@ -111,10 +105,6 @@ void ggml_compute_forward_rwkv_wkv7(const struct ggml_compute_params * params, s
 void ggml_compute_forward_solve_tri(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_gla(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_gated_delta_net(const struct ggml_compute_params * params, struct ggml_tensor * dst);
-void ggml_compute_forward_lightning_indexer(const struct ggml_compute_params * params, struct ggml_tensor * dst);
-void ggml_compute_forward_dsv4_hc_comb(const struct ggml_compute_params * params, struct ggml_tensor * dst);
-void ggml_compute_forward_dsv4_hc_pre(const struct ggml_compute_params * params, struct ggml_tensor * dst);
-void ggml_compute_forward_dsv4_hc_post(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_map_custom1(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_map_custom2(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_map_custom3(const struct ggml_compute_params * params, struct ggml_tensor * dst);
@@ -125,6 +115,14 @@ void ggml_compute_forward_opt_step_adamw(const struct ggml_compute_params * para
 void ggml_compute_forward_mul_mat(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_fwht(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_opt_step_sgd(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+
+// VibeASR CPU INT8 pipeline
+void ggml_compute_forward_add_scaled(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+void ggml_compute_forward_rms_norm_scaled(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+void ggml_compute_forward_mul_mat_add(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+void ggml_compute_forward_mul_mat_add_relu(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+void ggml_compute_forward_mul_mat_i2_s(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+void ggml_compute_forward_im2col_asym(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 #ifdef __cplusplus
 }
 #endif

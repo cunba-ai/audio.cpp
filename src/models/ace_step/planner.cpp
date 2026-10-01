@@ -25,9 +25,7 @@
 #include <chrono>
 #include <cctype>
 #include <cmath>
-#include <cstdio>
 #include <limits>
-#include <atomic>
 #include <map>
 #include <memory>
 #include <optional>
@@ -63,70 +61,6 @@ struct Qwen3PlannerWeights {
     core::TensorValue norm;
     core::TensorValue lm_head;
 };
-
-// --- V100 numerical-corruption diagnostics (env-gated, no-op by default) ---
-bool planner_debug_enabled() noexcept {
-    static const bool enabled = std::getenv("AUDIOCPP_ACE_PLANNER_DEBUG") != nullptr;
-    return enabled;
-}
-
-// Diagnostic switch: route planner SDPA through the eager matmul+softmax
-// lowering instead of ggml_flash_attn_ext (kernel-bisection aid).
-bool planner_eager_forced() noexcept {
-    static const bool enabled = std::getenv("AUDIOCPP_ACE_PLANNER_EAGER") != nullptr;
-    return enabled;
-}
-
-// Per-op capture for the prefill graph (debug only): populated during
-// PrefillGraph construction, read back after compute.
-struct PlannerOpCapture {
-    std::vector<ggml_tensor *> x_norm;
-    std::vector<ggml_tensor *> q;
-    std::vector<ggml_tensor *> k;
-    std::vector<ggml_tensor *> context;
-    std::vector<ggml_tensor *> attn_out;
-    std::vector<ggml_tensor *> gated;
-    std::vector<ggml_tensor *> ff;
-};
-PlannerOpCapture * g_planner_op_capture = nullptr;
-
-void dump_planner_stats(const char * tag, size_t index, const std::vector<float> & values) {
-    size_t nan = 0;
-    size_t inf = 0;
-    float absmax = 0.0F;
-    float maxv = -std::numeric_limits<float>::infinity();
-    for (const float value : values) {
-        if (std::isnan(value)) {
-            ++nan;
-        } else if (std::isinf(value)) {
-            ++inf;
-        } else {
-            absmax = std::max(absmax, std::fabs(value));
-            maxv = std::max(maxv, value);
-        }
-    }
-    std::fprintf(
-        stderr,
-        "[ace_planner_dbg] %s[%zu] n=%zu nan=%zu inf=%zu absmax=%.6g max=%.6g\n",
-        tag,
-        index,
-        values.size(),
-        nan,
-        inf,
-        absmax,
-        maxv);
-    if (nan > 0) {
-        std::fprintf(stderr, "[ace_planner_dbg] %s[%zu] nan_positions:", tag, index);
-        size_t printed = 0;
-        for (size_t i = 0; i < values.size() && printed < 12; ++i) {
-            if (std::isnan(values[i])) {
-                std::fprintf(stderr, " %zu", i);
-                ++printed;
-            }
-        }
-        std::fprintf(stderr, "\n");
-    }
-}
 
 int64_t count_valid_tokens(const AceStepTokenizedText & tokens) {
     int64_t count = 0;
@@ -225,7 +159,6 @@ bool planner_prefill_uses_host_backend(core::BackendType backend_type) {
     case core::BackendType::Cpu:
     case core::BackendType::Cuda:
     case core::BackendType::Hip:
-    case core::BackendType::Sycl:
     case core::BackendType::BestAvailable:
         return false;
     }
@@ -264,12 +197,6 @@ core::TensorValue sdpa_from_planner_grouped_heads(
     const int64_t key_value_heads = k_heads.shape.dims[1];
     if (query_heads % key_value_heads != 0) {
         throw std::runtime_error("ACE-Step planner SDPA requires attention heads divisible by KV heads");
-    }
-    if (planner_eager_forced()) {
-        const int64_t repeats = query_heads / key_value_heads;
-        auto k_repeated = modules::repeat_kv_heads(ctx, k_heads, repeats);
-        auto v_repeated = modules::repeat_kv_heads(ctx, v_heads, repeats);
-        return modules::attention_from_heads(ctx, q_heads, k_repeated, v_repeated, dim, attention_mask);
     }
     const auto contiguous_k = core::ensure_backend_addressable_layout(ctx, k_heads);
     const auto contiguous_v = core::ensure_backend_addressable_layout(ctx, v_heads);
@@ -413,26 +340,15 @@ modules::DecoderLayerOutputs planner_decoder_layer_batched(
     const core::TensorValue & attention_mask,
     const core::TensorValue & query_mask,
     ggml_type activation_type) {
-    // All planner projections run with GGML_PREC_F32: the planner's MLP
-    // activations legitimately exceed the fp16 range (silu(gate)*up outliers
-    // around -7.8e4 at layer 2, verified against the CPU backend). On GPUs
-    // where ggml-cuda lowers batched quantized matmuls through cuBLAS fp16
-    // (sm_70 Volta: MMQ is only selected below 64 columns, so prefills take
-    // the cuBLAS path), converting those activations to fp16 overflows them
-    // to -inf and NaNs the residual stream. PREC_F32 keeps the cuBLAS
-    // fallback in f32 (cublasSgemm); the MMQ/MMVQ lowerings used on Turing+
-    // (and for single-token decode everywhere) ignore the precision flag and
-    // quantize activations to q8_1 with per-block dynamic scales, which is
-    // overflow-free (2026-09-27).
     const int64_t dim = planner_attention_head_dim(config);
 
     auto x_norm = modules::RMSNormModule({config.hidden_size, config.rms_norm_eps, true, weights.input_norm.bias.has_value()})
                       .build(ctx, input, weights.input_norm);
-    auto q = modules::LinearModule({config.hidden_size, config.num_attention_heads * dim, false, GGML_PREC_F32})
+    auto q = modules::LinearModule({config.hidden_size, config.num_attention_heads * dim, false})
                  .build(ctx, x_norm, {weights.self_attention.q_weight, std::nullopt});
-    auto k = modules::LinearModule({config.hidden_size, config.num_key_value_heads * dim, false, GGML_PREC_F32})
+    auto k = modules::LinearModule({config.hidden_size, config.num_key_value_heads * dim, false})
                  .build(ctx, x_norm, {weights.self_attention.k_weight, std::nullopt});
-    auto v = modules::LinearModule({config.hidden_size, config.num_key_value_heads * dim, false, GGML_PREC_F32})
+    auto v = modules::LinearModule({config.hidden_size, config.num_key_value_heads * dim, false})
                  .build(ctx, x_norm, {weights.self_attention.v_weight, std::nullopt});
     q = cast_planner_activation(ctx, q, activation_type);
     k = cast_planner_activation(ctx, k, activation_type);
@@ -467,7 +383,7 @@ modules::DecoderLayerOutputs planner_decoder_layer_batched(
         core::TensorShape::from_dims({input.shape.dims[0], input.shape.dims[1], config.num_attention_heads * dim}));
     context = cast_planner_activation(ctx, context, activation_type);
 
-    auto attn_out = modules::LinearModule({config.hidden_size, config.hidden_size, false, GGML_PREC_F32})
+    auto attn_out = modules::LinearModule({config.hidden_size, config.hidden_size, false})
                         .build(ctx, context, {weights.self_attention.out_weight, std::nullopt});
     attn_out = cast_planner_activation(ctx, attn_out, activation_type);
     auto x = modules::AddModule{}.build(ctx, input, attn_out);
@@ -475,29 +391,20 @@ modules::DecoderLayerOutputs planner_decoder_layer_batched(
 
     auto ff_in = modules::RMSNormModule({config.hidden_size, config.rms_norm_eps, true, weights.post_norm.bias.has_value()})
                      .build(ctx, x, weights.post_norm);
-    auto gate = modules::LinearModule({config.hidden_size, config.intermediate_size, false, GGML_PREC_F32})
+    auto gate = modules::LinearModule({config.hidden_size, config.intermediate_size, false})
                     .build(ctx, ff_in, {weights.mlp.gate_proj.weight, std::nullopt});
     gate = modules::SiluModule{}.build(ctx, gate);
     gate = cast_planner_activation(ctx, gate, activation_type);
-    auto up = modules::LinearModule({config.hidden_size, config.intermediate_size, false, GGML_PREC_F32})
+    auto up = modules::LinearModule({config.hidden_size, config.intermediate_size, false})
                   .build(ctx, ff_in, {weights.mlp.up_proj.weight, std::nullopt});
     up = cast_planner_activation(ctx, up, activation_type);
     auto gated = modules::MulModule{}.build(ctx, gate, up);
     gated = cast_planner_activation(ctx, gated, activation_type);
-    auto ff = modules::LinearModule({config.intermediate_size, config.hidden_size, false, GGML_PREC_F32})
+    auto ff = modules::LinearModule({config.intermediate_size, config.hidden_size, false})
                   .build(ctx, gated, {weights.mlp.down_proj.weight, std::nullopt});
     ff = cast_planner_activation(ctx, ff, activation_type);
     auto output = modules::AddModule{}.build(ctx, x, ff);
     output = cast_planner_activation(ctx, output, activation_type);
-    if (g_planner_op_capture != nullptr) {
-        g_planner_op_capture->x_norm.push_back(x_norm.tensor);
-        g_planner_op_capture->q.push_back(q.tensor);
-        g_planner_op_capture->k.push_back(k.tensor);
-        g_planner_op_capture->context.push_back(context.tensor);
-        g_planner_op_capture->attn_out.push_back(attn_out.tensor);
-        g_planner_op_capture->gated.push_back(gated.tensor);
-        g_planner_op_capture->ff.push_back(ff.tensor);
-    }
     return {output, k, v};
 }
 
@@ -549,11 +456,11 @@ modules::DecoderLayerOutputs planner_decoder_layer_with_static_cache_tail_batche
 
     auto x_norm = modules::RMSNormModule({config.hidden_size, config.rms_norm_eps, true, weights.input_norm.bias.has_value()})
                       .build(ctx, input, weights.input_norm);
-    auto q = modules::LinearModule({config.hidden_size, config.num_attention_heads * dim, false, GGML_PREC_F32})
+    auto q = modules::LinearModule({config.hidden_size, config.num_attention_heads * dim, false})
                  .build(ctx, x_norm, {weights.self_attention.q_weight, std::nullopt});
-    auto k = modules::LinearModule({config.hidden_size, config.num_key_value_heads * dim, false, GGML_PREC_F32})
+    auto k = modules::LinearModule({config.hidden_size, config.num_key_value_heads * dim, false})
                  .build(ctx, x_norm, {weights.self_attention.k_weight, std::nullopt});
-    auto v = modules::LinearModule({config.hidden_size, config.num_key_value_heads * dim, false, GGML_PREC_F32})
+    auto v = modules::LinearModule({config.hidden_size, config.num_key_value_heads * dim, false})
                  .build(ctx, x_norm, {weights.self_attention.v_weight, std::nullopt});
     q = cast_planner_activation(ctx, q, activation_type);
     k = cast_planner_activation(ctx, k, activation_type);
@@ -592,7 +499,7 @@ modules::DecoderLayerOutputs planner_decoder_layer_with_static_cache_tail_batche
         core::TensorShape::from_dims({input.shape.dims[0], input.shape.dims[1], config.num_attention_heads * dim}));
     context = cast_planner_activation(ctx, context, activation_type);
 
-    auto attn_out = modules::LinearModule({config.hidden_size, config.hidden_size, false, GGML_PREC_F32})
+    auto attn_out = modules::LinearModule({config.hidden_size, config.hidden_size, false})
                         .build(ctx, context, {weights.self_attention.out_weight, std::nullopt});
     attn_out = cast_planner_activation(ctx, attn_out, activation_type);
     auto x = modules::AddModule{}.build(ctx, input, attn_out);
@@ -600,16 +507,16 @@ modules::DecoderLayerOutputs planner_decoder_layer_with_static_cache_tail_batche
 
     auto ff_in = modules::RMSNormModule({config.hidden_size, config.rms_norm_eps, true, weights.post_norm.bias.has_value()})
                      .build(ctx, x, weights.post_norm);
-    auto gate = modules::LinearModule({config.hidden_size, config.intermediate_size, false, GGML_PREC_F32})
+    auto gate = modules::LinearModule({config.hidden_size, config.intermediate_size, false})
                     .build(ctx, ff_in, {weights.mlp.gate_proj.weight, std::nullopt});
     gate = modules::SiluModule{}.build(ctx, gate);
     gate = cast_planner_activation(ctx, gate, activation_type);
-    auto up = modules::LinearModule({config.hidden_size, config.intermediate_size, false, GGML_PREC_F32})
+    auto up = modules::LinearModule({config.hidden_size, config.intermediate_size, false})
                   .build(ctx, ff_in, {weights.mlp.up_proj.weight, std::nullopt});
     up = cast_planner_activation(ctx, up, activation_type);
     auto gated = modules::MulModule{}.build(ctx, gate, up);
     gated = cast_planner_activation(ctx, gated, activation_type);
-    auto ff = modules::LinearModule({config.intermediate_size, config.hidden_size, false, GGML_PREC_F32})
+    auto ff = modules::LinearModule({config.intermediate_size, config.hidden_size, false})
                   .build(ctx, gated, {weights.mlp.down_proj.weight, std::nullopt});
     ff = cast_planner_activation(ctx, ff, activation_type);
     auto output = modules::AddModule{}.build(ctx, x, ff);
@@ -632,11 +539,11 @@ modules::DecoderLayerOutputs planner_decoder_layer_with_compact_cache_batched(
 
     auto x_norm = modules::RMSNormModule({config.hidden_size, config.rms_norm_eps, true, weights.input_norm.bias.has_value()})
                       .build(ctx, input, weights.input_norm);
-    auto q = modules::LinearModule({config.hidden_size, config.num_attention_heads * dim, false, GGML_PREC_F32})
+    auto q = modules::LinearModule({config.hidden_size, config.num_attention_heads * dim, false})
                  .build(ctx, x_norm, {weights.self_attention.q_weight, std::nullopt});
-    auto k = modules::LinearModule({config.hidden_size, config.num_key_value_heads * dim, false, GGML_PREC_F32})
+    auto k = modules::LinearModule({config.hidden_size, config.num_key_value_heads * dim, false})
                  .build(ctx, x_norm, {weights.self_attention.k_weight, std::nullopt});
-    auto v = modules::LinearModule({config.hidden_size, config.num_key_value_heads * dim, false, GGML_PREC_F32})
+    auto v = modules::LinearModule({config.hidden_size, config.num_key_value_heads * dim, false})
                  .build(ctx, x_norm, {weights.self_attention.v_weight, std::nullopt});
     q = cast_planner_activation(ctx, q, activation_type);
     k = cast_planner_activation(ctx, k, activation_type);
@@ -672,7 +579,7 @@ modules::DecoderLayerOutputs planner_decoder_layer_with_compact_cache_batched(
         core::TensorShape::from_dims({input.shape.dims[0], input.shape.dims[1], config.num_attention_heads * dim}));
     context = cast_planner_activation(ctx, context, activation_type);
 
-    auto attn_out = modules::LinearModule({config.hidden_size, config.hidden_size, false, GGML_PREC_F32})
+    auto attn_out = modules::LinearModule({config.hidden_size, config.hidden_size, false})
                         .build(ctx, context, {weights.self_attention.out_weight, std::nullopt});
     attn_out = cast_planner_activation(ctx, attn_out, activation_type);
     auto x = modules::AddModule{}.build(ctx, input, attn_out);
@@ -680,16 +587,16 @@ modules::DecoderLayerOutputs planner_decoder_layer_with_compact_cache_batched(
 
     auto ff_in = modules::RMSNormModule({config.hidden_size, config.rms_norm_eps, true, weights.post_norm.bias.has_value()})
                      .build(ctx, x, weights.post_norm);
-    auto gate = modules::LinearModule({config.hidden_size, config.intermediate_size, false, GGML_PREC_F32})
+    auto gate = modules::LinearModule({config.hidden_size, config.intermediate_size, false})
                     .build(ctx, ff_in, {weights.mlp.gate_proj.weight, std::nullopt});
     gate = modules::SiluModule{}.build(ctx, gate);
     gate = cast_planner_activation(ctx, gate, activation_type);
-    auto up = modules::LinearModule({config.hidden_size, config.intermediate_size, false, GGML_PREC_F32})
+    auto up = modules::LinearModule({config.hidden_size, config.intermediate_size, false})
                   .build(ctx, ff_in, {weights.mlp.up_proj.weight, std::nullopt});
     up = cast_planner_activation(ctx, up, activation_type);
     auto gated = modules::MulModule{}.build(ctx, gate, up);
     gated = cast_planner_activation(ctx, gated, activation_type);
-    auto ff = modules::LinearModule({config.intermediate_size, config.hidden_size, false, GGML_PREC_F32})
+    auto ff = modules::LinearModule({config.intermediate_size, config.hidden_size, false})
                   .build(ctx, gated, {weights.mlp.down_proj.weight, std::nullopt});
     ff = cast_planner_activation(ctx, ff, activation_type);
     auto output = modules::AddModule{}.build(ctx, x, ff);
@@ -1877,8 +1784,6 @@ public:
             GGML_TYPE_F32);
         for (size_t layer_index = 0; layer_index < weights.layers.layers.size(); ++layer_index) {
             const auto & layer = weights.layers.layers[layer_index];
-            PlannerOpCapture capture;
-            g_planner_op_capture = &capture;
             auto out = planner_decoder_layer_batched(
                 ctx,
                 x,
@@ -1888,19 +1793,14 @@ public:
                 attention_mask,
                 query_mask,
                 GGML_TYPE_F32);
-            g_planner_op_capture = nullptr;
             x = out.output;
             keys_.push_back(out.key.tensor);
             values_.push_back(out.value.tensor);
-            layer_outputs_.push_back(x.tensor);
-            if (layer_index < 4) {
-                op_captures_.push_back(std::move(capture));
-            }
         }
         x = modules::SliceModule({1, prompt_steps_ - 1, 1}).build(ctx, x);
         x = modules::RMSNormModule({config.hidden_size, config.rms_norm_eps, true, false})
                 .build(ctx, x, {weights.norm, std::nullopt});
-        auto logits = modules::LinearModule({config.hidden_size, config.vocab_size, false, GGML_PREC_F32})
+        auto logits = modules::LinearModule({config.hidden_size, config.vocab_size, false})
                           .build(ctx, x, {weights.lm_head, std::nullopt});
         logits_ = logits.tensor;
         ggml_set_output(logits_);
@@ -1981,38 +1881,6 @@ public:
             state.value.resize(layer_values);
             ggml_backend_tensor_get(keys_[layer], state.key.data(), 0, state.key.size() * sizeof(float));
             ggml_backend_tensor_get(values_[layer], state.value.data(), 0, state.value.size() * sizeof(float));
-            if (planner_debug_enabled()) {
-                dump_planner_stats("prefill.key", layer, state.key);
-            }
-        }
-        if (planner_debug_enabled()) {
-            dump_planner_stats("prefill.logits", 0, out.logits);
-            std::vector<float> layer_values(static_cast<size_t>(prompt_steps_ * config.hidden_size));
-            for (size_t layer = 0; layer < layer_outputs_.size(); ++layer) {
-                ggml_backend_tensor_get(
-                    layer_outputs_[layer],
-                    layer_values.data(),
-                    0,
-                    layer_values.size() * sizeof(float));
-                dump_planner_stats("prefill.x", layer, layer_values);
-            }
-            const auto dump_capture = [&](const char * tag, const std::vector<ggml_tensor *> & tensors) {
-                std::vector<float> values;
-                for (size_t i = 0; i < tensors.size(); ++i) {
-                    values.resize(static_cast<size_t>(ggml_nelements(tensors[i])));
-                    ggml_backend_tensor_get(tensors[i], values.data(), 0, values.size() * sizeof(float));
-                    dump_planner_stats(tag, i, values);
-                }
-            };
-            for (const auto & capture : op_captures_) {
-                dump_capture("op.x_norm", capture.x_norm);
-                dump_capture("op.q", capture.q);
-                dump_capture("op.k", capture.k);
-                dump_capture("op.context", capture.context);
-                dump_capture("op.attn_out", capture.attn_out);
-                dump_capture("op.gated", capture.gated);
-                dump_capture("op.ff", capture.ff);
-            }
         }
         return out;
     }
@@ -2028,8 +1896,6 @@ private:
     ggml_tensor * logits_ = nullptr;
     std::vector<ggml_tensor *> keys_;
     std::vector<ggml_tensor *> values_;
-    std::vector<ggml_tensor *> layer_outputs_;
-    std::vector<PlannerOpCapture> op_captures_;
     ggml_cgraph * graph_ = nullptr;
     std::unique_ptr<ggml_gallocr, decltype(&ggml_gallocr_free)> graph_allocator_{nullptr, ggml_gallocr_free};
 };
@@ -2101,7 +1967,7 @@ public:
         build_transfer_views(config.num_key_value_heads * config.head_dim);
         x = modules::RMSNormModule({config.hidden_size, config.rms_norm_eps, true, false})
                 .build(ctx, x, {weights.norm, std::nullopt});
-        auto logits = modules::LinearModule({config.hidden_size, config.vocab_size, false, GGML_PREC_F32})
+        auto logits = modules::LinearModule({config.hidden_size, config.vocab_size, false})
                           .build(ctx, x, {weights.lm_head, std::nullopt});
         logits_ = logits.tensor;
         ggml_set_output(logits_);
@@ -2183,10 +2049,6 @@ public:
         }
         logits.resize(static_cast<size_t>(config.vocab_size));
         ggml_backend_tensor_get(logits_, logits.data(), 0, logits.size() * sizeof(float));
-        if (planner_debug_enabled()) {
-            static std::atomic<size_t> decode_dump_step{0};
-            dump_planner_stats("decode.logits", decode_dump_step.fetch_add(1), logits);
-        }
         const size_t dst_slot = static_cast<size_t>(step_cache_.valid_steps());
         for (size_t layer = 0; layer < key_sources_.size(); ++layer) {
             ggml_backend_tensor_copy(key_sources_[layer], key_destinations_[dst_slot][layer]);
@@ -2337,7 +2199,7 @@ public:
         x = modules::RMSNormModule({config.hidden_size, config.rms_norm_eps, true, false})
                 .build(ctx, x, {weights.norm, std::nullopt});
         x = cast_planner_activation(ctx, x, activation_type_);
-        auto logits = modules::LinearModule({config.hidden_size, config.vocab_size, false, GGML_PREC_F32})
+        auto logits = modules::LinearModule({config.hidden_size, config.vocab_size, false})
                           .build(ctx, x, {weights.lm_head, std::nullopt});
         auto conditional_logits = ensure_planner_contiguous(
             ctx,
@@ -2583,7 +2445,7 @@ public:
         x = modules::RMSNormModule({config.hidden_size, config.rms_norm_eps, true, false})
                 .build(ctx, x, {weights.norm, std::nullopt});
         x = cast_planner_activation(ctx, x, activation_type_);
-        auto logits = modules::LinearModule({config.hidden_size, config.vocab_size, false, GGML_PREC_F32})
+        auto logits = modules::LinearModule({config.hidden_size, config.vocab_size, false})
                           .build(ctx, x, {weights.lm_head, std::nullopt});
         auto conditional_logits = ensure_planner_contiguous(
             ctx,

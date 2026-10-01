@@ -16,7 +16,7 @@
 #include "engine/framework/modules/norm_modules.h"
 #include "engine/framework/modules/primitive_modules.h"
 #include "engine/framework/modules/speech_encoders/whisper_frontend.h"
-#include "engine/framework/modules/transformers/qwen_causal_decode_runtime.h"
+#include "engine/framework/modules/transformers/causal_decoder_runtime.h"
 #include "engine/framework/modules/weight_binding.h"
 #include "engine/framework/tokenizers/llama_bpe.h"
 
@@ -134,48 +134,28 @@ public:
         token_embedding_ = store_.load_tensor(
             *assets_->weights, "model.embed_tokens.weight", Storage::Native,
             {config.vocab_size, config.hidden_size});
-        modules::QwenCausalDecodeRuntimeWeights decoder_weights;
+        modules::CausalDecoderRuntimeWeights decoder_weights;
         decoder_weights.token_embedding = token_embedding_;
         decoder_weights.stack.layers.reserve(static_cast<size_t>(config.num_hidden_layers));
         const int64_t head_dim = config.hidden_size / config.num_attention_heads;
         for (int64_t layer = 0; layer < config.num_hidden_layers; ++layer) {
             const std::string prefix = "model.layers." + std::to_string(layer);
-            modules::QwenDecoderLayerWeights weights;
+            modules::DecoderLayerWeights weights;
             weights.input_norm = binding::norm_weight_from_source(store_, *assets_->weights, prefix + ".input_layernorm", config.hidden_size);
             weights.post_norm = binding::norm_weight_from_source(store_, *assets_->weights, prefix + ".post_attention_layernorm", config.hidden_size);
-            // Packed q|k|v projection (row order [q | k | v]): one GEMM
-            // instead of three per layer on every graph.
-            weights.self_attention.qkv_weight = binding::packed_linear_from_source(
-                store_,
-                *assets_->weights,
-                {prefix + ".self_attn.q_proj.weight",
-                 prefix + ".self_attn.k_proj.weight",
-                 prefix + ".self_attn.v_proj.weight"},
-                Storage::Native,
-                config.hidden_size,
-                {config.hidden_size,
-                 config.num_key_value_heads * head_dim,
-                 config.num_key_value_heads * head_dim});
+            weights.self_attention.q_weight = store_.load_tensor(*assets_->weights, prefix + ".self_attn.q_proj.weight", Storage::Native, {config.hidden_size, config.hidden_size});
+            weights.self_attention.k_weight = store_.load_tensor(*assets_->weights, prefix + ".self_attn.k_proj.weight", Storage::Native, {config.num_key_value_heads * head_dim, config.hidden_size});
+            weights.self_attention.v_weight = store_.load_tensor(*assets_->weights, prefix + ".self_attn.v_proj.weight", Storage::Native, {config.num_key_value_heads * head_dim, config.hidden_size});
             weights.self_attention.out_weight = store_.load_tensor(*assets_->weights, prefix + ".self_attn.o_proj.weight", Storage::Native, {config.hidden_size, config.hidden_size});
-            // Packed gate|up rows let the MLP run one projection plus the
-            // fused swiglu op.
-            weights.mlp.gate_up_proj = modules::LinearWeights{
-                binding::packed_linear_from_source(
-                    store_,
-                    *assets_->weights,
-                    {prefix + ".mlp.gate_proj.weight", prefix + ".mlp.up_proj.weight"},
-                    Storage::Native,
-                    config.hidden_size,
-                    {config.intermediate_size, config.intermediate_size}),
-                std::nullopt,
-            };
+            weights.mlp.gate_proj = binding::linear_from_source(store_, *assets_->weights, prefix + ".mlp.gate_proj", Storage::Native, config.intermediate_size, config.hidden_size, false);
+            weights.mlp.up_proj = binding::linear_from_source(store_, *assets_->weights, prefix + ".mlp.up_proj", Storage::Native, config.intermediate_size, config.hidden_size, false);
             weights.mlp.down_proj = binding::linear_from_source(store_, *assets_->weights, prefix + ".mlp.down_proj", Storage::Native, config.hidden_size, config.intermediate_size, false);
             decoder_weights.stack.layers.push_back(std::move(weights));
         }
         decoder_weights.final_norm = binding::norm_weight_from_source(store_, *assets_->weights, "model.norm", config.hidden_size);
         decoder_weights.lm_head = modules::LinearWeights{token_embedding_, std::nullopt};
 
-        modules::QwenCausalDecodeRuntimeConfig decoder_config;
+        modules::CausalDecoderRuntimeConfig decoder_config;
         decoder_config.trace_name = "samsone.decoder";
         decoder_config.prefill_graph_arena_bytes = 64 * 1024 * 1024;
         decoder_config.decode_graph_arena_bytes = 32 * 1024 * 1024;
@@ -191,21 +171,17 @@ public:
         stack.rms_norm_eps = config.rms_norm_eps;
         stack.rope_theta = config.rope_theta;
         stack.use_qk_norm = false;
-        stack.runtime.attention.prefill_mode = modules::QwenDecoderAttentionMode::FlashGroupedViewKV;
-        stack.runtime.attention.static_mode = modules::QwenDecoderAttentionMode::FlashGroupedViewKV;
-        stack.runtime.static_cache.update_mode = modules::QwenDecoderStaticCacheUpdateMode::DirectSetRows;
-        stack.runtime.static_cache.set_rows_mode = modules::QwenDecoderStaticCacheSetRowsMode::BackendViewOptimized;
-        // Packed weights are loaded above: route the graphs through the packed
-        // QKV / packed gate-up + fused swiglu lowerings.
-        stack.qkv_layout = modules::QwenDecoderQKVLayout::PackedQKV;
-        stack.runtime.mlp.mode = modules::QwenDecoderMLPMode::PackedGateUp;
+        stack.runtime.attention.prefill_mode = modules::DecoderAttentionMode::FlashGroupedViewKV;
+        stack.runtime.attention.static_mode = modules::DecoderAttentionMode::FlashGroupedViewKV;
+        stack.runtime.static_cache.update_mode = modules::DecoderStaticCacheUpdateMode::DirectSetRows;
+        stack.runtime.static_cache.set_rows_mode = modules::DecoderStaticCacheSetRowsMode::BackendViewOptimized;
 
         projector_linear1_ = binding::linear_from_source(store_, *assets_->weights, "projector.linear1", Storage::Native, config.hidden_size, kWhisperChannels, false);
         projector_linear2_ = binding::linear_from_source(store_, *assets_->weights, "projector.linear2", Storage::Native, config.hidden_size, config.hidden_size, false);
         projector_norm_ = binding::norm_from_source(store_, *assets_->weights, "projector.layer_norm", config.hidden_size);
         separator_ = store_.load_f32_tensor(*assets_->weights, "sep_token", {config.hidden_size});
         store_.upload();
-        decoder_ = std::make_unique<modules::QwenCausalDecodeRuntime>(execution_, decoder_config, std::move(decoder_weights));
+        smollm2_runtime_ = std::make_unique<modules::CausalDecoderRuntime>(execution_, decoder_config, std::move(decoder_weights));
         build_auxiliary_graphs();
         assets_->weights->release_storage();
     }
@@ -269,7 +245,7 @@ public:
         debug::timing_log_scalar("samsone.prompt_ms", debug::elapsed_ms(prompt_start));
 
         const auto decode_start = std::chrono::steady_clock::now();
-        auto logits = decoder_->prefill_embeddings_into_cache(embeddings, steps, steps + max_tokens, 128).logits;
+        auto logits = smollm2_runtime_->prefill_embeddings_into_cache(embeddings, steps, steps + max_tokens, 128).logits;
         std::vector<int32_t> generated;
         generated.reserve(static_cast<size_t>(max_tokens));
         for (int64_t index = 0; index < max_tokens; ++index) {
@@ -279,7 +255,7 @@ public:
                 break;
             }
             generated.push_back(token);
-            logits = decoder_->decode_token(token).logits;
+            logits = smollm2_runtime_->decode_token(token).logits;
         }
         std::vector<int32_t> decoded;
         decoded.reserve(generated.size());
@@ -406,7 +382,7 @@ private:
     std::shared_ptr<const audio::MelSpectrogramFrontend> mel_;
     modules::WhisperFrontendComponent whisper_;
     std::shared_ptr<tokenizers::LlamaBpeTokenizer> tokenizer_;
-    std::unique_ptr<modules::QwenCausalDecodeRuntime> decoder_;
+    std::unique_ptr<modules::CausalDecoderRuntime> smollm2_runtime_;
     std::vector<int32_t> pruned_to_original_;
     std::vector<int32_t> original_to_pruned_;
     std::vector<float> separator_values_;

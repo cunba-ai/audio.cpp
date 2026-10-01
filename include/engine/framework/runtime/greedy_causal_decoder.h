@@ -25,12 +25,6 @@ struct GreedyCausalDecoderSpec {
     bool tie_word_embeddings = false;
     bool attention_bias = false;
     bool packed_qkv = false;
-    // Load the separately stored q|k|v (and gate|up) projection weights as
-    // row-concatenated packed tensors at load time: the decode graphs then
-    // run one fused QKV projection (+ fused q/k norm + rope on decode when
-    // use_qk_norm) and one packed gate|up + swiglu per layer. Requires
-    // !packed_qkv; attention biases are packed alongside the weights.
-    bool pack_separate_qkv = false;
     std::string token_embedding_tensor;
     std::string lm_head_tensor;  // used when !tie_word_embeddings
     std::string final_norm_tensor;

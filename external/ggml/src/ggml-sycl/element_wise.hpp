@@ -59,6 +59,9 @@ void ggml_sycl_hardswish(ggml_backend_sycl_context & ctx, ggml_tensor * dst);
 
 void ggml_sycl_exp(ggml_backend_sycl_context & ctx, ggml_tensor * dst);
 
+// audio.cpp fork re-port (8cc95b4a): yue2 NAR unary kernels.
+void ggml_sycl_expm1(ggml_backend_sycl_context & ctx, ggml_tensor * dst);
+
 void ggml_sycl_log(ggml_backend_sycl_context & ctx, ggml_tensor * dst);
 
 void ggml_sycl_softplus(ggml_backend_sycl_context & ctx, ggml_tensor * dst);
@@ -68,6 +71,9 @@ void ggml_sycl_neg(ggml_backend_sycl_context & ctx, ggml_tensor * dst);
 void ggml_sycl_step(ggml_backend_sycl_context & ctx, ggml_tensor * dst);
 
 void ggml_sycl_leaky_relu(ggml_backend_sycl_context & ctx, ggml_tensor * dst);
+
+// audio.cpp fork re-port (8cc95b4a): xielu carries its four op_params.
+void ggml_sycl_xielu(ggml_backend_sycl_context & ctx, ggml_tensor * dst);
 
 void ggml_sycl_sqr(ggml_backend_sycl_context & ctx, ggml_tensor * dst);
 
@@ -88,6 +94,9 @@ void ggml_sycl_floor(ggml_backend_sycl_context & ctx, ggml_tensor * dst);
 void ggml_sycl_ceil(ggml_backend_sycl_context & ctx, ggml_tensor * dst);
 void ggml_sycl_round(ggml_backend_sycl_context & ctx, ggml_tensor * dst);
 void ggml_sycl_trunc(ggml_backend_sycl_context & ctx, ggml_tensor * dst);
+
+// audio.cpp fork re-port (8cc95b4a): round f32/f16/bf16 to bf16 precision, f32 out.
+void ggml_sycl_round_bf16(ggml_backend_sycl_context & ctx, ggml_tensor * dst);
 
 void ggml_sycl_arange(ggml_backend_sycl_context & ctx, ggml_tensor * dst);
 

@@ -124,6 +124,18 @@ static __dpct_inline__ T op_exp(T x) {
     return sycl::exp(x);
 }
 
+// audio.cpp fork re-port (8cc95b4a): bf16 needs the f32 round-trip for expm1.
+template<typename T>
+static __dpct_inline__ T op_expm1(T x) {
+    if constexpr (std::is_same_v<T, sycl::ext::oneapi::bfloat16>) {
+        return static_cast<sycl::ext::oneapi::bfloat16>(
+            sycl::expm1(static_cast<float>(x))
+        );
+    } else {
+        return sycl::expm1(x);
+    }
+}
+
 template<typename T>
 static __dpct_inline__ T op_log(T x) {
     if (x <= static_cast<T>(0)) {
@@ -183,9 +195,35 @@ static __dpct_inline__ T op_round(T x) {
     return sycl::round(x);
 }
 
+// Round f32 to bf16 precision (round-to-nearest-even) and back, mirroring
+// the CPU op bf16_to_f32(f32_to_bf16(x)) without needing the bf16 type.
+// audio.cpp fork re-port (8cc95b4a).
+template<typename T>
+static __dpct_inline__ T op_round_bf16(T x) {
+    const float xf = (float) x;
+    uint32_t u = sycl::bit_cast<uint32_t>(xf);
+    // Round the dropped low half away: add 0x7FFF + lsb of the kept half (RNE).
+    u += 0x7FFFu + ((u >> 16) & 1u);
+    // Keep the top 16 bits (bf16 payload) and expand back to f32.
+    u &= 0xFFFF0000u;
+    return (T) sycl::bit_cast<float>(u);
+}
+
 template<typename T>
 static __dpct_inline__ T op_trunc(T x) {
     return sycl::trunc(x);
+}
+
+// audio.cpp fork re-port (8cc95b4a): xielu (yue2 NAR decode path).
+template<typename T>
+static __dpct_inline__ T op_xielu(T x, float alpha_n, float alpha_p, float beta, float eps) {
+    const float xi        = static_cast<float>(x);
+    const float gate_pos  = (xi > 0.0f);
+    const float y_pos     = alpha_p * xi * xi + beta * xi;
+    const float min_v_eps = sycl::fmin(xi, eps);
+    const float y_neg     = (sycl::expm1(min_v_eps) - xi) * alpha_n + beta * xi;
+    const float out       = gate_pos * y_pos + (1.0f - gate_pos) * y_neg;
+    return static_cast<T>(out);
 }
 
 template<typename T, typename F>
@@ -249,6 +287,14 @@ template<typename T>
 static void unary_op_leaky_relu_kernel(const T * x, T * dst, const int k, float negative_slope, const sycl::nd_item<1> &item_ct1) {
     SYCL_GLOBAL_ID_LOOP(k, item_ct1) {
         dst[i] = op_leaky_relu(x[i], negative_slope);
+    }
+}
+
+// audio.cpp fork re-port (8cc95b4a): xielu carries its four op_params.
+template<typename T>
+static void unary_op_xielu_kernel(const T * x, T * dst, const int k, float alpha_n, float alpha_p, float beta, float eps, const sycl::nd_item<1> &item_ct1) {
+    SYCL_GLOBAL_ID_LOOP(k, item_ct1) {
+        dst[i] = op_xielu(x[i], alpha_n, alpha_p, beta, eps);
     }
 }
 
@@ -605,6 +651,12 @@ static inline void ggml_sycl_op_exp(ggml_backend_sycl_context & ctx, ggml_tensor
     });
 }
 
+static inline void ggml_sycl_op_expm1(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+    ggml_sycl_detail::ggml_sycl_op_unary(ctx, dst, [](auto x) {
+        return op_expm1(x);
+    });
+}
+
 static inline void ggml_sycl_op_log(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
     ggml_sycl_detail::dispatch_ggml_sycl_op_unary(ctx, dst,
         [](const auto* src, auto* dst_ptr, int k_elements, queue_ptr stream) {
@@ -727,6 +779,24 @@ static inline void ggml_sycl_op_clamp(ggml_backend_sycl_context & ctx, ggml_tens
         }, min_val, max_val);
 }
 
+// audio.cpp fork re-port (8cc95b4a): xielu reads its four op_params (yue2 NAR).
+static inline void ggml_sycl_op_xielu(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+    const float alpha_n = ggml_get_op_params_f32(dst, 1);
+    const float alpha_p = ggml_get_op_params_f32(dst, 2);
+    const float beta    = ggml_get_op_params_f32(dst, 3);
+    const float eps     = ggml_get_op_params_f32(dst, 4);
+    ggml_sycl_detail::dispatch_ggml_sycl_op_unary(ctx, dst,
+        [](const auto* src, auto* dst_ptr, int k_elements, queue_ptr stream, float alpha_n_arg, float alpha_p_arg, float beta_arg, float eps_arg) {
+            const int num_blocks = ceil_div(k_elements, SYCL_RELU_BLOCK_SIZE);
+            stream->parallel_for(
+                sycl::nd_range<1>(sycl::range<1>(num_blocks) * sycl::range<1>(SYCL_RELU_BLOCK_SIZE),
+                                  sycl::range<1>(SYCL_RELU_BLOCK_SIZE)),
+                [=](sycl::nd_item<1> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+                    unary_op_xielu_kernel(src, dst_ptr, k_elements, alpha_n_arg, alpha_p_arg, beta_arg, eps_arg, item_ct1);
+                });
+        }, alpha_n, alpha_p, beta, eps);
+}
+
 static inline void ggml_sycl_op_floor(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
     ggml_sycl_detail::dispatch_ggml_sycl_op_unary(ctx, dst,
         [](const auto* src, auto* dst_ptr, int k_elements, queue_ptr stream) {
@@ -770,6 +840,76 @@ static inline void ggml_sycl_op_trunc(ggml_backend_sycl_context & ctx, ggml_tens
                     unary_op_trunc_kernel(src, dst_ptr, k_elements, item_ct1);
                 });
         });
+}
+
+// round-to-bf16: any of f32/f16/bf16 in, always f32 out (mirrors the CUDA
+// round_bf16_kernel family). Requires a contiguous src0.
+// audio.cpp fork re-port (8cc95b4a).
+template <typename src_t>
+static void round_bf16_kernel(const src_t * x, float * dst, const int64_t k, const sycl::nd_item<1> & item_ct1) {
+    SYCL_GLOBAL_ID_LOOP(k, item_ct1) {
+        dst[i] = op_round_bf16((float) x[i]);
+    }
+}
+
+static inline void ggml_sycl_op_round_bf16(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+    const ggml_tensor * src0 = dst->src[0];
+
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(ggml_is_contiguous(src0) && ggml_is_contiguous(dst));
+
+    dpct::queue_ptr stream = ctx.stream();
+    SYCL_CHECK(ggml_sycl_set_device(ctx.device));
+
+    const int64_t k           = ggml_nelements(src0);
+    const int     num_blocks  = ceil_div(k, 256);
+    float *       dst_d       = (float *) dst->data;
+
+    // Extract the src data pointer on the HOST before the launch. Capturing the
+    // ggml_tensor* itself in the device lambda (and dereferencing src0->data on
+    // device) reads plain host-malloc memory from the GPU: the launch enqueues
+    // fine, the kernel faults asynchronously, and the Level-Zero context enters
+    // a sticky error state that kills the *next* enqueue on the stream
+    // (observed as UR_RESULT_ERROR_OUT_OF_DEVICE_MEMORY on B50, driver
+    // 1.15.39183; UR_RESULT_ERROR_OUT_OF_RESOURCES on B390, driver 1.15.37858).
+    // This exact pattern was the root cause of the yue2 NAR prefill_state death
+    // after the first round_bf16. The CUDA round_bf16_cuda() extracts pointers
+    // host-side; every other launcher in this file does the same via
+    // cast_data()/CGH-local copies.
+    switch (src0->type) {
+        case GGML_TYPE_F32: {
+            const float * src0_d = (const float *) src0->data;
+            stream->parallel_for(
+                sycl::nd_range<1>(sycl::range<1>(num_blocks) * sycl::range<1>(256), sycl::range<1>(256)),
+                [=](sycl::nd_item<1> item_ct1) {
+                    round_bf16_kernel(src0_d, dst_d, k, item_ct1);
+                });
+            break;
+        }
+        case GGML_TYPE_F16: {
+            const sycl::half * src0_d = (const sycl::half *) src0->data;
+            stream->parallel_for(
+                sycl::nd_range<1>(sycl::range<1>(num_blocks) * sycl::range<1>(256), sycl::range<1>(256)),
+                [=](sycl::nd_item<1> item_ct1) {
+                    round_bf16_kernel(src0_d, dst_d, k, item_ct1);
+                });
+            break;
+        }
+#ifdef GGML_SYCL_HAS_BF16
+        case GGML_TYPE_BF16: {
+            const sycl::ext::oneapi::bfloat16 * src0_d =
+                (const sycl::ext::oneapi::bfloat16 *) src0->data;
+            stream->parallel_for(
+                sycl::nd_range<1>(sycl::range<1>(num_blocks) * sycl::range<1>(256), sycl::range<1>(256)),
+                [=](sycl::nd_item<1> item_ct1) {
+                    round_bf16_kernel(src0_d, dst_d, k, item_ct1);
+                });
+            break;
+        }
+#endif
+        default:
+            GGML_ABORT("round_bf16: unsupported src type");
+    }
 }
 
 static inline void ggml_sycl_op_acc(ggml_backend_sycl_context & ctx, ggml_tensor *dst) {
@@ -1121,4 +1261,20 @@ void ggml_sycl_round(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
 void ggml_sycl_trunc(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
     scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);
     ggml_sycl_op_trunc(ctx, dst);
+}
+
+// audio.cpp fork re-port (8cc95b4a): yue2 NAR unary kernels.
+void ggml_sycl_expm1(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);
+    ggml_sycl_op_expm1(ctx, dst);
+}
+
+void ggml_sycl_xielu(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);
+    ggml_sycl_op_xielu(ctx, dst);
+}
+
+void ggml_sycl_round_bf16(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);
+    ggml_sycl_op_round_bf16(ctx, dst);
 }

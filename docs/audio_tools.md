@@ -15,6 +15,7 @@
 | MeanVC2 | `meanvc2` | `vc` | [MeanVC2](#meanvc2) |
 | Tone Color VC | `tone_color_vc` | `vc` | [Tone Color VC](models/tone_color_vc.md) |
 | MioCodec | `miocodec` | `vc`, `s2s` | [MioCodec](#miocodec) |
+| LFM2.5-Audio | `lfm2_audio` | `s2s` spoken chat (also `asr`, `tts`) | [LFM2.5-Audio](community_models/lfm2_audio.md) |
 | PersonaPlex | `personaplex` | `s2s` | [PersonaPlex](#personaplex) |
 | RVC | `rvc` | `vc` | [RVC](#rvc) |
 | Seed-VC | `seed_vc` | `vc`, `svc` | [Seed-VC](#seed-vc) |
@@ -217,13 +218,26 @@ Speech-to-speech:
 audiocpp_cli --task s2s --family miocodec --model models/MioCodec-25Hz-44.1kHz-v2-GGUF/miocodec-25hz-44khz-v2-q8_0.gguf --backend cuda --audio assets/resources/a.wav --voice-ref assets/resources/b.wav --out converted.wav
 ```
 
+### Common Options (use directly)
+
 | Option | Values | Default | Meaning |
 |---|---|---:|---|
 | `--audio` | WAV path | required | Source speech audio. |
 | `--voice-ref` | WAV path | required | Target speaker/reference audio. |
 | `--task` | `vc`, `s2s` | required | Conversion task. |
 | `--out` | WAV path | required | Output audio path. |
-| `--session-option miocodec.weight_type=<type>` | `native`, `f32`, `f16`, `bf16`, `q8_0` | `native` | Model weight type when supported by each component. |
+
+### Session Options (use with `--session-option`)
+
+| Option | Values | Default | Meaning |
+|---|---|---:|---|
+| `miocodec.weight_type` | `native`, `f32`, `f16`, `bf16`, `q8_0` | `f32` | Weight storage type. |
+| `miocodec.weight_context_mb` | integer >= 1 | `256` | Context or graph arena size in MiB. |
+| `miocodec.constant_context_mb` | integer >= 1 | `256` | Context or graph arena size in MiB. |
+| `miocodec.content_graph_arena_mb` | integer >= 1 | `512` | Context or graph arena size in MiB. |
+| `miocodec.global_graph_arena_mb` | integer >= 1 | `256` | Context or graph arena size in MiB. |
+| `miocodec.wave_graph_arena_mb` | integer >= 1 | `512` | Context or graph arena size in MiB. |
+
 
 ## RVC
 
@@ -257,7 +271,7 @@ audiocpp_cli --task vc --family rvc --model models/RVC-GGUF/rvc-f16.gguf --backe
 User RVC checkpoint with a matching FAISS retrieval index:
 
 ```bash
-audiocpp_cli --task vc --family rvc --model models/RVC-GGUF/rvc-f16.gguf --backend cuda --audio source.wav --out converted.wav --request-option voice_model_path=/path/to/voice.pth --request-option retrieval_index_path=/path/to/voice.index --request-option retrieval_blend=0.5
+audiocpp_cli --task vc --family rvc --model models/RVC-GGUF/rvc-f16.gguf --backend cuda --audio source.wav --out converted.wav --request-option voice_model_path=/path/to/voice.pth --request-option retrieval_index_file=/path/to/voice.index --request-option retrieval_blend=0.5
 ```
 
 | Option | Values | Default | Meaning |
@@ -265,8 +279,8 @@ audiocpp_cli --task vc --family rvc --model models/RVC-GGUF/rvc-f16.gguf --backe
 | `--request-option voice_id=<id>` | `default`, `manthos`, `chocola`, `fraise` | `default` | Packaged RVC voice id. Ignored when `voice_model_path` is set. |
 | `--request-option voice_model_path=<path>` | `.pth` or `.pt` path | unset | User RVC checkpoint path. |
 | `--request-option pitch_extractor=rmvpe` | `rmvpe` | `rmvpe` | Pitch extractor for F0-enabled voices. |
-| `--request-option pitch_path=<path>` | CSV path | unset | Optional F0 override file with `time,Hz` rows sorted by time. |
-| `--request-option retrieval_index_path=<path>` | FAISS `.index` path | unset | User retrieval index used when `retrieval_blend` is greater than 0 for a user checkpoint. |
+| `--request-option pitch_file=<path>` | CSV file | unset | Optional F0 override file with `time,Hz` rows sorted by time. Legacy `pitch_path` remains accepted. |
+| `--request-option retrieval_index_file=<path>` | FAISS `.index` file | unset | User retrieval index used when `retrieval_blend` is greater than 0 for a user checkpoint. Legacy `retrieval_index_path` remains accepted. |
 | `--request-option retrieval_blend=<rate>` | `0.0` to `1.0` | `0.0` | IVF retrieval feature blend rate. `0` disables retrieval. |
 | `--request-option semitone_shift=<n>` | integer | `0` | Semitone pitch shift before synthesis. |
 | `--request-option pitch_filter_radius=<n>` | integer >= 0 | `3` | Median filter radius for F0 smoothing; values greater than 2 enable filtering. |

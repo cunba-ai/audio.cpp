@@ -6,6 +6,12 @@ with all 54 upstream voice packs.
 
 ## Install
 
+For server speed control, use the Kokoro GGUF version published on
+[Hugging Face on September 22, 2026 (UTC)](https://huggingface.co/audio-cpp/audio.cpp-gguf/commit/406756ee8e3b16e902ce40112986c1010775f888)
+or a later published version. Its embedded spec declares
+`speed`. Older GGUFs missing that declaration must be updated to use non-default
+speed through `/v1/audio/speech`; `speed: 1` remains accepted when the declaration is absent.
+
 ```bash
 python3 tools/model_manager_v2.py install kokoro_82m_q8_0
 ```
@@ -46,13 +52,20 @@ audiocpp_cli --task tts --family kokoro_tts \
   --out out_zh.wav
 ```
 
-## Model
+## Streaming
 
+Use `--mode streaming` to emit each synthesized text chunk immediately. Text
+chunking uses the same `text_chunk_size` and `text_chunk_mode` controls as offline
+generation; it does not split an already generated waveform into fake streaming
+events. A short input that fits in one chunk produces one audio event. Longer
+inputs produce incremental, non-cumulative audio chunks and a final merged WAV.
+
+## Model
 | Field | Value |
 |---|---|
 | Family | `kokoro_tts` |
 | Task | `tts` |
-| Modes | `offline` |
+| Modes | `offline`, `streaming` |
 | Default package | `kokoro_82m_q8_0` |
 | Other package | `kokoro_82m_bf16` |
 | Model file | `models/Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf` |
@@ -99,9 +112,9 @@ package.
 
 | Option | Values | Default | Meaning |
 |---|---|---:|---|
-| `--language` | language code | voice prefix | Text frontend language. |
+| `--language` | language code | voice prefix | Language must be supplied through structured transcript/style input (CLI --language); a language entry in the request option map is not consumed. |
 | `--voice-id` | voice ID listed above | `af_heart` | Built-in voice pack. |
-| `--seed` | integer | random | Decoder noise seed. |
+| `--seed` | integer | random | Decoder noise seed; omitted requests choose a random seed. Consumed during preparation, not subsequent run() calls on the prepared session. |
 | `--speaking-rate` | positive float | `1.0` | Speech speed multiplier. |
 | `--text-chunk-size` | integer chars | `240` | Long-form chunk size. |
 
@@ -109,9 +122,9 @@ package.
 
 | Option | Values | Default | Meaning |
 |---|---|---:|---|
-| `language` | language code | voice prefix | Text frontend language. |
-| `seed` | integer | random | Decoder noise seed. |
-| `speed` | positive float | `1.0` | Speech speed multiplier; `speaking_rate` is also accepted, but conflicting values are rejected. |
+| `language` | language code | voice prefix | Language must be supplied through structured transcript/style input (CLI --language); a language entry in the request option map is not consumed. |
+| `seed` | integer | random | Decoder noise seed; omitted requests choose a random seed. Consumed during preparation, not subsequent run() calls on the prepared session. |
+| `speed` | positive float | `1.0` | Speech speed multiplier; default 1.0. Must be finite and positive. |
 | `text_chunk_size` | integer chars | `240` | Long-form chunk size. |
 
 ## Session Options (use with `--session-option`)
@@ -120,6 +133,14 @@ package.
 |---|---|---:|---|
 | `kokoro_tts.weight_type` | `native`, `f32`, `f16`, `bf16`, `q8_0` | `native` | Matmul weight storage type. |
 | `kokoro_tts.conv_weight_type` | `native`, `f32`, `f16` | `native` | Convolution weight storage type. |
+| `kokoro_tts.predictor_duration_graph_arena_mb` | positive integer MiB | `384` | Duration predictor host graph-metadata arena. |
+| `kokoro_tts.predictor_text_graph_arena_mb` | positive integer MiB | `256` | Text predictor host graph-metadata arena. |
+| `kokoro_tts.predictor_tail_graph_arena_mb` | positive integer MiB | `640` | Tail predictor host graph-metadata arena. |
+
+The graph-arena controls do not size device workspace. Their former
+`predictor_duration_graph_mb`, `predictor_text_graph_mb`, and
+`predictor_tail_graph_mb` names remain accepted with the `kokoro_tts.` prefix,
+including with older embedded specs.
 
 ## Conversion
 

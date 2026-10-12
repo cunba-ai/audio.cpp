@@ -20,8 +20,8 @@ runtime::ModelMetadata metadata(const MossTTSNanoAssets & assets) {
 runtime::CapabilitySet capabilities(const MossTTSNanoAssets &) {
     runtime::CapabilitySet out;
     out.supported_tasks = {
-        {runtime::VoiceTaskKind::Tts, {runtime::RunMode::Offline}},
-        {runtime::VoiceTaskKind::VoiceCloning, {runtime::RunMode::Offline}},
+        {runtime::VoiceTaskKind::Tts, {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
+        {runtime::VoiceTaskKind::VoiceCloning, {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
     };
     out.supports_speaker_reference = true;
     out.languages = {"Auto"};
@@ -33,14 +33,16 @@ runtime::ModelCliInterface cli(const MossTTSNanoAssets &) {
     out.request_options = {
         {"max_tokens", "n", "Maximum generated audio frames."},
         {"do_sample", "true|false", "Enable stochastic audio-token sampling."},
-        {"temperature", "float", "Audio-token sampling temperature."},
-        {"top_p", "float", "Audio-token nucleus sampling limit."},
-        {"top_k", "n", "Audio-token top-k sampling limit."},
-        {"repetition_penalty", "float", "Audio-token repetition penalty."},
-        {"text_temperature", "float", "Text-gate sampling temperature."},
-        {"text_top_p", "float", "Text-gate nucleus sampling limit."},
-        {"text_top_k", "n", "Text-gate top-k sampling limit."},
+        {"temperature", "float", "Audio sampling temperature. Must be positive, including when do_sample=false. Default: 1.7.", false, "1.7"},
+        {"top_p", "float", "Audio nucleus sampling probability. Default: 0.8.", false, "0.8", "0", "1"},
+        {"top_k", "int", "Audio top-k sampling limit. Default: 25.", false, "25", "0"},
+        {"repetition_penalty", "float", "Audio repetition penalty. Must be positive. Default: 1.", false, "1"},
+        {"text_temperature", "float", "Text sampling temperature. Must be positive, including when do_sample=false. Default: 1.5.", false, "1.5"},
+        {"text_top_p", "float", "Text nucleus sampling probability. Default: 1.", false, "1", "0", "1"},
+        {"text_top_k", "int", "Text top-k sampling limit. Default: 50.", false, "50", "0"},
         {"text_chunk_mode", "default|tag_aware|japanese|endline", "Long-form text chunking mode; default splitter."},
+        {"active_codebooks", "int", "Active codebooks; defaults to the checkpoint n_vq. Must not exceed checkpoint n_vq; omitted uses n_vq.", false, std::nullopt, "1"},
+        {"text_chunk_size", "int", "Framework long-form text chunk size. Default: 256.", false, "256", "1"},
     };
     out.session_options = {
         {"moss_tts_nano.weight_type", "native|f32|f16|bf16|q8_0", "Global and local-frame weight storage type."},
@@ -67,8 +69,8 @@ public:
     runtime::CapabilitySet advertised_capabilities() const override {
         runtime::CapabilitySet out;
         out.supported_tasks = {
-            {runtime::VoiceTaskKind::Tts, {runtime::RunMode::Offline}},
-            {runtime::VoiceTaskKind::VoiceCloning, {runtime::RunMode::Offline}},
+            {runtime::VoiceTaskKind::Tts, {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
+            {runtime::VoiceTaskKind::VoiceCloning, {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
         };
         out.supports_speaker_reference = true;
         return out;
@@ -133,8 +135,8 @@ std::unique_ptr<runtime::IVoiceTaskSession> MossTTSNanoLoadedModel::create_task_
     if (task.task != runtime::VoiceTaskKind::Tts && task.task != runtime::VoiceTaskKind::VoiceCloning) {
         throw std::runtime_error("MOSS-TTS-Nano only supports the Tts and VoiceCloning tasks");
     }
-    if (task.mode != runtime::RunMode::Offline) {
-        throw std::runtime_error("MOSS-TTS-Nano only supports offline sessions");
+    if (task.mode != runtime::RunMode::Offline && task.mode != runtime::RunMode::Streaming) {
+        throw std::runtime_error("MOSS-TTS-Nano only supports offline and streaming sessions");
     }
     return std::make_unique<MossTTSNanoSession>(task, options, assets_);
 }

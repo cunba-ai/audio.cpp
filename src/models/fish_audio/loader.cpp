@@ -22,7 +22,7 @@ runtime::ModelMetadata metadata(const FishAudioAssets &) {
 runtime::CapabilitySet capabilities(const FishAudioAssets &) {
     runtime::CapabilitySet out;
     out.supported_tasks = {
-        {runtime::VoiceTaskKind::Tts, {runtime::RunMode::Offline}},
+        {runtime::VoiceTaskKind::Tts, {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
     };
     out.languages = {"en", "zh", "auto"};
     out.supports_speaker_reference = true;
@@ -33,14 +33,14 @@ runtime::CapabilitySet capabilities(const FishAudioAssets &) {
 runtime::ModelCliInterface cli(const FishAudioAssets &) {
     runtime::ModelCliInterface out;
     out.request_options = {
-        {"reference_text", "TEXT", "Reference transcript used with speaker reference audio."},
+        {"reference_text", "string", "Reference transcript; required with inline reference audio."},
         {"multi_reference_cond", "JSON", "Ordered Fish Audio reference conditioning pairs: [{\"audio\":\"ref.wav\",\"text\":\"transcript\"}, ...]."},
-        {"max_new_tokens", "N", "Maximum Fish Audio semantic tokens to generate; default 1024, 0 uses the default."},
+        {"max_tokens", "int", "Maximum Fish Audio semantic tokens to generate; default 1024. Zero selects the default token budget.", false, "1024", "0"},
         {"text_chunk_size", "N", "Long-form text chunk size; default 200."},
         {"text_chunk_mode", "default|tag_aware|japanese|endline", "Framework text chunking mode."},
-        {"top_p", "FLOAT", "Top-p sampling value."},
+        {"top_p", "FLOAT", "Top-p sampling value in (0, 1]; default 0.8.", false, std::nullopt, "0", "1"},
         {"top_k", "N", "Top-k sampling value."},
-        {"temperature", "FLOAT", "Sampling temperature."},
+        {"temperature", "FLOAT", "Semantic-token sampling temperature in (0, 2); default 0.8.", false, std::nullopt, "0", "2"},
         {"seed", "N", "Sampling seed for reproducible output; omitted uses a random seed."},
     };
     out.session_options = {
@@ -48,6 +48,10 @@ runtime::ModelCliInterface cli(const FishAudioAssets &) {
         {"fish_audio.reference_cache_slots", "n", "Prepared reference-audio cache slots; default 1."},
         {"fish_audio.weight_type", "native|f32|f16|bf16|q8_0", "AR matmul weight storage type; default native."},
         {"fish_audio.codec_weight_type", "native|f32|f16|q8_0", "Codec conv/matmul weight storage type; default native."},
+        {"fish_audio.ar_graph_arena_mb", "int", "AR runtime graph arena size in MiB; default 512.", false, "512", "1"},
+        {"fish_audio.ar_weight_context_mb", "int", "AR weight context size in MiB; default 32.", false, "32", "1"},
+        {"fish_audio.codec_graph_arena_mb", "int", "Codec encode/decode graph arena size in MiB; default 512.", false, "512", "1"},
+        {"fish_audio.codec_weight_context_mb", "int", "Codec weight context size in MiB; default 32.", false, "32", "1"},
     };
     return out;
 }
@@ -61,7 +65,7 @@ public:
     runtime::CapabilitySet advertised_capabilities() const override {
         runtime::CapabilitySet out;
         out.supported_tasks = {
-            {runtime::VoiceTaskKind::Tts, {runtime::RunMode::Offline}},
+            {runtime::VoiceTaskKind::Tts, {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
         };
         out.supports_speaker_reference = true;
         out.supports_style_condition = true;
@@ -126,8 +130,9 @@ const runtime::CapabilitySet & FishAudioLoadedModel::capabilities() const noexce
 std::unique_ptr<runtime::IVoiceTaskSession> FishAudioLoadedModel::create_task_session(
     const runtime::TaskSpec & task,
     const runtime::SessionOptions & options) const {
-    if (task.task != runtime::VoiceTaskKind::Tts || task.mode != runtime::RunMode::Offline) {
-        throw std::runtime_error("Fish Audio S2-Pro supports offline TTS sessions");
+    if (task.task != runtime::VoiceTaskKind::Tts ||
+        (task.mode != runtime::RunMode::Offline && task.mode != runtime::RunMode::Streaming)) {
+        throw std::runtime_error("Fish Audio S2-Pro supports offline and streaming TTS sessions");
     }
     return std::make_unique<FishAudioSession>(task, options, assets_);
 }

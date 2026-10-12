@@ -1,18 +1,23 @@
 #include "runtime.h"
 
-#include "base64.h"
+#include "live_speech_input.h"
 #include "model_memory.h"
 #include "multipart.h"
+#include "speech_option_exceptions.h"
+#include "task_stream_format.h"
 #include "ui_assets.h"
 
 #include "../cli/request.h"
+#include "../common/base64.h"
 #include "../streaming/pcm_source.h"
 #include "../streaming/streaming.h"
 
 #include "engine/framework/core/host_memory.h"
+#include "engine/framework/core/load_progress.h"
 #include "engine/framework/debug/trace.h"
 #include "engine/framework/io/json.h"
 #include "engine/framework/model_spec/metadata.h"
+#include "engine/framework/model_spec/options.h"
 #include "engine/framework/model_spec/package.h"
 #include "engine/framework/runtime/errors.h"
 #include "engine/framework/runtime/registry.h"
@@ -41,6 +46,8 @@ namespace minitts::server {
 namespace {
 
 using engine::io::json::Value;
+using minitts::app::base64_decode;
+using minitts::app::base64_encode;
 
 using Clock = std::chrono::steady_clock;
 
@@ -112,6 +119,64 @@ bool model_accepts_request_option(
         return true;
     }
     return contract->request_option_keys.find(std::string(option)) != contract->request_option_keys.end();
+}
+
+// The `options.request` rows of the model's spec, as a JSON array, for
+// `GET /v1/models?include_params=true`. Rows are passed through as the spec declares
+// them; an enum row that names a known `preset` also gains the preset's `values`, so a
+// client needs no copy of the preset table. A spec need not be on schema_version 1:
+// older-format specs may document their options too. Those skip the typed validator, so
+// a row that is not an object is left out. A spec with no request options gets "[]".
+std::string model_request_params_json(
+    std::string_view family,
+    const std::optional<std::filesystem::path> & model_spec_override,
+    const std::filesystem::path & model_path) {
+    namespace json = engine::io::json;
+    json::Value spec;
+    {
+        engine::model_spec::ScopedSpecOverride scoped(model_spec_override, model_path);
+        try {
+            const auto spec_path = engine::model_spec::find_contract_spec_path(family);
+            if (!spec_path.has_value()) {
+                return "[]";
+            }
+            spec = engine::model_spec::load_contract_spec(*spec_path);
+        } catch (const std::runtime_error & ex) {
+            if (!is_missing_model_contract_error(ex.what())) {
+                throw;
+            }
+            return "[]";
+        }
+    }
+    const auto * options = spec.find("options");
+    const auto * request = options != nullptr && options->is_object() ? options->find("request") : nullptr;
+    if (request == nullptr || !request->is_array()) {
+        return "[]";
+    }
+    json::Value::Array rows;
+    rows.reserve(request->as_array().size());
+    const auto & presets = engine::model_spec::option_presets();
+    for (const auto & row : request->as_array()) {
+        if (!row.is_object()) {
+            continue;
+        }
+        const auto * preset = row.find("preset");
+        const auto known = preset != nullptr && preset->is_string()
+            ? presets.find(preset->as_string())
+            : presets.end();
+        if (known == presets.end() || row.find("values") != nullptr) {
+            rows.push_back(row);
+            continue;
+        }
+        json::Value::Array values;
+        for (const auto & value : known->second) {
+            values.push_back(json::Value::make_string(value));
+        }
+        auto expanded = row.as_object();
+        expanded["values"] = json::Value::make_array(std::move(values));
+        rows.push_back(json::Value::make_object(std::move(expanded)));
+    }
+    return json::stringify(json::Value::make_array(std::move(rows)));
 }
 
 std::string json_quote(std::string_view value) {
@@ -604,6 +669,7 @@ std::string live_speech_timing_json(double request_start_to_first_audio_ms, doub
 
 bool stream_event_has_output(const engine::runtime::StreamEvent & event) {
     return (event.partial_text.has_value() && !event.partial_text->text.empty()) ||
+        (event.partial_text_snapshot.has_value() && !event.partial_text_snapshot->text.empty()) ||
         event.audio_output.has_value() ||
         !event.named_audio_outputs.empty();
 }
@@ -903,6 +969,11 @@ std::string stream_event_json(const engine::runtime::StreamEvent & event, bool d
             << ",\"language\":" << json_quote(event.partial_text->language)
             << "}";
     }
+    if (event.partial_text_snapshot.has_value()) {
+        field("partial_text_snapshot");
+        out << "{\"text\":" << json_quote(event.partial_text_snapshot->text)
+            << ",\"language\":" << json_quote(event.partial_text_snapshot->language) << "}";
+    }
     if (event.audio_output.has_value()) {
         const auto wav = encode_pcm16_wav(*event.audio_output);
         field("audio");
@@ -1179,7 +1250,10 @@ HttpResponse ServerState::handle_request(const HttpRequest & request, bool use_f
     }
     else if (request.method == "GET" && request.path == "/v1/models") {
         const auto include_session_options = query_param(request.query, "include_session_options");
-        response = json_response(models_json(include_session_options == "true" || include_session_options == "1"));
+        const auto include_params = query_param(request.query, "include_params");
+        response = json_response(models_json(
+            include_session_options == "true" || include_session_options == "1",
+            include_params == "true" || include_params == "1"));
     }
     else if (request.method == "GET" && request.path == "/v1/audio/voices") {
         response = handle_voices(request);
@@ -1280,6 +1354,10 @@ HttpResponse ServerState::handle_request(const HttpRequest & request, bool use_f
     // there. Checked before ServerBusyError only because both are
     // runtime_error; the two conditions are disjoint.
     response = error_response(400, ex.what(), "invalid_request_error");
+  } catch (const engine::runtime::InvalidRequestError & ex) {
+    // A request turned away as sent, such as an input the model does not
+    // take: the caller's to fix as well.
+    response = error_response(400, ex.what(), "invalid_request_error");
   } catch (const InsufficientMemoryError & ex) {
     response = error_response(503, ex.what(), "insufficient_memory");
   } catch (const ServerBusyError & ex) {
@@ -1321,9 +1399,24 @@ void ServerState::load_models() {
             } else {
                 ensure_model_loaded_locked(*loaded);
                 ++eager_loaded;
+                // Models-completed boundary for trace-log consumers driving a
+                // load progress bar: one step per resident model. The final
+                // 1.0 is emitted once below. Opt-in (--load-progress 1).
+                if (engine::core::load_progress_enabled() &&
+                    eager_loaded < static_cast<int>(config_.models.size())) {
+                    engine::debug::trace_log_scalar(
+                        "server.load.progress",
+                        static_cast<double>(eager_loaded) / static_cast<double>(config_.models.size()));
+                }
             }
         }
         models_.push_back(std::move(loaded));
+    }
+    if (engine::core::load_progress_enabled() &&
+        !config_.models.empty() && eager_loaded == static_cast<int>(config_.models.size())) {
+        // Every configured model is resident and the listening banner follows
+        // immediately: complete the models-completed curve at 1.0.
+        engine::debug::trace_log_scalar("server.load.progress", 1.0);
     }
 }
 
@@ -1358,12 +1451,16 @@ void ServerState::refresh_model_option_flags(LoadedModel & model) {
         "language",
         effective_override,
         model.config.path);
-    if (model.config.task == "tts") {
+    if (model.task.task == engine::runtime::VoiceTaskKind::Tts ||
+        model.task.task == engine::runtime::VoiceTaskKind::VoiceCloning ||
+        model.task.task == engine::runtime::VoiceTaskKind::VoiceDesign) {
         model.accepts_speed = model_accepts_request_option(
             model.config.family, "speed", effective_override, model.config.path);
         model.accepts_speaking_rate = model_accepts_request_option(
             model.config.family, "speaking_rate", effective_override, model.config.path);
     }
+    model.request_params_json = model_request_params_json(
+        model.config.family, effective_override, model.config.path);
 }
 
 HttpResponse ServerState::handle_model_load(const std::string & body_text) {
@@ -1371,6 +1468,11 @@ HttpResponse ServerState::handle_model_load(const std::string & body_text) {
         return error_response(403, "dynamic model management is disabled", "forbidden");
     }
     const auto body = engine::io::json::parse(body_text);
+    if (body.find("slots") != nullptr) {
+        return error_response(400,
+            "slots requires --parallel-jobs at server startup",
+            "invalid_request_error");
+    }
     auto requested = model_config_from_json(body, request_base_, false);
     requested.path = resolve_ui_model_path(engine::io::json::require_string(body, "path"));
 
@@ -1973,6 +2075,9 @@ void ServerState::ensure_model_loaded_locked(LoadedModel & model) {
 
     auto loaded_model = registry.load(load_request);
     auto session = loaded_model->create_task_session(model.task, session_options);
+    // The weight stores uploaded during session construction: close the
+    // load-progress bracket opened by registry.load (see finish_model_load_trace).
+    engine::runtime::finish_model_load_trace();
     auto * offline = dynamic_cast<engine::runtime::IOfflineVoiceTaskSession *>(session.get());
     auto * streaming = dynamic_cast<engine::runtime::IStreamingVoiceTaskSession *>(session.get());
     if (model.task.mode == engine::runtime::RunMode::Offline && offline == nullptr) {
@@ -2155,21 +2260,25 @@ engine::runtime::TaskRequest ServerState::build_speech_request(const LoadedModel
         speed = body.find("speaking_rate");
     }
     if (speed != nullptr) {
-        const float rate = static_cast<float>(speed->as_number());
+        const double speed_value = speed->as_number();
+        const float rate = static_cast<float>(speed_value);
         if (!std::isfinite(rate) || rate <= 0.0f) {
             throw std::runtime_error("speed must be a positive finite number");
         }
-        if (!model.accepts_speed && !model.accepts_speaking_rate && model.config.family != "kokoro_tts") {
-            throw std::runtime_error("speed is not supported by this model");
+        if (model.accepts_speed || model.accepts_speaking_rate ||
+            !is_neutral_speech_option("speed", speed_value)) {
+            if (!model.accepts_speed && !model.accepts_speaking_rate) {
+                throw std::runtime_error("speed is not supported by this model");
+            }
+            if (model.accepts_speed) {
+                request.options["speed"] = std::to_string(rate);
+            } else if (model.accepts_speaking_rate) {
+                request.options["speaking_rate"] = std::to_string(rate);
+            }
+            voice.style = engine::runtime::StyleCondition{};
+            voice.style->speaking_rate = rate;
+            has_voice = true;
         }
-        if (model.accepts_speed) {
-            request.options["speed"] = std::to_string(rate);
-        } else if (model.accepts_speaking_rate) {
-            request.options["speaking_rate"] = std::to_string(rate);
-        }
-        voice.style = engine::runtime::StyleCondition{};
-        voice.style->speaking_rate = rate;
-        has_voice = true;
     }
     if (has_voice) {
         request.voice = std::move(voice);
@@ -2417,6 +2526,7 @@ HttpResponse ServerState::handle_speech_live(const HttpRequest & request) {
     std::optional<int> busy_timeout_ms;
     minitts::app::PcmSampleFormat sample_format = minitts::app::PcmSampleFormat::S16LE;
     std::string stream_format = "sse";
+    bool return_text = false;
     engine::runtime::TaskRequest task_request;
     try {
         const std::string model_id = query_param(request.query, "model");
@@ -2424,9 +2534,6 @@ HttpResponse ServerState::handle_speech_live(const HttpRequest & request) {
             throw std::runtime_error("live speech requires a 'model' query parameter");
         }
         const std::string input = decoded_query_param(request.query, "input");
-        if (input.empty()) {
-            throw std::runtime_error("live speech requires an 'input' query parameter");
-        }
 
         engine::io::json::Value::Object fields;
         fields.emplace("model", engine::io::json::Value::make_string(model_id));
@@ -2445,6 +2552,9 @@ HttpResponse ServerState::handle_speech_live(const HttpRequest & request) {
             throw std::runtime_error(
                 "live speech requires a model configured with mode=streaming: " +
                 model.config.id);
+        }
+        if (input.empty() && live_speech_requires_input(model.task.task)) {
+            throw std::runtime_error("live speech requires an 'input' query parameter");
         }
         model_ptr = &model;
 
@@ -2493,8 +2603,25 @@ HttpResponse ServerState::handle_speech_live(const HttpRequest & request) {
         if (stream_format != "sse" && stream_format != "audio") {
             throw std::runtime_error("live speech stream_format must be sse or audio");
         }
+        // The text a model writes as it speaks, such as a spoken reply's
+        // words, comes as SSE events next to the audio; raw PCM has no place
+        // for it.
+        const std::string return_text_value = query_param(request.query, "return_text");
+        if (!return_text_value.empty() && return_text_value != "true" && return_text_value != "1" &&
+            return_text_value != "false" && return_text_value != "0") {
+            throw std::runtime_error("live speech return_text must be true or false");
+        }
+        return_text = return_text_value == "true" || return_text_value == "1";
+        if (return_text && stream_format != "sse") {
+            throw std::runtime_error("live speech return_text needs stream_format=sse");
+        }
 
         task_request = build_speech_request(model, body);
+        // Neither input nor language leaves text_input unset, as /v1/tasks/run
+        // does without them, so the model uses its default prompt.
+        if (input.empty() && language.empty()) {
+            task_request.text_input.reset();
+        }
         engine::runtime::AudioBuffer audio_contract;
         audio_contract.sample_rate = sample_rate;
         audio_contract.channels = channels;
@@ -2555,7 +2682,7 @@ HttpResponse ServerState::handle_speech_live(const HttpRequest & request) {
         });
     }
     return sse_response(
-        [this, model_ptr, task_request, pcm_input, sample_rate, channels, sample_format, busy_timeout_ms](
+        [this, model_ptr, task_request, pcm_input, sample_rate, channels, sample_format, busy_timeout_ms, return_text](
             HttpStreamWriter & writer) {
             const minitts::app::AudioStreamFormat format{sample_rate, channels};
             const auto audio = minitts::app::make_pcm_chunk_stream(*pcm_input, format, sample_format);
@@ -2576,11 +2703,22 @@ HttpResponse ServerState::handle_speech_live(const HttpRequest & request) {
                 return has_more;
             };
             bool wrote_audio = false;
+            std::string streamed_text;
             const auto timed_result = run_streaming_model_from(
                 *model_ptr,
                 task_request,
                 timed_audio,
                 [&](const engine::runtime::StreamEvent & event) {
+                    // An event's text goes before its audio: a model that
+                    // speaks what it writes writes it first.
+                    if (return_text && event.partial_text.has_value() && !event.partial_text->text.empty()) {
+                        write_sse(
+                            writer,
+                            "{\"type\":\"speech.text.delta\",\"delta\":" +
+                                json_quote(event.partial_text->text) +
+                                "}");
+                        streamed_text += event.partial_text->text;
+                    }
                     if (event.audio_output.has_value()) {
                         if (!first_audio_ms.has_value()) {
                             first_audio_ms = elapsed_ms(request_started);
@@ -2609,6 +2747,20 @@ HttpResponse ServerState::handle_speech_live(const HttpRequest & request) {
                 busy_timeout_ms);
             if (!wrote_audio) {
                 throw std::runtime_error("live speech model produced no audio delta events");
+            }
+            if (return_text) {
+                // The model's final text when it gives one, else what it
+                // streamed; a model that writes none fails the request rather
+                // than returning less than was asked for.
+                const auto & text = timed_result.result.text_output;
+                if (!text.has_value() && streamed_text.empty()) {
+                    throw std::runtime_error("live speech model wrote no text; return_text needs a model that writes text");
+                }
+                write_sse(
+                    writer,
+                    "{\"type\":\"speech.text.done\",\"text\":" +
+                        json_quote(text.has_value() ? text->text : streamed_text) +
+                        "}");
             }
             write_sse(
                 writer,
@@ -3016,6 +3168,10 @@ HttpResponse ServerState::run_transcription_stream(
                     }
                     return;
                 }
+                if (event.partial_text_snapshot.has_value()) {
+                    write_sse(writer, "{\"type\":\"transcript.text.partial\",\"text\":" +
+                        json_quote(event.partial_text_snapshot->text) + "}");
+                }
                 if (!event.partial_text.has_value() || event.partial_text->text.empty()) {
                     return;
                 }
@@ -3311,6 +3467,10 @@ HttpResponse ServerState::handle_transcription_live(const HttpRequest & request)
                         }
                         return;
                     }
+                    if (event.partial_text_snapshot.has_value()) {
+                        write_sse(writer, "{\"type\":\"transcript.text.partial\",\"text\":" +
+                            json_quote(event.partial_text_snapshot->text) + "}");
+                    }
                     if (!event.partial_text.has_value() || event.partial_text->text.empty()) {
                         return;
                     }
@@ -3369,10 +3529,34 @@ HttpResponse ServerState::handle_generic_run(const std::string & body_text) {
     auto & model = require_model(body);
     const auto * request_json = body.find("request");
     const auto & effective_json = request_json != nullptr ? *request_json : body;
+    std::optional<engine::runtime::AudioBuffer> inline_audio;
+    if (const auto * encoded = effective_json.find("audio_base64")) {
+        if (effective_json.find("audio") != nullptr) {
+            return error_response(400, "provide only one of audio or audio_base64", "invalid_request_error");
+        }
+        if (!encoded->is_string() || encoded->as_string().empty()) {
+            return error_response(400, "audio_base64 must be a non-empty string", "invalid_request_error");
+        }
+        // The HTTP body limit bounds the encoded payload before this allocation.
+        try {
+            const auto bytes = base64_decode(encoded->as_string());
+            if (bytes.empty()) {
+                return error_response(400, "audio_base64 contains no audio", "invalid_request_error");
+            }
+            inline_audio = minitts::cli::read_audio_buffer(
+                std::string_view(reinterpret_cast<const char *>(bytes.data()), bytes.size()));
+        } catch (const std::runtime_error &) {
+            return error_response(400, "audio_base64 must contain a valid Base64-encoded WAV", "invalid_request_error");
+        }
+    }
+    auto parsed_request = minitts::cli::build_request_from_json(effective_json, request_base_);
+    if (inline_audio) {
+        parsed_request.audio_input = std::move(*inline_audio);
+    }
     const auto request = apply_default_request_options(
         model,
         drop_unsupported_language_option(
-            minitts::cli::build_request_from_json(effective_json, request_base_),
+            std::move(parsed_request),
             effective_json,
             model.accepts_language));
     const auto busy_timeout_ms = parse_busy_timeout_override(body);
@@ -3490,14 +3674,44 @@ HttpResponse ServerState::handle_generic_batch(const std::string & body_text) {
 HttpResponse ServerState::handle_generic_stream(const std::string & body_text) {
     const auto body = engine::io::json::parse(body_text);
     auto & model = require_model(body);
+    const bool sse = task_stream_sse_requested(body);
     const auto * request_json = body.find("request");
     const auto & effective_json = request_json != nullptr ? *request_json : body;
-    const auto request = apply_default_request_options(
+    auto request = apply_default_request_options(
         model,
         drop_unsupported_language_option(
             minitts::cli::build_request_from_json(effective_json, request_base_),
             effective_json,
             model.accepts_language));
+    if (sse) {
+        const auto busy_timeout_ms = parse_busy_timeout_override(body);
+        bool diarization;
+        {
+            std::shared_lock<std::shared_mutex> metadata_lock(model.metadata_mutex);
+            diarization = model.task.task == engine::runtime::VoiceTaskKind::Diarization;
+        }
+        LoadedModel * model_ptr = &model;
+        // Each event goes out as the model produces it, as the object the JSON
+        // response puts in "events", and the result follows as the object it
+        // puts under "result". The model lock is taken inside the stream, as on
+        // the other streamed routes, so a busy model is an error event here.
+        return sse_response([this, model_ptr, request = std::move(request), busy_timeout_ms, diarization](
+                                HttpStreamWriter & writer) {
+            const auto timed_result = run_streaming_model(
+                *model_ptr,
+                request,
+                [&](const engine::runtime::StreamEvent & event) {
+                    write_sse(writer, task_stream_event_line(stream_event_json(event, diarization)));
+                },
+                busy_timeout_ms);
+            const bool silent_diarization = diarization && !timed_result.ttft_ms.has_value();
+            write_sse(writer, task_stream_done_line(
+                                  silent_diarization
+                                      ? task_result_json_with_timing(timed_result.result, "{\"ttft_ms\":null}")
+                                      : streaming_task_result_json(timed_result.result, timed_result.ttft_ms)));
+            write_sse_done(writer);
+        });
+    }
     std::vector<engine::runtime::StreamEvent> events;
     const auto timed_result = run_streaming_model(
         model,
@@ -3585,7 +3799,7 @@ HttpResponse ServerState::handle_voices(const HttpRequest & request) const {
     return json_response(out.str());
 }
 
-std::string ServerState::models_json(bool include_session_options) const {
+std::string ServerState::models_json(bool include_session_options, bool include_params) const {
     std::lock_guard<std::mutex> state_lock(models_mutex_);
     std::ostringstream out;
     out << "{\"object\":\"list\",\"data\":[";
@@ -3605,6 +3819,9 @@ std::string ServerState::models_json(bool include_session_options) const {
             << ",\"path\":" << json_quote(model.config.path.string());
         if (include_session_options) {
             out << ",\"session_options\":" << options_json(model.config.session_options);
+        }
+        if (include_params) {
+            out << ",\"params\":" << model.request_params_json;
         }
         out << "}";
     }

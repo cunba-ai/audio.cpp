@@ -2,11 +2,14 @@
 
 | Model | Family | Mode(s) | Quick Start |
 |---|---|---|---|
+| Audio Flamingo 3 / Next | `audio_flamingo` | offline | [Audio Flamingo](models/audio_flamingo.md) |
 | Canary 180M Flash | `canary_asr` | offline | [Canary 180M Flash](models/canary_asr.md) |
 | Cohere Transcribe | `cohere_asr` | offline | [Cohere Transcribe](models/cohere_asr.md) |
+| CrisperWhisper 2.0 Large | `crisperwhisper` | offline, streaming | [CrisperWhisper 2.0](models/crisperwhisper.md) |
 | GigaAM v3 / Multilingual | `gigaam_asr` | offline | [GigaAM ASR](models/gigaam_asr.md) |
 | Fun-ASR-Nano | `fun_asr_nano` | offline | [Fun-ASR-Nano](#fun-asr-nano) |
 | Granite Speech 5.0 TurboCTC | `granite5asr` | offline | [Granite Speech 5.0 TurboCTC](community_models/granite5asr.md) |
+| LFM2.5-Audio | `lfm2_audio` | offline | [LFM2.5-Audio](community_models/lfm2_audio.md) |
 | Qwen3 ASR | `qwen3_asr` | offline, streaming | [Qwen3 ASR](#qwen3-asr) |
 | SAMSONE | `samsone` | offline | [SAMSONE](models/samsone.md) |
 | Confucius4-R2T2 | `confucius4_r2t2` | offline, streaming | [Confucius4-R2T2](community_models/r2t2.md) |
@@ -23,6 +26,7 @@
 | VibeVoice ASR | `vibevoice_asr` | offline | [VibeVoice ASR](models/vibevoice_asr.md#vibevoice-asr) |
 | VibeVoice ASR Streaming 7B/1.5B | `vibevoice_asr_streaming` | offline, streaming | [VibeVoice ASR Streaming](models/vibevoice_asr.md#vibevoice-asr-streaming-7b) |
 | Voxtral Realtime | `voxtral_realtime` | offline, streaming | [Voxtral Realtime](models/voxtral_realtime.md) |
+| Whistle (experimental) | `whistle_asr` | offline | [Whistle ASR](community_models/whistle_asr.md) |
 
 This page covers ASR models. Detailed Qwen3 ASR and forced-alignment notes live in [Qwen3 models](models/qwen3.md).
 
@@ -112,10 +116,19 @@ audiocpp_gguf.exe --input models\citrinet\citrinet_256.safetensors --root models
 The GGUF embeds `citrinet_256_config.json` and the vocabulary/tokenizer sidecars, so the
 completed `model.gguf` can be moved, renamed, and passed directly to `--model`.
 
+### Common Options (use directly)
+
 | Option | Values | Default | Meaning |
 |---|---|---:|---|
 | `--audio` | WAV path | required | Speech input. Use 16 kHz WAV for the example path. |
 | `--backend` | `cpu`, `cuda`, `vulkan`, `metal`, `best` | `cpu` | Compute backend. |
+
+### Session Options (use with `--session-option`)
+
+| Option | Values | Default | Meaning |
+|---|---|---:|---|
+| `citrinet_asr.weight_type` | `native`, `f32`, `f16`, `bf16`, `q8_0` | `native` | Weight storage type used by the encoder. |
+
 
 ## Kroko Community ASR
 
@@ -183,7 +196,7 @@ completed GGUF can therefore be moved, renamed, and passed directly to `--model`
 |---|---|---:|---|
 | `--audio` | WAV path | required | Speech input. |
 | `--language` | language code | `da` | Recognition language; can be omitted for the Danish model path. |
-| `--request-option punctuation=true\|false` | bool | model default | Enable punctuation tokens in the decoder prompt. |
+| `--request-option punc=true\|false` | bool | model default | Request punctuation and capitalization together. Legacy `punctuation` remains accepted. |
 | `--max-tokens` | integer | model default | Maximum generated transcript tokens. |
 | `--num-beams` | integer | `1` | Beam-search beam count; `1` uses greedy or sampling decode. |
 | `--request-option length_penalty=<float>` | float | model default | Beam-search length penalty. |

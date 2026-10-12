@@ -52,13 +52,12 @@ void validate_audio_encoder_weight_storage(engine::assets::TensorStorageType sto
 
 engine::assets::TensorStorageType option_weight_type(
     const runtime::SessionOptions & options,
-    const char * key,
+    std::initializer_list<std::string_view> keys,
     engine::assets::TensorStorageType default_value) {
-    const auto it = options.options.find(key);
-    if (it == options.options.end()) {
-        return default_value;
+    if (const auto value = runtime::find_option(options.options, keys)) {
+        return engine::assets::parse_tensor_storage_type(*value);
     }
-    return engine::assets::parse_tensor_storage_type(it->second);
+    return default_value;
 }
 
 std::filesystem::path default_vad_model_path() {
@@ -189,17 +188,19 @@ Qwen3ASRSession::Qwen3ASRSession(
       task_(task),
       assets_(require_assets(std::move(assets))),
       audio_encoder_graph_arena_bytes_(runtime::parse_size_mb_option(options.options, {"qwen3_asr.audio_encoder_graph_arena_mb"}, 128ull * 1024ull * 1024ull)),
-      thinker_prefill_graph_arena_bytes_(runtime::parse_size_mb_option(options.options, {"qwen3_asr.thinker_prefill_graph_arena_mb"}, 256ull * 1024ull * 1024ull)),
-      thinker_decode_graph_arena_bytes_(runtime::parse_size_mb_option(options.options, {"qwen3_asr.thinker_decode_graph_arena_mb"}, 256ull * 1024ull * 1024ull)),
-      thinker_weight_context_bytes_(runtime::parse_size_mb_option(options.options, {"qwen3_asr.thinker_weight_context_mb"}, 64ull * 1024ull * 1024ull)),
-      audio_encoder_weight_storage_type_(option_weight_type(options, "qwen3_asr.audio_encoder_weight_type", engine::assets::TensorStorageType::Native)),
+      thinker_prefill_graph_arena_bytes_(runtime::parse_size_mb_option(options.options, {"qwen3_asr.text_decoder_prefill_graph_arena_mb", "qwen3_asr.thinker_prefill_graph_arena_mb"}, 256ull * 1024ull * 1024ull)),
+      thinker_decode_graph_arena_bytes_(runtime::parse_size_mb_option(options.options, {"qwen3_asr.text_decoder_decode_graph_arena_mb", "qwen3_asr.thinker_decode_graph_arena_mb"}, 256ull * 1024ull * 1024ull)),
+      thinker_weight_context_bytes_(runtime::parse_size_mb_option(options.options, {"qwen3_asr.text_decoder_weight_context_mb", "qwen3_asr.thinker_weight_context_mb"}, 64ull * 1024ull * 1024ull)),
+      audio_encoder_weight_storage_type_(option_weight_type(options, {"qwen3_asr.audio_encoder_weight_type"}, engine::assets::TensorStorageType::Native)),
       thinker_weight_storage_type_(option_weight_type(
           options,
-          "qwen3_asr.thinker_weight_type",
-          option_weight_type(options, "qwen3_asr.weight_type", engine::assets::TensorStorageType::Native))),
+          {"qwen3_asr.text_decoder_weight_type", "qwen3_asr.thinker_weight_type"},
+          option_weight_type(options, {"qwen3_asr.weight_type"}, engine::assets::TensorStorageType::Native))),
       tokenizer_(assets_),
       frontend_(assets_),
-      audio_encoder_(assets_, execution_context(), audio_encoder_graph_arena_bytes_, audio_encoder_weight_storage_type_),
+      audio_encoder_(assets_->model_weights, assets_->config.audio_encoder,
+          execution_context(), {audio_encoder_graph_arena_bytes_, audio_encoder_weight_storage_type_, "qwen3_asr.audio_encoder"},
+          assets_->config.audio_encoder_binding),
       thinker_(
           assets_,
           execution_context(),
@@ -212,7 +213,8 @@ Qwen3ASRSession::Qwen3ASRSession(
       vad_model_path_(
           engine::assets::embedded::prefer_embedded_vad_model_path(
               runtime::find_option(options.options,
-                                   {"qwen3_asr.vad_model_path"}),
+                                   {"qwen3_asr.vad_model_path",
+                                    "qwen3_asr.vad_path"}),
               default_vad_model_path(),
               engine::assets::embedded::has_embedded_asset("silero_vad"))) {
     if (task_.task != runtime::VoiceTaskKind::Asr) {
@@ -232,6 +234,12 @@ Qwen3ASRSession::Qwen3ASRSession(
             key != "qwen3_asr.thinker_weight_context_mb" &&
             key != "qwen3_asr.audio_encoder_weight_type" &&
             key != "qwen3_asr.thinker_weight_type" &&
+            key != "qwen3_asr.text_decoder_prefill_graph_arena_mb" &&
+            key != "qwen3_asr.text_decoder_decode_graph_arena_mb" &&
+            key != "qwen3_asr.text_decoder_weight_context_mb" &&
+            key != "qwen3_asr.text_decoder_weight_type" &&
+            key != "qwen3_asr.forced_aligner_path" &&
+            key != "qwen3_asr.vad_path" &&
             key != "qwen3_asr.weight_type" &&
             key != "qwen3_asr.forced_aligner_model_path" &&
             key != "qwen3_asr.aligner_model_path" &&
@@ -241,7 +249,7 @@ Qwen3ASRSession::Qwen3ASRSession(
     }
     if (const auto aligner_path = runtime::find_option(
             options.options,
-            {"qwen3_asr.forced_aligner_model_path", "qwen3_asr.aligner_model_path"})) {
+            {"qwen3_asr.forced_aligner_path", "qwen3_asr.forced_aligner_model_path", "qwen3_asr.aligner_model_path"})) {
         runtime::SessionOptions aligner_options;
         aligner_options.backend = options.backend;
         for (const auto & [key, value] : options.options) {

@@ -11,6 +11,9 @@ audio end to end. Custom voice cloning is not supported. This family lives under
 model tree because it does not yet have the CUDA/Vulkan/Metal runtime test coverage core models
 carry.
 
+`--request-option max_tokens=<int>` caps generated speech tokens (default 1000).
+Legacy `max_new_tokens` remains accepted with the same meaning.
+
 ## Packaging: audio.cpp-native, self-contained GGUF
 
 Resemble AI has not published Chatterbox Turbo weights in a format audio.cpp can convert
@@ -26,8 +29,8 @@ repacks it offline into one self-contained, audio.cpp-native GGUF:
 
 - T3 and built-in-conditional tensors are moved from the upstream flat `t3.`/`conds.` dot
   namespace into this project's own `/`-delimited packed-GGUF namespace convention.
-- S3Gen tensors are renamed back to the exact names base Chatterbox's own S3Gen flow/HiFT-vocoder
-  loader (`src/models/chatterbox/s3gen_flow.cpp`,
+- S3Gen tensors are renamed back to the exact names the shared S3Gen flow/HiFT-vocoder
+  loader (`src/framework/codecs/s3gen_runtime.cpp`,
   `src/framework/modules/vocoders/hift_vocoder.cpp`) already expects, so that loader runs
   completely unmodified for Turbo — no tensor-name translation code exists in this family at
   runtime.

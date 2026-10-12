@@ -46,12 +46,22 @@ KokoroTTSSession::KokoroTTSSession(
     if (contract_ == nullptr) {
         throw std::runtime_error("Kokoro TTS session requires a model contract");
     }
-    runtime::validate_spec_backed_session_options(RuntimeSessionBase::options(), *contract_, kFamily, kModelName);
+    auto validation_options = RuntimeSessionBase::options();
+    // Arena aliases are parsed below, independently of the embedded spec version.
+    for (const auto * key : {"kokoro_tts.predictor_duration_graph_arena_mb",
+                            "kokoro_tts.predictor_duration_graph_mb",
+                            "kokoro_tts.predictor_text_graph_arena_mb",
+                            "kokoro_tts.predictor_text_graph_mb",
+                            "kokoro_tts.predictor_tail_graph_arena_mb",
+                            "kokoro_tts.predictor_tail_graph_mb"}) {
+        validation_options.options.erase(key);
+    }
+    runtime::validate_spec_backed_session_options(validation_options, *contract_, kFamily, kModelName);
     if (task_.task != runtime::VoiceTaskKind::Tts) {
         throw std::runtime_error("Kokoro TTS only supports tts tasks");
     }
-    if (task_.mode != runtime::RunMode::Offline) {
-        throw std::runtime_error("Kokoro TTS only supports offline sessions");
+    if (task_.mode != runtime::RunMode::Offline && task_.mode != runtime::RunMode::Streaming) {
+        throw std::runtime_error("Kokoro TTS only supports offline and streaming sessions");
     }
     const auto & session_options = RuntimeSessionBase::options().options;
     using T = engine::assets::TensorStorageType;
@@ -71,15 +81,15 @@ KokoroTTSSession::KokoroTTSSession(
         weight_context_bytes_);
     predictor_duration_graph_bytes_ = runtime::parse_size_mb_option(
         session_options,
-        {"kokoro_tts.predictor_duration_graph_mb"},
+        {"kokoro_tts.predictor_duration_graph_arena_mb", "kokoro_tts.predictor_duration_graph_mb"},
         predictor_duration_graph_bytes_);
     predictor_text_graph_bytes_ = runtime::parse_size_mb_option(
         session_options,
-        {"kokoro_tts.predictor_text_graph_mb"},
+        {"kokoro_tts.predictor_text_graph_arena_mb", "kokoro_tts.predictor_text_graph_mb"},
         predictor_text_graph_bytes_);
     predictor_tail_graph_bytes_ = runtime::parse_size_mb_option(
         session_options,
-        {"kokoro_tts.predictor_tail_graph_mb"},
+        {"kokoro_tts.predictor_tail_graph_arena_mb", "kokoro_tts.predictor_tail_graph_mb"},
         predictor_tail_graph_bytes_);
     weights_ = load_kokoro_backend_weights(
         *assets_,
@@ -566,6 +576,17 @@ void KokoroTTSSession::prepare(const runtime::SessionPreparationRequest & reques
 }
 
 runtime::TaskResult KokoroTTSSession::run(const runtime::TaskRequest & request) {
+    if (task_.mode != runtime::RunMode::Offline) {
+        throw std::runtime_error("Kokoro TTS run requires an offline session");
+    }
+    return synthesize(request, false);
+}
+
+runtime::TaskResult KokoroTTSSession::generate_stream(const runtime::TaskRequest & request) {
+    return synthesize(request, true);
+}
+
+runtime::TaskResult KokoroTTSSession::synthesize(const runtime::TaskRequest & request, bool streaming) {
     require_prepared("Kokoro TTS run()");
     if (!request.text_input.has_value()) {
         throw std::runtime_error("Kokoro TTS run requires text_input");
@@ -696,7 +717,13 @@ runtime::TaskResult KokoroTTSSession::run(const runtime::TaskRequest & request) 
                 audio.size(),
                 static_cast<int64_t>(merged_audio.samples.size()));
         }
-        runtime::append_audio_buffer(merged_audio, runtime::AudioBuffer{24000, 1, std::move(audio)});
+        runtime::AudioBuffer chunk_audio{24000, 1, std::move(audio)};
+        runtime::append_audio_buffer(merged_audio, chunk_audio);
+        if (streaming && stream_event_sink()) {
+            runtime::StreamEvent event;
+            event.audio_output = std::move(chunk_audio);
+            stream_event_sink()(event);
+        }
     }
 
     runtime::TaskResult result;

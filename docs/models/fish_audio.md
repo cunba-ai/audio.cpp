@@ -1,6 +1,6 @@
 # Fish Audio S2 Pro
 
-Fish Audio S2 Pro is wired as `--family fish_audio` for offline text to speech
+Fish Audio S2 Pro is wired as `--family fish_audio` for offline and streaming text to speech
 and reference voice cloning. The integration supports standalone GGUF packages,
 session-level reference caching, framework text chunking for long-form text, and
 Fish-style multi-reference conditioning.
@@ -44,13 +44,26 @@ audiocpp_cli --task tts --family fish_audio \
   --out out_ref.wav
 ```
 
+## Streaming
+
+Add `--mode streaming` to either CLI example to emit audio while the AR model
+generates codes. The codec retains its causal attention and convolution state
+within each text chunk and resets that state at chunk and request boundaries.
+The streaming graph is reused between requests; offline decoding is unchanged.
+
+For HTTP streaming, configure the model with `"mode": "streaming"` and send
+`"stream_format": "sse"` to `/v1/audio/speech`. Each `speech.audio.delta` contains
+only new PCM audio, not a growing prefix. See the [server API](../../app/server/README.md)
+for the streaming response format. The complete text is supplied up front;
+this is output streaming, not incremental text input.
+
 ## Model
 
 | Field | Value |
 |---|---|
 | Family | `fish_audio` |
 | Task | `tts` |
-| Modes | `offline` |
+| Modes | `offline`, `streaming` |
 | Model path | `models/Fish-Audio-S2-Pro-GGUF/fish-audio-s2-pro-q8_0.gguf` |
 | Languages | Model auto-handles language; tested paths cover English and Chinese-style prompts |
 | Voice input | Optional reference WAV through `--voice-ref`; transcript through `--reference-text` when known |
@@ -61,13 +74,13 @@ audiocpp_cli --task tts --family fish_audio \
 | Option | Values | Default | Meaning |
 |---|---|---:|---|
 | `--voice-ref` | WAV path | not set | Reference speaker audio for voice cloning. |
-| `--reference-text` | text | empty string | Transcript for reference audio. |
-| `--max-new-tokens` | integer | `1024` | Maximum generated semantic tokens per chunk. `0` uses the default. |
+| `--reference-text` | text | empty string | Reference transcript; required with inline reference audio. |
+| `--max-tokens` | integer | `1024` | Maximum generated semantic tokens per chunk. `0` uses the default. |
 | `--text-chunk-size` | integer chars | `200` | Long-form chunk size. |
 | `--text-chunk-mode` | `default`, `tag_aware`, `japanese`, `endline` | `default` | Framework text chunking mode. |
-| `--temperature` | float | `0.8` | Sampling temperature. |
+| `--temperature` | `(0, 2)` | `0.8` | Sampling temperature. |
 | `--top-k` | integer | `30` | Top-k sampling limit. |
-| `--top-p` | float | `0.8` | Nucleus sampling limit. |
+| `--top-p` | `(0, 1]` | `0.8` | Nucleus sampling limit. |
 | `--seed` | integer | random when omitted | Sampling seed for reproducible output. |
 
 ## Request Options (use with `--request-option`)
@@ -84,6 +97,10 @@ audiocpp_cli --task tts --family fish_audio \
 | `fish_audio.reference_cache_slots` | integer | `1` | Prepared reference-audio cache slots. |
 | `fish_audio.weight_type` | `native`, `f32`, `f16`, `bf16`, `q8_0` | `native` | AR matmul weight storage type. |
 | `fish_audio.codec_weight_type` | `native`, `f32`, `f16`, `q8_0` | `native` | Codec conv/matmul weight storage type. |
+| `fish_audio.ar_graph_arena_mb` | integer MiB >= 1 | `512` | AR graph arena size. |
+| `fish_audio.ar_weight_context_mb` | integer MiB >= 1 | `32` | AR weight context size. |
+| `fish_audio.codec_graph_arena_mb` | integer MiB >= 1 | `512` | Codec graph arena size. |
+| `fish_audio.codec_weight_context_mb` | integer MiB >= 1 | `32` | Codec weight context size. |
 
 ## Multi-Reference Conditioning
 

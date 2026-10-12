@@ -138,16 +138,20 @@ int main() try {
                      "CPU round_bf16 kernel");
     {
         const std::string elementwise = read_file("external/ggml/src/ggml-sycl/element_wise.cpp");
-        if (elementwise.find("round_bf16") != std::string::npos) {
-            // A SYCL launcher came back with an upstream merge: it must not
-            // capture the ggml_tensor* in the lambda. The broken pre-fix
-            // pattern read src0->data inside the parallel_for body.
-            const size_t lambda_capture = elementwise.find("(const float *) src0->data");
-            const size_t lambda_capture16 = elementwise.find("(const sycl::half *) src0->data");
-            engine::test::require(lambda_capture == std::string::npos &&
-                                      lambda_capture16 == std::string::npos,
-                                  "round_bf16 SYCL launcher must extract src pointers host-side, "
-                                  "not dereference src0->data inside the device lambda (d6c77c75)");
+        const size_t launcher = elementwise.find("ggml_sycl_op_round_bf16");
+        if (launcher != std::string::npos) {
+            // A SYCL launcher came back with an upstream merge: the device
+            // lambda must receive the extracted src POINTER (src0_d), never
+            // dereference the captured ggml_tensor* on device. The fixed form
+            // (d6c77c75) extracts src0_d host-side right before parallel_for;
+            // note the host-side extraction itself legitimately contains the
+            // substring "src0->data", so the assertion targets what the kernel
+            // call receives instead of a raw substring ban.
+            const size_t kernel_call = elementwise.find("round_bf16_kernel(src0_d", launcher);
+            engine::test::require(kernel_call != std::string::npos,
+                                  "round_bf16 SYCL launcher must pass the host-extracted "
+                                  "src0_d pointer to the kernel, not the ggml_tensor* "
+                                  "(d6c77c75)");
         }
     }
 

@@ -1,5 +1,6 @@
 #include "engine/community_models/auk/session.h"
 
+#include "engine/framework/runtime/errors.h"
 #include "engine/framework/runtime/options.h"
 #include "engine/framework/runtime/spec_backed_model.h"
 #include "engine/framework/core/attention_fallback.h"
@@ -151,8 +152,8 @@ AukSession::AukSession(runtime::TaskSpec task, runtime::SessionOptions options,
     if (!assets_ || !assets_->model || !assets_->qwen || !assets_->vae || !assets_->tokenizer) {
         throw std::runtime_error("AuK requires model, Qwen, VAE, and tokenizer assets");
     }
-    if (options.backend.type != core::BackendType::Cuda) {
-        throw std::runtime_error("AuK native session currently requires CUDA");
+    if (execution_context().backend_type() == core::BackendType::Cpu) {
+        throw std::runtime_error("AuK native session does not support the CPU backend");
     }
     if (const auto value = runtime::find_option(options.options, {"auk.mem_saver"})) {
         mem_saver_ = runtime::parse_bool_option(*value, "auk.mem_saver");
@@ -180,7 +181,7 @@ runtime::TaskResult AukSession::run(const runtime::TaskRequest & request) {
         throw std::runtime_error("AuK audio editing requires source audio");
     }
     if (!request.input_artifacts.empty()) {
-        throw std::runtime_error("AuK cached artifacts are not supported");
+        throw runtime::InvalidRequestError("AuK cached artifacts are not supported");
     }
     const runtime::AudioBuffer * reference_input = request.audio_input ? &*request.audio_input : nullptr;
     if (request.voice) {
@@ -226,7 +227,7 @@ runtime::TaskResult AukSession::run(const runtime::TaskRequest & request) {
             "\". The content to speak is: \"" + request.text_input->text + "\".";
     }
     auto & execution = execution_context();
-    const auto policy = sampling::resolve_torch_cuda_sampling_policy(core::BackendType::Cuda,
+    const auto policy = sampling::resolve_torch_cuda_sampling_policy(execution.backend_type(),
         options().backend.device, "auk", "AuK");
     std::vector<float> audio_embeddings, reference_latents;
     int64_t reference_frames = 0, valid_reference_frames = 0;

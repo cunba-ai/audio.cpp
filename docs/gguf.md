@@ -64,11 +64,13 @@ Status labels:
 |---|---|---|---|---|---|
 | `ace_step` | Done | Pass | --- | Pass (drift) | No (planner sampling can fail) |
 | `apollo` | Done | --- | Pass (drift) | --- | --- |
+| `audio_flamingo` | Done | Pass | Pass | --- | --- |
 | `bs_roformer` | Done | Pass | --- | --- | Pass |
 | `canary_asr` | Done | Pass | Pass | --- | Pass |
 | `chatterbox` | Done | Pass | --- | Pass (ASR match, drift) | Pass (ASR match, drift) |
 | `citrinet_asr` | Done | Pass | --- | --- | Pass |
 | `cohere_asr` | Done | Pass | Pass | --- | Pass (drift) |
+| `crisperwhisper` | Done | Pass | Pass | --- | Pass (drift) |
 | `fish_audio` | Done | Pass | --- | Pass | Pass |
 | `fun_asr_nano` | Done | Pass | --- | Pass | Pass |
 | `gigaam_asr` | Done | --- | Pass | Pass | --- |
@@ -98,12 +100,14 @@ Status labels:
 | `moss_tts_local` | Done | Pass | --- | Pass | Pass (ASR match, drift) |
 | `moss_tts_nano` | Done | Pass | --- | Pass | Pass (ASR match, drift) |
 | `moss_transcribe_diarize` | Done | --- | Pass | --- | Pass |
+| `mossformer2` | Done | --- | Pass (F32) | --- | --- |
 | `muscriptor` | Done | Pass | Pass | --- | --- |
 | `nemotron_3_diar` | Done | --- | Pass | --- | --- |
 | `nemotron_asr` | Done | Pass | --- | Pass | Pass (minor filler drift) |
 | `neutts` | Done | Pass | --- | Pass | --- |
 | `omnivoice` | Done | Pass | --- | Pass (drift) | Pass (drift) |
 | `outetts` | Done | Pass (TTS + clone) | --- | --- | Pass (TTS + clone) |
+| `owsm` | Done | --- | Pass | --- | Pass (drift) |
 | `parakeet_tdt` | Done | Pass | Pass | Pass | Pass |
 | `piper_tts` | Done | Pass | Pass | --- | --- |
 | `personaplex` | Done | --- | --- | --- | Pass |
@@ -128,6 +132,7 @@ Status labels:
 | `sortformer_diar_v2` | Done | Pass | Pass | Pass (mixed; output-turn criteria) | No (speaker drift) |
 | `stable_audio` | Done | Pass | --- | Pass (drift) | Pass (drift) |
 | `supertonic` | Done | Pass | Pass | Pass | No (Q8 blockers unresolved) |
+| `tf_gridnet` | Done | --- | Pass (F32) | --- | --- |
 | `universr` | Done | --- | Pass | --- | --- |
 | `vevo2` | Done | Pass | Pass | Pass (drift) | No (mixed route drift; speech ASR match) |
 | `vibevoice` | Done | Pass | --- | Pass | Pass (drift) |
@@ -143,6 +148,7 @@ Additional lower-bit checks:
 | `cohere_asr` | `q4_0` | Pass (drift) |
 | `meanvc2` | `q4_k` | Pass |
 | `moss_transcribe_diarize` | `q4_k` | No (long-audio segmentation/timestamp drift) |
+| `owsm` | `q4_k` | Pass (Small and Medium; transcript and timestamp drift) |
 | `personaplex` | `q4_k` | Pass |
 | `vibevoice_asr_streaming` | `q4_k` | Pass (quick CUDA check; transcript stays usable and matches the BF16 wording class) |
 | `voxtral_realtime` | `q4_k` | Pass (quick CUDA check; transcripts match Q8 except one capitalization-only difference) |

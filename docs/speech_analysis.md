@@ -2,6 +2,9 @@
 
 | Model | Family | Task | Quick Start |
 |---|---|---|---|
+| AST AudioSet | `ast_audioset` | `cls` | [Model guide](models/ast_audioset.md) |
+| microWakeWord | `micro_wake_word` | `wake` | [Model guide](models/micro_wake_word.md) |
+| sherpa-onnx Zipformer KWS | `sherpa_kws` | `wake` | [Model guide](models/sherpa_kws.md) |
 | Silero VAD | `silero_vad` | `vad` | [Silero VAD](#silero-vad) |
 | MarbleNet VAD | `marblenet_vad` | `vad` | [MarbleNet VAD](#marblenet-vad) |
 | PulseVAD | `pulsevad` | `vad` | [PulseVAD](models/pulsevad.md) |
@@ -11,7 +14,7 @@
 | MMS Forced Aligner | `mms_forced_aligner` | `align` | [MMS Forced Aligner](#mms-forced-aligner) |
 | Qwen3 Forced Aligner | `qwen3_forced_aligner` | `align` | [Qwen3 Forced Aligner](models/qwen3.md#qwen3-forced-aligner) |
 
-This page covers VAD, diarization, and forced-aligner models. ASR models are documented in [ASR models](asr.md).
+This page covers audio classification, VAD, diarization, and forced-aligner models. ASR models are documented in [ASR models](asr.md).
 
 Common CLI shape:
 
@@ -76,7 +79,7 @@ audiocpp_cli --task vad --family silero_vad --model assets/framework/models/sile
 | `--request-option min_speech_duration_ms=<n>` | integer ms | `250` | Minimum speech duration. |
 | `--request-option min_silence_duration_ms=<n>` | integer ms | `100` | Minimum silence duration. |
 | `--request-option speech_pad_ms=<n>` | integer ms | `30` | Padding around speech segments. |
-| `--request-option max_speech_duration_s=<float>` | seconds | `1000000000` | Maximum speech segment length. |
+| `--request-option max_speech_duration_sec=<float>` | seconds | `1000000000` | Maximum speech segment length. Legacy `max_speech_duration_s` remains accepted. |
 
 ## MarbleNet VAD
 
@@ -128,7 +131,7 @@ audiocpp_cli --task diar --family sortformer_diar --model models/Sortformer-Diar
 | `--session-option sortformer_diar.speaker_threshold=<float>` | float | `0.5` | Default speaker activation threshold. |
 | `--session-option sortformer_diar.speaker_min_frames=<n>` | integer | `0` | Default minimum speaker segment frames. |
 | `--session-option sortformer_diar.speaker_pad_frames=<n>` | integer | `0` | Default padding around speaker turns. |
-| `--session-option sortformer_diar.session_len_sec=<float>` | seconds | `20.0` | Diarization graph window length. |
+| `--session-option sortformer_diar.session_len_sec=<float>` | seconds > 0 | `20.0` | Diarization graph window length. |
 | `--session-option sortformer_diar.graph_capacity_mode=<mode>` | `fixed`, `tiered`, `grow`, `double` | backend default | Offline graph capacity policy. |
 | `--session-option sortformer_diar.graph_arena_mb=<n>` | MB | `512` | Inference graph arena size. |
 | `--session-option sortformer_diar.weight_context_mb=<n>` | MB | `128` | Weight context size. |

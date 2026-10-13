@@ -555,8 +555,12 @@ static void apply_options(engine::runtime::TaskRequest & req, const char * optio
     for (auto * item = root->child; item; item = item->next) {
         if (!item->string) continue;
         std::string key = item->string;
-        // Skip voice_ref (handled above)
-        if (key == "voice_ref") continue;
+        // Skip keys already consumed above: voice_ref (speaker reference
+        // audio) and text/language (Transcript). They are NOT engine request
+        // options — leaking them through trips the spec-backed strict option
+        // validation on models that take audio+text (e.g. sam_audio rejects
+        // "unknown SAM Audio request option: text").
+        if (key == "voice_ref" || key == "text" || key == "language") continue;
         // String values
         if (cJSON_IsString(item)) {
             req.options[key] = item->valuestring;

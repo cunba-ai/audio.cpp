@@ -1127,6 +1127,28 @@ const ggml_cuda_device_info & ggml_cuda_info();
 void ggml_cuda_set_device(int device);
 int ggml_cuda_get_device();
 
+// Teardown-safe CUDA call for DESTRUCTION paths only (buffer/context/graph
+// frees). Model teardown in an embedding host (e.g. sound-rs's audiocpp LRU:
+// audiocpp_free_model from a tokio spawn_blocking thread) runs on a thread
+// that did not load or run the model, so the per-thread CUDA current device
+// can differ from the device that owns the handles being destroyed. Classic
+// CUDA_CHECK then GGML_ABORTs and takes the whole process down — with only a
+// stderr line that a detached service never shows (the "silent crash"
+// signature of audiocpp multi-model bug ②). Destruction paths must (a) switch
+// to the owning device first and (b) never abort: a failed free at teardown is
+// a leak, not a reason to kill the process.
+#define GGML_CUDA_TEARDOWN_CALL(stmt, device)                                                   \
+    do {                                                                                        \
+        (void) cudaGetLastError(); /* drop any sticky async error before the calls below */     \
+        ggml_cuda_set_device(device);                                                           \
+        int teardown_err_ = (int) (stmt);   /* cudaError_t / cublasStatus_t: 0 == success */    \
+        if (teardown_err_ != 0) {                                                               \
+            GGML_LOG_ERROR(GGML_CUDA_NAME " teardown: %s failed: status %d (device %d) — continuing\n",\
+                            #stmt, teardown_err_, (int) (device));                              \
+            (void) cudaGetLastError(); /* clear the sticky error so later calls can succeed */  \
+        }                                                                                       \
+    } while (0)
+
 struct ggml_cuda_pool {
     virtual ~ggml_cuda_pool() = default;
 
@@ -1198,10 +1220,10 @@ struct ggml_cuda_graph {
 #ifdef USE_CUDA_GRAPH
     ~ggml_cuda_graph() {
         if (instance != nullptr) {
-            CUDA_CHECK(cudaGraphExecDestroy(instance));
+            GGML_CUDA_TEARDOWN_CALL(cudaGraphExecDestroy(instance), device);
         }
         if (graph != nullptr) {
-            CUDA_CHECK(cudaGraphDestroy(graph));
+            GGML_CUDA_TEARDOWN_CALL(cudaGraphDestroy(graph), device);
         }
     }
     cudaGraph_t graph = nullptr;
@@ -1212,6 +1234,9 @@ struct ggml_cuda_graph {
     bool warmup_complete = false;
     uint64_t uid = 0;
     int64_t last_used_time = 0;
+    // Device that owns the captured graph; set on first use by the owning
+    // ggml_backend_cuda_context so the destructor can free it from any thread.
+    int device = 0;
     struct node_properties {
         ggml_tensor node;
         void *   node_src_data_ptrs[GGML_MAX_SRC];
@@ -1413,6 +1438,7 @@ struct ggml_backend_cuda_context {
         auto it = cuda_graphs.find(first_node_ptr);
         if (it == cuda_graphs.end()) {
             it = cuda_graphs.emplace(first_node_ptr, std::make_unique<ggml_cuda_graph>()).first;
+            it->second->device = this->device;  // destructor frees on the owning device
         }
         it->second->last_used_time = time_now;
         return it->second.get();

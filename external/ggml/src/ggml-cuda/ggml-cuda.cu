@@ -378,7 +378,11 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
     }
 
     ~ggml_cuda_pool_leg() {
-        clear_pool();
+        // Teardown: a failed cudaFree here must not abort the process (the
+        // pool dies with its model's backend on an arbitrary host thread) —
+        // see GGML_CUDA_TEARDOWN_CALL. Runtime clears (trim_pools, alloc
+        // retry) keep the strict CUDA_CHECK.
+        clear_pool(true);
         GGML_ASSERT(pool_size == 0);
     }
 
@@ -386,12 +390,16 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
         clear_pool();
     }
 
-    void clear_pool() {
+    void clear_pool(bool teardown = false) {
         ggml_cuda_set_device(device);
         for (int i = 0; i < MAX_BUFFERS; ++i) {
             ggml_cuda_buffer & b = buffer_pool[i];
             if (b.ptr != nullptr) {
-                CUDA_CHECK(cudaFree(b.ptr));
+                if (teardown) {
+                    GGML_CUDA_TEARDOWN_CALL(cudaFree(b.ptr), device);
+                } else {
+                    CUDA_CHECK(cudaFree(b.ptr));
+                }
                 pool_size -= b.size;
                 b.ptr  = nullptr;
                 b.size = 0;
@@ -501,15 +509,17 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
 
     ~ggml_cuda_pool_vmm() {
         if (pool_addr != 0) {
+            // Teardown-safe (see GGML_CUDA_TEARDOWN_CALL): CU_CHECK aborts
+            // would kill the process on the model-free path.
 #if defined(GGML_USE_HIP)
             // Workaround for https://github.com/ROCm/ROCR-Runtime/issues/285
             for (std::pair<CUdeviceptr, size_t> & mapping : mappings) {
-                CU_CHECK(cuMemUnmap(mapping.first, mapping.second));
+                GGML_CUDA_TEARDOWN_CALL(cuMemUnmap(mapping.first, mapping.second), device);
             }
 #else
-            CU_CHECK(cuMemUnmap(pool_addr, pool_size));
+            GGML_CUDA_TEARDOWN_CALL(cuMemUnmap(pool_addr, pool_size), device);
 #endif
-            CU_CHECK(cuMemAddressFree(pool_addr, CUDA_POOL_VMM_MAX_SIZE));
+            GGML_CUDA_TEARDOWN_CALL(cuMemAddressFree(pool_addr, CUDA_POOL_VMM_MAX_SIZE), device);
         }
     }
 
@@ -612,24 +622,28 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
     std::unique_lock<std::mutex> lock(ggml_cuda_lock);
     ggml_cuda_lock_cv.wait(lock, []{ return ggml_cuda_lock_counter.load(std::memory_order_relaxed) == 0; });
 
+    // Everything below destroys device-scoped handles. This destructor can
+    // run on a host-worker thread whose current CUDA device differs from
+    // `device` (see GGML_CUDA_TEARDOWN_CALL), and a failure here must not
+    // abort the process: log, clear the error, keep tearing down.
     if (copy_event != nullptr) {
-        CUDA_CHECK(cudaEventDestroy(copy_event));
+        GGML_CUDA_TEARDOWN_CALL(cudaEventDestroy(copy_event), device);
     }
     for (int i = 0; i < GGML_CUDA_MAX_DEVICES; ++i) {
         for (int j = 0; j < GGML_CUDA_MAX_STREAMS; ++j) {
             if (streams[i][j] != nullptr) {
-                CUDA_CHECK(cudaStreamDestroy(streams[i][j]));
+                GGML_CUDA_TEARDOWN_CALL(cudaStreamDestroy(streams[i][j]), i);
             }
         }
         if (cublas_handles[i] != nullptr) {
-            CUBLAS_CHECK(cublasDestroy(cublas_handles[i]));
+            GGML_CUDA_TEARDOWN_CALL(cublasDestroy(cublas_handles[i]), i);
         }
 #if defined(GGML_USE_HIP) && defined(GGML_HIP_USE_HIPBLASLT)
         if (hipblaslt_handles[i] != nullptr) {
-            HIPBLASLT_CHECK(hipblasLtDestroy(hipblaslt_handles[i]));
+            GGML_CUDA_TEARDOWN_CALL(hipblasLtDestroy(hipblaslt_handles[i]), i);
         }
         if (hipblaslt_workspaces[i] != nullptr) {
-            CUDA_CHECK(cudaFree(hipblaslt_workspaces[i]));
+            GGML_CUDA_TEARDOWN_CALL(cudaFree(hipblaslt_workspaces[i]), i);
         }
 #endif // defined(GGML_USE_HIP) && defined(GGML_HIP_USE_HIPBLASLT)
     }
@@ -649,7 +663,11 @@ struct ggml_backend_cuda_buffer_context {
     }
 
     ~ggml_backend_cuda_buffer_context() {
-        CUDA_CHECK(cudaFree(dev_ptr));
+        // The freeing thread is not necessarily the loading/running thread:
+        // switch to the owning device first, and never abort the process from
+        // a destructor (see GGML_CUDA_TEARDOWN_CALL). This is the weight
+        // buffer free on the LRU-eviction path of embedding hosts.
+        GGML_CUDA_TEARDOWN_CALL(cudaFree(dev_ptr), device);
     }
 };
 
@@ -915,11 +933,11 @@ struct ggml_backend_cuda_split_buffer_context {
             for (int id = 0; id < GGML_CUDA_MAX_DEVICES; ++id) {
                 for (int64_t is = 0; is < GGML_CUDA_MAX_STREAMS; ++is) {
                     if (extra->events[id][is] != nullptr) {
-                        CUDA_CHECK(cudaEventDestroy(extra->events[id][is]));
+                        GGML_CUDA_TEARDOWN_CALL(cudaEventDestroy(extra->events[id][is]), id);
                     }
                 }
                 if (extra->data_device[id] != nullptr) {
-                    CUDA_CHECK(cudaFree(extra->data_device[id]));
+                    GGML_CUDA_TEARDOWN_CALL(cudaFree(extra->data_device[id]), id);
                 }
             }
             delete extra;
@@ -1504,7 +1522,10 @@ static bool ggml_backend_buft_is_cuda_host(ggml_backend_buffer_type_t buft) {
 }
 
 static void ggml_backend_cuda_host_buffer_free_buffer(ggml_backend_buffer_t buffer) {
-    CUDA_CHECK(cudaFreeHost(buffer->context));
+    // Pinned host memory is device-independent, but a failed free here is on
+    // the model-teardown path and must not abort the process (see
+    // GGML_CUDA_TEARDOWN_CALL).
+    GGML_CUDA_TEARDOWN_CALL(cudaFreeHost(buffer->context), 0);
 }
 
 static void * ggml_cuda_host_malloc(size_t size) {

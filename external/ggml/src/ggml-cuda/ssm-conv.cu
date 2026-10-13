@@ -122,11 +122,21 @@ static __global__ void ssm_conv_long_token_f32(const float * __restrict__ src0, 
 
     constexpr int load_cols   = d_conv - 1 + split_n_t;
     constexpr int total_elems = split_d_inner * load_cols;
+    // A partial (final) block only owns d_conv-1+local_n_t valid columns of the
+    // padded input; staging the full split window would read past the end of
+    // the tensor. When the tensor sits at the very end of its compute buffer
+    // (observed: ggml_gallocr placing the left-padded conv input flush with the
+    // pool end) this escapes the cudaMalloc/hipMalloc region entirely - an
+    // "unspecified launch failure" on gfx1151/HIP 7.2, or silently staged
+    // garbage plus a lazily-latched device fault on other runtimes (HIP 7.0.1
+    // produced wrong decoder output with no error). Bound the staged columns
+    // to the valid window; the compute loop below only touches these columns.
+    const int valid_cols = d_conv - 1 + (int) local_n_t;
     int row = tid / load_cols;
     int col = tid % load_cols;
 #pragma unroll
     for (int idx = 0; idx < total_elems; idx += split_d_inner) {
-        if (row < (int)split_d_inner) {
+        if (row < (int)split_d_inner && col < valid_cols) {
             smem[row * n_cols + col] = x_block[row * stride_x + col];
         }
 

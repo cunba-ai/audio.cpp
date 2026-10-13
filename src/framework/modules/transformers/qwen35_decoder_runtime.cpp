@@ -1151,6 +1151,24 @@ public:
         for (auto * tail : linear_conv_tails_) {
             ggml_backend_tensor_set(tail, zero_tail.data(), 0, zero_tail.size() * sizeof(float));
         }
+        // The full-attention KV caches must be zeroed like the linear-attention
+        // state above: ggml backend buffers are not zero-initialized, and slots
+        // beyond valid_steps_ only look clean on a fresh process because the
+        // driver hands out zeroed pages. Once another model has cycled through
+        // the same heap (observed: crisperwhisper-2-large LRU-evicted before
+        // Index-Echo on gfx1151) the recycled cache contains arbitrary bit
+        // patterns; NaN/Inf keys propagate through the additive -inf mask
+        // (NaN + -inf = NaN) and poison every softmax from the first decode
+        // step on. Zeroing costs one pass per full-attention layer at session
+        // create/reset - the same policy llama.cpp applies to its KV cache.
+        const int64_t kv_values = cache_steps_ * config_.kv_heads * config_.head_dim;
+        std::vector<float> zero_kv(static_cast<size_t>(kv_values), 0.0F);
+        for (auto * cache : full_key_caches_) {
+            ggml_backend_tensor_set(cache, zero_kv.data(), 0, zero_kv.size() * sizeof(float));
+        }
+        for (auto * cache : full_value_caches_) {
+            ggml_backend_tensor_set(cache, zero_kv.data(), 0, zero_kv.size() * sizeof(float));
+        }
     }
 
     int64_t valid_steps() const noexcept {

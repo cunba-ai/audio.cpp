@@ -71,7 +71,9 @@ python3 tools/check_loader_catalog_sync.py
 #   capi\test\build_fork_regression.bat   (vcvars + test targets + ctest)
 # Covers: embedded-VAD path policy for ASR families, CAPI task/artifact enum
 # sync with the engine, shared-library export surface + cJSON/yaml symbol
-# hiding, memory-backed tensor sources, progress callbacks, CAPI option handling.
+# hiding, memory-backed tensor sources, progress callbacks, CAPI option handling,
+# family-level unvalidated-backend gates (AUDIOCPP_ENABLE_UNVALIDATED_BACKEND
+# escape hatch: reuse-on-HIP, whistle non-CPU/Metal).
 
 # Nix dev shell (optional)
 nix develop

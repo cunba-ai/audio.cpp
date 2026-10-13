@@ -18,7 +18,13 @@ ReuseSession::ReuseSession(runtime::TaskSpec task, runtime::SessionOptions optio
     std::shared_ptr<const ReuseAssets> assets, std::shared_ptr<const model_spec::ModelContract> contract)
     : RuntimeSessionBase(options), task_(task), contract_(std::move(contract)) {
     runtime::validate_spec_backed_session_options(options, *contract_, "reuse", "RE-USE");
-    if (execution_context().backend_type() == core::BackendType::Hip) {
+    // Upstream gates RE-USE off on HIP purely for lack of validation (PR #741).
+    // AUDIOCPP_ENABLE_UNVALIDATED_BACKEND=1 opts into loading anyway so the
+    // combination can be validated on real hardware. The Metal gate below stays
+    // unconditional: that one guards a known kernel bug (invalid audio), not a
+    // validation gap, so it is not covered by the escape hatch.
+    if (execution_context().backend_type() == core::BackendType::Hip &&
+        !core::unvalidated_backend_override("RE-USE", "HIP", "this backend has not been validated")) {
         throw std::runtime_error("RE-USE is disabled on HIP: this backend has not been validated");
     }
     if (execution_context().backend_type() == core::BackendType::Metal) {

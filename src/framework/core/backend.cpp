@@ -11,10 +11,30 @@
 
 namespace engine::core {
 
+// ggml-impl.h (GGML_LOG_WARN & friends) is private to ggml's sources and not on
+// the engine's include path, but ggml_log_internal is GGML_API and is exactly
+// what those macros expand to; declaring it here routes the warning through
+// ggml's log sink, whatever callback the host installed via ggml_log_set.
+extern "C" void ggml_log_internal(enum ggml_log_level level, const char * format, ...);
+
 void ensure_backends_loaded() {
     if (ggml_backend_reg_count() == 0) {
         ggml_backend_load_all();
     }
+}
+
+bool unvalidated_backend_override(const char * family, const char * backend_name, const char * reason) {
+    const char * value = std::getenv("AUDIOCPP_ENABLE_UNVALIDATED_BACKEND");
+    if (value == nullptr || value[0] != '1' || value[1] != '\0') {
+        return false;
+    }
+    ggml_log_internal(GGML_LOG_LEVEL_WARN,
+        "[%s] %s backend enabled via AUDIOCPP_ENABLE_UNVALIDATED_BACKEND without validation (%s); "
+        "this family+backend combination is not validated, results and stability are not guaranteed\n",
+        family != nullptr ? family : "<unknown>",
+        backend_name != nullptr ? backend_name : "<unknown>",
+        reason != nullptr ? reason : "not validated");
+    return true;
 }
 
 namespace {

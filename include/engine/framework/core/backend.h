@@ -90,6 +90,15 @@ void validate_backend_graph_supported(ggml_backend_t backend, ggml_cgraph * grap
 // CPU extra buffers: first throws for a node that views such a weight, or a
 // matmul of one with a non-contiguous input.
 void validate_backend_graph_with_cpu_extra_buffers(ggml_backend_t backend, ggml_cgraph * graph, const char * label);
+// Escape hatch for family-level "unvalidated backend" gates (e.g. RE-USE on
+// HIP, Whistle outside CPU/Metal): those constructors refuse backends the
+// combination has never been validated on. AUDIOCPP_ENABLE_UNVALIDATED_BACKEND=1
+// makes this return true so the gate is skipped and the family loads anyway:
+// one warning naming family, backend, and the gate's reason is routed through
+// ggml's log sink per call. Any other value (or unset) returns false and the
+// gate keeps throwing, preserving upstream's conservative default. Read per
+// call (no caching) so tests can toggle it within one process.
+bool unvalidated_backend_override(const char * family, const char * backend_name, const char * reason);
 BackendMemorySnapshot query_backend_memory(ggml_backend_t backend, int device_hint);
 BackendMemorySnapshot query_backend_memory(const BackendConfig & config);
 ggml_backend_graph_plan_t create_backend_graph_plan_if_host(ggml_backend_t backend, ggml_cgraph * graph);

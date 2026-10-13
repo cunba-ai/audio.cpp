@@ -15,9 +15,14 @@ runtime::SessionOptions require_supported_session(
         throw std::invalid_argument("Whistle currently supports offline ASR only");
     }
     // The encoder graph is validated against the reference dumps on these backends only;
-    // the decoder step graph always runs on a CPU context of its own.
+    // the decoder step graph always runs on a CPU context of its own. This is the same
+    // conservative "not validated there" restriction as RE-USE's HIP gate, just written
+    // as an allowlist: AUDIOCPP_ENABLE_UNVALIDATED_BACKEND=1 lifts it for the other
+    // backends (with a warning) so they can be validated on real hardware.
     if (options.backend.type != engine::core::BackendType::Cpu &&
-        options.backend.type != engine::core::BackendType::Metal) {
+        options.backend.type != engine::core::BackendType::Metal &&
+        !engine::core::unvalidated_backend_override(
+            "Whistle", "non-CPU/Metal", "encoder validated against reference dumps on CPU and Metal only")) {
         throw std::invalid_argument("Whistle currently supports the CPU and Metal backends only");
     }
     if (!contract) {

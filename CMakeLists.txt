@@ -4005,6 +4005,14 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
         add_test(NAME fork_backend_family_resolver_test COMMAND fork_backend_family_resolver_test)
         set_tests_properties(fork_backend_family_resolver_test PROPERTIES LABELS "fork_regression")
 
+        # AUDIOCPP_ENABLE_UNVALIDATED_BACKEND escape hatch for the family-level
+        # "unvalidated backend" gates (reuse HIP, whistle allowlist).
+        add_engine_unittest(fork_unvalidated_backend_override_test tests/unittests/test_fork_unvalidated_backend_override.cpp)
+        target_include_directories(fork_unvalidated_backend_override_test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
+        add_test(NAME fork_unvalidated_backend_override_test COMMAND fork_unvalidated_backend_override_test)
+        set_tests_properties(fork_unvalidated_backend_override_test PROPERTIES LABELS "fork_regression")
+
         # Source anchors for the GPU-only patches (SYCL/Vulkan sources are
         # not compiled on CPU machines; this guards them textually).
         add_executable(fork_source_anchors_test tests/unittests/test_fork_source_anchors.cpp)

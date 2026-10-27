@@ -1175,6 +1175,7 @@ audiocpp_add_model(piper_tts
         src/community_models/piper_tts/frontend.cpp
         src/community_models/piper_tts/vits_runtime.cpp
         src/community_models/piper_tts/rknn_decoder.cpp
+        src/community_models/piper_tts/rknn_duration_encoder.cpp
         src/community_models/piper_tts/session.cpp
     INCLUDES
         engine/community_models/piper_tts/session.h
@@ -3401,6 +3402,12 @@ function(audiocpp_use_utf8_codepage target)
     endif()
 endfunction()
 
+file(GLOB AUDIOCPP_RECIPE_PLUGIN_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/app/recipe/plugins/*.cpp")
+set(AUDIOCPP_RECIPE_SOURCES
+    app/recipe/recipe.cpp
+    ${AUDIOCPP_RECIPE_PLUGIN_SOURCES})
+
 add_executable(audiocpp_cli
     app/common/base64.cpp
     app/common/build_info.cpp
@@ -3410,6 +3417,8 @@ add_executable(audiocpp_cli
     app/cli/request.cpp
     app/streaming/pcm_source.cpp
     app/streaming/streaming.cpp
+    ${AUDIOCPP_RECIPE_SOURCES}
+    app/recipe/cli_recipe.cpp
     app/workflow/execution.cpp
     app/workflow/file_sink.cpp
     app/workflow/pipeline.cpp
@@ -3496,6 +3505,7 @@ add_executable(audiocpp_server
     app/cli/request.cpp
     app/streaming/pcm_source.cpp
     app/streaming/streaming.cpp
+    ${AUDIOCPP_RECIPE_SOURCES}
 )
 
 target_link_libraries(audiocpp_server PRIVATE engine_runtime ggml)
@@ -3807,6 +3817,10 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
         target_link_libraries(moonshine_neon_decoder_test PRIVATE engine_neon)
         add_test(NAME moonshine_neon_decoder_test COMMAND moonshine_neon_decoder_test)
     endif()
+    add_engine_unittest(recipe_test tests/unittests/test_recipe.cpp)
+    target_sources(recipe_test PRIVATE ${AUDIOCPP_RECIPE_SOURCES})
+    target_include_directories(recipe_test PRIVATE app/recipe)
+    add_test(NAME recipe_test COMMAND recipe_test)
     if (ENGINE_ENABLE_VULKAN)
         add_engine_unittest(vulkan_shared_weight_cache_test tests/unittests/test_vulkan_shared_weight_cache.cpp)
         add_test(NAME vulkan_shared_weight_cache_test COMMAND vulkan_shared_weight_cache_test)
@@ -4224,6 +4238,11 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
         target_link_libraries(kokoro_word_timings_test PRIVATE engine_model_kokoro_tts)
         add_test(NAME kokoro_word_timings_test COMMAND kokoro_word_timings_test)
 
+        if (kokoro_tts IN_LIST AUDIOCPP_LINKED_MODELS)
+        add_engine_unittest(kokoro_voice_blending_test tests/unittests/test_kokoro_voice_blending.cpp)
+        add_test(NAME kokoro_voice_blending_test COMMAND kokoro_voice_blending_test)
+        endif()
+
         add_engine_unittest(quantize_chunking_test tests/unittests/test_quantize_chunking.cpp)
         add_test(NAME quantize_chunking_test COMMAND quantize_chunking_test)
 
@@ -4582,6 +4601,14 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
             # engine travels as a configure-time path and the test self-skips without one.
             add_executable(rknn_sidecar_test tests/unittests/test_rknn_sidecar.cpp)
             target_compile_definitions(rknn_sidecar_test PRIVATE ENGINE_HAVE_RKNN=1)
+            # The fake-engine section covers one sidecar per model, and sidecars are
+            # compiled per linked model -- so the section compiles per linked model too,
+            # or a composite without inflect_v2 (the default CI set) fails to link.
+            foreach(model IN LISTS AUDIOCPP_LINKED_MODELS)
+                string(TOUPPER "${model}" model_upper)
+                target_compile_definitions(rknn_sidecar_test PRIVATE
+                    "AUDIOCPP_TEST_HAS_MODEL_${model_upper}=1")
+            endforeach()
             if (ENGINE_RKNN_INCLUDE_DIR)
                 target_include_directories(rknn_sidecar_test PRIVATE ${ENGINE_RKNN_INCLUDE_DIR})
             endif()
@@ -5082,6 +5109,11 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
             NAME minimax_music3_graph_release_policy_test
             COMMAND minimax_music3_graph_release_policy_test
         )
+
+        if (qwen3_tts IN_LIST AUDIOCPP_LINKED_MODELS)
+        # Real-weight integration test; invoked explicitly with --model GGUF.
+        add_engine_unittest(qwen3_tts_decoder_streaming_test tests/qwen3_tts/test_speech_decoder_streaming.cpp)
+        endif()
 
         if (qwen3_forced_aligner IN_LIST AUDIOCPP_LINKED_MODELS)
         add_engine_unittest(qwen3_forced_aligner_processor_test tests/unittests/test_qwen3_forced_aligner_processor.cpp)

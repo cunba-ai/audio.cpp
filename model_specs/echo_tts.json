@@ -6,6 +6,7 @@
   "category": "tts",
   "status": "experimental",
   "tasks": [
+    "tts",
     "clone"
   ],
   "modes": [
@@ -172,7 +173,9 @@
       "Clone",
       "GGUF"
     ],
-    "docs": []
+  "docs": [
+    "docs/models/echo_tts.md"
+  ]
   },
   "sources": [
     {

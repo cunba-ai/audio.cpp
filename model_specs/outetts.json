@@ -114,9 +114,8 @@
       {
         "name": "reference_language",
         "type": "string",
-        "description": "Language code used to align the reference transcript; default en.",
-        "required": false,
-        "default": "en"
+        "description": "Language code used to align the reference transcript; omitted inherits the request text language, then falls back to en.",
+        "required": false
       },
       {
         "name": "text_chunk_size",
@@ -309,7 +308,7 @@
       "GGUF"
     ],
     "docs": [
-      "docs/community_models/outetts.md",
+      "docs/models/outetts.md",
       "docs/reports/outetts_validation.md",
       "docs/gguf.md"
     ]

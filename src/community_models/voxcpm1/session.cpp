@@ -192,10 +192,11 @@ VoxCPM1SessionBase::VoxCPM1SessionBase(runtime::TaskSpec task,
         std::string("VoxCPM1") +
         " only supports offline and streaming sessions");
   }
-  if (task_.task != runtime::VoiceTaskKind::Tts) {
+  if (task_.task != runtime::VoiceTaskKind::Tts &&
+      task_.task != runtime::VoiceTaskKind::VoiceCloning) {
     throw std::runtime_error(
         std::string("VoxCPM1") +
-        " only supports the Tts task");
+        " supports TTS and voice cloning");
   }
 
   options.options = normalize_v1_session_options(std::move(options.options));
@@ -851,6 +852,8 @@ runtime::CapabilitySet capabilities_v1(const VoxCPM1Assets &) {
   out.supported_tasks = {
       {runtime::VoiceTaskKind::Tts,
        {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
+      {runtime::VoiceTaskKind::VoiceCloning,
+       {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
   };
   out.languages = {"Auto"};
   out.supports_speaker_reference = true;
@@ -860,6 +863,7 @@ runtime::CapabilitySet capabilities_v1(const VoxCPM1Assets &) {
 runtime::ModelCliInterface cli_v1(const VoxCPM1Assets &) {
   runtime::ModelCliInterface out;
   out.request_options = {
+      {"language", "code", "Text language hint used for text normalization; also exposed as --language."},
       {"text_chunk_mode", "word_budget|tag_aware|japanese|endline", "Text chunking mode; default tag_aware.", false, "tag_aware"},
       {"seed", "int", "Random seed for MiniCPM and diffusion sampling.", false},
       {"max_tokens", "int", "Maximum MiniCPM output tokens; default 4096. Zero selects model max_length; negative counts are rejected.", false, "4096"},
@@ -913,8 +917,9 @@ public:
   std::unique_ptr<runtime::IVoiceTaskSession> create_task_session(
       const runtime::TaskSpec &task,
       const runtime::SessionOptions &options) const override {
-    if (task.task != runtime::VoiceTaskKind::Tts) {
-      throw std::runtime_error("VoxCPM1 only supports the Tts task");
+    if (task.task != runtime::VoiceTaskKind::Tts &&
+        task.task != runtime::VoiceTaskKind::VoiceCloning) {
+      throw std::runtime_error("VoxCPM1 supports TTS and voice cloning");
     }
     if (task.mode != runtime::RunMode::Offline &&
         task.mode != runtime::RunMode::Streaming) {
@@ -942,6 +947,8 @@ public:
     runtime::CapabilitySet out;
     out.supported_tasks = {
         {runtime::VoiceTaskKind::Tts,
+         {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
+        {runtime::VoiceTaskKind::VoiceCloning,
          {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
     };
     out.supports_speaker_reference = true;

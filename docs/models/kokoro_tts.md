@@ -147,7 +147,7 @@ package.
 | `--voice-id` | voice ID or blend expression | `af_heart` | Built-in voice pack or normalized blend. |
 | `--seed` | integer | random | Decoder noise seed for the current request; omitted requests choose a fresh random seed. |
 | `--speaking-rate` | positive float | `1.0` | Speech speed multiplier. |
-| `--text-chunk-size` | integer chars | `240` | Long-form chunk size. |
+| `--text-chunk-size` | integer chars | `240`; `100` for Chinese and Japanese | Long-form chunk size. Chinese and Japanese chunks phonemize to more symbols per character and must stay under the 510-symbol input limit. |
 
 ## Request Options (use with `--request-option`)
 
@@ -159,7 +159,7 @@ package.
 | `language` | language code | voice prefix | Language selection precedence: voice-style language, transcript language (CLI --language), request-option language, then voice prefix. Must match the selected voice. |
 | `seed` | integer | random | Decoder noise seed for the current request; omitted requests choose a fresh random seed. |
 | `speed` | positive float | `1.0` | Speech speed multiplier; default 1.0. Must be finite and positive. |
-| `text_chunk_size` | integer chars | `240` | Long-form chunk size. |
+| `text_chunk_size` | integer chars | `240`; `100` for Chinese and Japanese | Long-form chunk size. |
 
 ## Session Options (use with `--session-option`)
 
@@ -170,7 +170,7 @@ package.
 | `kokoro_tts.predictor_duration_graph_arena_mb` | positive integer MiB | `384` | Duration predictor host graph-metadata arena. |
 | `kokoro_tts.predictor_text_graph_arena_mb` | positive integer MiB | `256` | Text predictor host graph-metadata arena. |
 | `kokoro_tts.predictor_tail_graph_arena_mb` | positive integer MiB | `640` | Tail predictor host graph-metadata arena. |
-| `kokoro_tts.exec_plan` | JSON object of component plans, encoded as a string | `{}` | Select RKNN with `{"generator":{"impl":"rknn","artifacts":{"main":"/models/generator.rknn"},"params":{"overlap":0,"gain":false}}}`; otherwise keep GGML. Requires `ENGINE_ENABLE_RKNN=ON`; see [component execution plans](../build/rockchip-npu.md#component-execution-plans). |
+| `kokoro_tts.exec_plan` | JSON object of component plans, encoded as a string | `{}` | Select the CPU NEON generator with `{"generator":{"impl":"neon"}}` (`ENGINE_ENABLE_NEON=ON`, AArch64 CPU session). The complete generator uses a NEON execution plan; harmonic conditioning and iSTFT are unchanged. Select RKNN with `{"generator":{"impl":"rknn","artifacts":{"main":"/models/generator.rknn"},"params":{"overlap":0,"gain":false}}}` (`ENGINE_ENABLE_RKNN=ON`); see [component execution plans](../build/rockchip-npu.md#component-execution-plans). Default retains GGML. |
 
 The RKNN generator accepts these fields inside the plan's `generator.params` object, not as
 separate session options. GGML accepts no parameters.

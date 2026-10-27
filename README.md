@@ -104,6 +104,7 @@ Model weights keep the license of their original release, which is separate from
 | **irodori_tts** | TTS, Clone, Design, Ctrl | ja | Irodori-TTS-v4.1-Small<br>Irodori-TTS-v4.1-Anime<br>Irodori-TTS-500M-v3<br>Irodori-TTS-600M-v3-VoiceDesign | GGUF 16/Q8 |
 | **magpie_tts** | TTS | ar-AE, ar-MSA, ar-SA, de, en, es, fr, hi, it, ko, pt-BR, vi, zh | NVIDIA MagpieTTS Multilingual 357M (v2607) with baked speaker prompts and NanoCodec decode | GGUF original/Q8 |
 | **maya1** | TTS, Design, Ctrl | en | Maya1 expressive TTS with natural-language voice design, inline emotion tags, and SNAC decoding | GGUF original/Q8 |
+| **ming3_tts** | TTS, Clone, Design, Ctrl | zh, en, ja, ko, de, fr, es | Ming 3.0 TTS 0.5B | GGUF BF16/Q8 |
 | **miotts** | TTS, Clone | en, ja | MioTTS-1.7B | GGUF 16/Q8 |
 | **moss_tts_local** | TTS, Clone, Ctrl | auto, optional language hint | MOSS-TTS-Local-Transformer-v1.5 | GGUF 16/Q8 |
 | **moss_tts_nano** | TTS, Clone | auto | MOSS-TTS-Nano-100M | GGUF 16/Q8, Stream |
@@ -137,6 +138,7 @@ Model weights keep the license of their original release, which is separate from
 | **index_echo** | ASR, Translate | zh → en, es, ja | Index-Echo-S2TT 2B<br>Index-Echo-S2TT 9B | GGUF original/Q8_0/Q4_K |
 | **marblenet_vad** | VAD | lang agnostic | MarbleNet VAD | Bundled |
 | **micro_wake_word** | Wake | model dependent | microWakeWord MixedNet TFLite models converted to GGUF | GGUF F32, Stream |
+| **ming3_audio** | ASR, Understanding, TTS, Clone, S2S | zh, en | Ming 3.0 Audio Tiny | GGUF BF16/Q8_0/Q4_K |
 | **open_wake_word** | Wake | en | OpenWakeWord Alexa | GGUF F32, Stream |
 | **firered_vad** | VAD | lang agnostic | FireRed VAD / Stream-VAD | GGUF F32/F16/Q8, Stream |
 | **pulsevad** | VAD | lang agnostic | PulseVAD 2.1K Student / 81K Teacher | GGUF F32 |
@@ -220,6 +222,7 @@ Community model ports live under `community_models` to make the ownership bounda
 | **kitten_tts** | TTS | en | GGUF FP32 | Community | [KittenTTS Mini 0.8](docs/models/kitten_tts.md) native 80M-parameter synthesis with eight built-in voices and the shared eSpeak-ng frontend |
 | **kitten_tts2** | TTS, Clone | en, ar, zh, fr, de, hi, it, pt, ru, es | GGUF Q8 | [@dignome](https://github.com/dignome) | [Kitten TTS 2](docs/models/kitten_tts2.md) native Qwen3/S3 synthesis, multilingual presets, and reference-audio cloning; [ready-to-run GGUF](https://huggingface.co/dignome/kitten_tts2) |
 | **lfm2_audio** | ASR, TTS, S2S | en, ja | GGUF F32/16/Q8/Q4, Stream | [@ykhrustalev](https://github.com/ykhrustalev) / Liquid AI | [LFM2.5-Audio](docs/models/lfm2_audio.md) English and Japanese transcription, speech and spoken chat from Liquid AI's published GGUFs: LFM2 hybrid short-conv/attention backbone with a FastConformer encoder for audio input, and a depthformer and LFM2 detokenizer for 24 kHz speech in four built-in English voices; spoken questions get replies of interleaved text and speech; offline or streamed frame by frame |
+| **latentsync** | Video lip sync | lang agnostic | GGUF F32/F16/Q8, experimental | [@0xShug0](https://github.com/0xShug0) | [LatentSync 1.6](docs/models/latentsync.md) audio-conditioned lip synchronization with optional DeepCache and reduced-memory execution modes |
 | **liveavatar** | Audio-to-video | auto | GGUF NVFP4 | [@0xShug0](https://github.com/0xShug0) | [LiveAvatar](docs/models/liveavatar.md) audio-to-video avatar generation with Wan2.2 S2V and an optional low-VRAM denoiser path |
 | **minimax_h3** | Video, Music, TTS/Dialogue | auto | GGUF Q4/INT8 | [@0xShug0](https://github.com/0xShug0) | [MiniMax-H3](docs/models/minimax_h3.md) text-to-audio/video generation with Q4_K and optional INT8 ConvRot DiT |
 | **minimax_music3** | Music | auto | GGUF Q4/Q8 | [@0xShug0](https://github.com/0xShug0), [@JoeMattie](https://github.com/JoeMattie) | [MiniMax Music 3](docs/models/minimax_music3.md) text-to-music generation with lyrics conditioning |

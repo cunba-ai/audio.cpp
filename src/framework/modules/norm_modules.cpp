@@ -214,6 +214,13 @@ core::TensorValue build_norm(
     }
     core::TensorValue normalized = core::wrap_tensor(normalized_tensor, input.shape,
         config.cuda_f16_output ? GGML_TYPE_F16 : GGML_TYPE_F32);
+    if (config.normalized_round_type.has_value()) {
+        normalized.tensor = *config.normalized_round_type == GGML_TYPE_BF16
+            ? ggml_round_bf16(ctx.ggml, normalized.tensor)
+            : ggml_cast(ctx.ggml,
+                ggml_cast(ctx.ggml, normalized.tensor, *config.normalized_round_type), GGML_TYPE_F32);
+        normalized.type = GGML_TYPE_F32;
+    }
     return apply_affine(ctx, normalized, config, weights);
 }
 
@@ -411,7 +418,14 @@ core::TensorValue GroupNormModule::build(
         return core::wrap_tensor(normalized, input.shape, GGML_TYPE_F16);
     }
     auto x = core::ensure_backend_addressable_layout(ctx, ensure_f32(ctx, input));
-    if (x.shape.rank == 3) {
+    if (config_.metal_row_norm && ctx.backend_type == core::BackendType::Metal) {
+        // Each batch/group is one independent row with the same mean, variance and epsilon.
+        const auto rows = x.shape.dims[0] * config_.groups;
+        auto * rows_tensor = ggml_reshape_2d(ctx.ggml, x.tensor, x.shape.num_elements() / rows, rows);
+        auto * normalized = ggml_norm(ctx.ggml, rows_tensor, config_.eps);
+        x = core::wrap_tensor(ggml_reshape_4d(ctx.ggml, normalized,
+            x.tensor->ne[0], x.tensor->ne[1], x.tensor->ne[2], x.tensor->ne[3]), x.shape, GGML_TYPE_F32);
+    } else if (x.shape.rank == 3) {
         auto x_4d = ggml_reshape_4d(
             ctx.ggml,
             x.tensor,

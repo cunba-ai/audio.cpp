@@ -540,6 +540,8 @@ if (ENGINE_ENABLE_NEON)
         src/framework/neon/execution.cpp
         src/framework/neon/worker_team.cpp
         src/framework/neon/blocks.cpp
+        src/framework/neon/hifigan.cpp
+        src/framework/neon/vocoder_operators.cpp
         src/framework/neon/kernels.cpp
     )
     target_include_directories(engine_neon PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
@@ -627,6 +629,7 @@ add_library(engine_core OBJECT
     src/framework/modules/conv_modules.cpp
     src/framework/modules/zipformer_modules.cpp
     src/framework/modules/speech_encoders/whisper_embedding.cpp
+    src/framework/modules/speech_decoders/ming_flow_runtime.cpp
     src/framework/modules/speech_encoders/whisper_frontend.cpp
     src/framework/modules/speaker_encoders/campplus_encoder.cpp
     src/framework/modules/speech_encoders/s3_tokenizer.cpp
@@ -716,6 +719,7 @@ add_library(engine_core OBJECT
     src/framework/codecs/oobleck_audio_vae_runtime.cpp
     src/framework/codecs/redae_codec_runtime.cpp
     src/framework/codecs/snac_decoder_runtime.cpp
+    src/framework/codecs/ming_audio_vae_runtime.cpp
     src/framework/codecs/s3gen_runtime.cpp
     src/framework/conditioners/clap_audio_conditioner_runtime.cpp
     src/framework/conditioners/cav_mae_st_conditioner_runtime.cpp
@@ -942,6 +946,9 @@ audiocpp_add_model(kokoro_tts
 )
 if(MSVC)
     target_compile_options(engine_model_kokoro_tts PRIVATE /utf-8)
+endif()
+if(ENGINE_ENABLE_NEON)
+    target_sources(engine_model_kokoro_tts PRIVATE src/models/kokoro_tts/neon_generator.cpp)
 endif()
 if(AUDIOCPP_STATIC_ESPEAK)
     target_compile_definitions(engine_model_kokoro_tts PRIVATE AUDIOCPP_STATIC_ESPEAK=1)
@@ -1284,6 +1291,25 @@ audiocpp_add_model(minimax_h3
         engine::models::minimax_h3::make_minimax_h3_loader
 )
 
+audiocpp_add_model(latentsync
+    SOURCES
+        src/community_models/latentsync/whisper.cpp
+        src/community_models/latentsync/unet.cpp
+        src/community_models/latentsync/sd_vae.cpp
+        src/community_models/latentsync/face.cpp
+        src/community_models/latentsync/sampling.cpp
+        src/community_models/latentsync/pipeline.cpp
+        src/community_models/latentsync/video.cpp
+        src/community_models/latentsync/session.cpp
+    INCLUDES
+        engine/community_models/latentsync/session.h
+    LOADERS
+        engine::models::latentsync::make_latentsync_loader
+)
+if (GGML_CUDA_CUDNN_CONV2D)
+    target_compile_definitions(engine_model_latentsync PRIVATE GGML_CUDA_CUDNN_CONV2D=1)
+endif()
+
 audiocpp_add_model(liveavatar
     SOURCES
         src/community_models/liveavatar/assets.cpp
@@ -1597,6 +1623,33 @@ add_library(utf8proc_vendor OBJECT external/utf8proc/utf8proc.c)
 set_target_properties(utf8proc_vendor PROPERTIES EXCLUDE_FROM_ALL TRUE POSITION_INDEPENDENT_CODE ON)
 target_include_directories(utf8proc_vendor PUBLIC external/utf8proc)
 target_compile_definitions(utf8proc_vendor PUBLIC UTF8PROC_STATIC)
+
+audiocpp_add_model(ming3_audio
+    SOURCES
+        src/models/ming3_audio/assets.cpp
+        src/models/ming3_audio/audio_encoder.cpp
+        src/models/ming3_audio/backbone.cpp
+        src/models/ming3_audio/frontend.cpp
+        src/models/ming3_audio/session.cpp
+        src/models/ming3_audio/talker.cpp
+        src/models/ming3_audio/talker_frontend.cpp
+    INCLUDES
+        engine/models/ming3_audio/session.h
+    LOADERS
+        engine::models::ming3_audio::make_ming3_audio_loader
+)
+
+audiocpp_add_model(ming3_tts
+    SOURCES
+        src/models/ming3_tts/assets.cpp
+        src/models/ming3_tts/generator.cpp
+        src/models/ming3_tts/prompt.cpp
+        src/models/ming3_tts/session.cpp
+    INCLUDES
+        engine/models/ming3_tts/session.h
+    LOADERS
+        engine::models::ming3_tts::make_ming3_tts_loader
+)
 
 audiocpp_add_model(plapre
     SOURCES
@@ -2673,6 +2726,21 @@ audiocpp_add_model(lfm2_audio
         engine/community_models/lfm2_audio/session.h
     LOADERS
         engine::community_models::lfm2_audio::make_lfm2_audio_loader
+)
+
+audiocpp_add_model(xtts_v2
+    SOURCES
+        src/community_models/xtts_v2/assets.cpp
+        src/community_models/xtts_v2/frontend.cpp
+        src/community_models/xtts_v2/gpt.cpp
+        src/community_models/xtts_v2/loader.cpp
+        src/community_models/xtts_v2/session.cpp
+        src/community_models/xtts_v2/tokenizer_text.cpp
+        src/community_models/xtts_v2/vocoder.cpp
+    INCLUDES
+        engine/community_models/xtts_v2/loader.h
+    LOADERS
+        engine::models::xtts_v2::make_xtts_v2_loader
 )
 
 set(AUDIOCPP_ENABLED_MODELS "")
@@ -3783,6 +3851,10 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
         endif()
     endif()
     if (ENGINE_ENABLE_NEON)
+        add_executable(neon_vocoder_test tests/unittests/test_neon_vocoder.cpp)
+        target_link_libraries(neon_vocoder_test PRIVATE engine_neon)
+        add_test(NAME neon_vocoder_test COMMAND neon_vocoder_test)
+        set_tests_properties(neon_vocoder_test PROPERTIES SKIP_RETURN_CODE 77)
         add_engine_unittest(neon_blocks_test tests/unittests/test_neon_blocks.cpp)
         target_include_directories(neon_blocks_test PRIVATE src/framework/neon)
         add_test(NAME neon_blocks_test COMMAND neon_blocks_test)
@@ -4595,6 +4667,16 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
     endif()
 
     if (ENGINE_BUILD_MODEL_TESTS)
+        if("ming3_audio" IN_LIST AUDIOCPP_LINKED_MODELS)
+            add_executable(ming3_audio_thinker_parity EXCLUDE_FROM_ALL tests/ming3_audio/thinker_parity.cpp)
+            target_link_libraries(ming3_audio_thinker_parity PRIVATE engine_runtime ggml)
+            add_executable(ming3_audio_talker_parity EXCLUDE_FROM_ALL tests/ming3_audio/talker_parity.cpp)
+            target_link_libraries(ming3_audio_talker_parity PRIVATE engine_runtime ggml)
+        endif()
+        if("ming3_tts" IN_LIST AUDIOCPP_LINKED_MODELS)
+            add_executable(ming3_tts_component_parity EXCLUDE_FROM_ALL tests/ming3_tts/component_parity.cpp)
+            target_link_libraries(ming3_tts_component_parity PRIVATE engine_runtime ggml)
+        endif()
         if (ENGINE_ENABLE_RKNN)
             # The board-only half of the RKNN path: residency pricing, the driver's cached
             # self-report and a real context build. The repo ships no compiled engines, so the
@@ -4621,6 +4703,20 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
             target_link_libraries(plapre_codec_parity PRIVATE engine_runtime ggml)
         endif()
 
+        if (latentsync IN_LIST AUDIOCPP_LINKED_MODELS)
+            add_executable(latentsync_graph_ops_test tests/latentsync/graph_ops.cpp)
+            target_link_libraries(latentsync_graph_ops_test PRIVATE engine_runtime ggml)
+            add_test(NAME latentsync_graph_ops_cpu COMMAND latentsync_graph_ops_test cpu)
+            if (GGML_METAL)
+                add_test(NAME latentsync_graph_ops_metal COMMAND latentsync_graph_ops_test metal)
+            endif()
+            add_executable(latentsync_component_parity tests/latentsync/component_parity.cpp)
+            target_link_libraries(latentsync_component_parity PRIVATE engine_runtime ggml)
+            if (ENGINE_ENABLE_OPENMP)
+                target_link_libraries(latentsync_graph_ops_test PRIVATE OpenMP::OpenMP_CXX)
+                target_link_libraries(latentsync_component_parity PRIVATE OpenMP::OpenMP_CXX)
+            endif()
+        endif()
         if (sanotts IN_LIST AUDIOCPP_LINKED_MODELS AND inflect_v2 IN_LIST AUDIOCPP_LINKED_MODELS)
             add_engine_unittest(espeak_frontend_probe tests/unittests/espeak_frontend_probe.cpp)
             if(AUDIOCPP_STATIC_ESPEAK)

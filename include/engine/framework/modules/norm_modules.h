@@ -13,6 +13,7 @@ struct NormConfig {
     bool use_bias = true;
     bool preserve_input_layout = false;
     bool cuda_f16_output = false;
+    std::optional<ggml_type> normalized_round_type = std::nullopt;
 };
 
 struct NormWeights {
@@ -86,6 +87,8 @@ struct GroupNormConfig {
     bool use_weight = true;
     bool use_bias = true;
     bool cuda_f16_output = false;
+    // Metal: row normalization avoids GroupNorm's missing batch handling and 32-thread bottleneck.
+    bool metal_row_norm = false;
 };
 
 class GroupNormModule {

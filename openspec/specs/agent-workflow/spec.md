@@ -132,3 +132,10 @@
 #### Scenario: 冲突涉及 fork 私有修复
 - **WHEN** 冲突文件含 fork 私有修复（如 ggml-cuda teardown、ssm-conv、reuse HIP 门禁、qwen35 KV 零初始化）
 - **THEN** 以「上游新功能 + fork 修复并存」为解决目标，不得用任一侧整体覆盖另一侧
+
+### Requirement: CAPI E2E 套件按 sound-rs 调用方式驱动 DLL
+`capi/test/e2e/` SHALL 提供 `audiocpp_e2e.c`（运行时 `LoadLibraryA`+`GetProcAddress` 加载 `audiocpp.dll`，镜像 sound-rs `backend/audiocpp.rs` 的 dlopen 调用姿态：符号表、err/clear_error 协议、进度回调装卸、`n_samples` 为交错总数约定、输出 mono 混缩）与 `run_e2e.ps1` 编排器。场景覆盖 SHALL 包含：设备/版本探测、TTS（含 load_model_ex 会话选项与进度回调）、CLON（tts_with_voice_ref + reference_text）、VDES、ASR（离线+词级）、流式 ASR（start/push/finish）、流式 TTS（pull）、VAD（NULL 路径内嵌 silero + energy）、Diar、Align、SEP（transform_stems）、VC（audio_transform）、GEN（generate）、MIDI、嵌入式 denoise/super_resolve、错误路径（坏路径不崩溃）。模型资产 SHALL 从 4080（`D:\iStation\Models\sound\audiocpp`）拷贝到仓库外模型根（默认 `C:\audiocpp-e2e\models`），不入库。
+
+#### Scenario: 跑一次 E2E
+- **WHEN** 构建出 audiocpp.dll 并执行 `run_e2e.ps1`
+- **THEN** 每个场景输出机器可读结果行，编排器校验产出阈值（时长/RMS/文本关键词/stem 数等）并汇总，任一失败退出码非零

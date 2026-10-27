@@ -225,8 +225,17 @@ int main(int argc, char ** argv) {
             const std::vector<int32_t> invalid{12, 0, 1, 2};
             ggml_backend_tensor_set(ids, invalid.data(), 0, invalid.size() * sizeof(int32_t));
             bool rejected = false;
-            try { ggml_backend_sched_graph_compute(scheduler.get(), graph); }
-            catch (const std::runtime_error & e) { rejected = std::string(e.what()).find("routing ID out of range") != std::string::npos; }
+            // MSVC /EHsc assumes extern "C" functions (ggml_backend_sched_graph_compute)
+            // never throw C++ exceptions and drops a catch around a direct call as dead
+            // code, letting the eval callback's std::runtime_error escape to main().
+            // Route the call through a volatile function pointer so the compiler cannot
+            // inline it back into a provably-non-throwing extern "C" call.
+            enum ggml_status (* const volatile compute)(ggml_backend_sched_t, struct ggml_cgraph *) =
+                &ggml_backend_sched_graph_compute;
+            try { (void) compute(scheduler.get(), graph); }
+            catch (const std::runtime_error & e) {
+                rejected = std::string(e.what()).find("routing ID out of range") != std::string::npos;
+            }
             if (!rejected) throw std::runtime_error("invalid routing IDs were not rejected");
             source->release_storage();
 #if !defined(_WIN32)

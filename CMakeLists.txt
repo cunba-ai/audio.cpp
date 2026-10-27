@@ -509,10 +509,13 @@ function(audiocpp_configure_runtime_object target_name)
 endfunction()
 
 function(audiocpp_add_model target_name)
-    cmake_parse_arguments(ARG "" "" "SOURCES;INCLUDES;LOADERS;ALIASES;DEPENDS" ${ARGN})
+    cmake_parse_arguments(ARG "" "" "SOURCES;INCLUDES;LOADERS;ALIASES;DEPENDS;OBJECT_LIBRARIES" ${ARGN})
     add_library(engine_model_${target_name} OBJECT ${ARG_SOURCES})
     set_target_properties(engine_model_${target_name} PROPERTIES EXCLUDE_FROM_ALL TRUE)
     audiocpp_configure_runtime_object(engine_model_${target_name})
+    if (ARG_OBJECT_LIBRARIES)
+        target_link_libraries(engine_model_${target_name} PRIVATE ${ARG_OBJECT_LIBRARIES})
+    endif()
     if (ENGINE_ENABLE_NEON)
         target_compile_definitions(engine_model_${target_name} PRIVATE ENGINE_HAVE_NEON=1)
     endif()
@@ -520,6 +523,7 @@ function(audiocpp_add_model target_name)
     set(AUDIOCPP_MODEL_${target_name}_INCLUDES "${ARG_INCLUDES}" PARENT_SCOPE)
     set(AUDIOCPP_MODEL_${target_name}_LOADERS "${ARG_LOADERS}" PARENT_SCOPE)
     set(AUDIOCPP_MODEL_${target_name}_DEPENDS "${ARG_DEPENDS}" PARENT_SCOPE)
+    set(AUDIOCPP_MODEL_${target_name}_OBJECT_LIBRARIES "${ARG_OBJECT_LIBRARIES}" PARENT_SCOPE)
     set(AUDIOCPP_MODEL_ALIAS_${target_name} ${target_name} PARENT_SCOPE)
     foreach(alias IN LISTS ARG_ALIASES)
         set(AUDIOCPP_MODEL_ALIAS_${alias} ${target_name} PARENT_SCOPE)
@@ -530,6 +534,7 @@ if (ENGINE_ENABLE_NEON)
     add_library(engine_neon OBJECT
         src/framework/neon/tensor.cpp
         src/framework/neon/operators.cpp
+        src/framework/neon/tensor_operators.cpp
         src/framework/neon/execution.cpp
         src/framework/neon/worker_team.cpp
         src/framework/neon/blocks.cpp
@@ -1023,6 +1028,9 @@ audiocpp_add_model(micro_wake_word
     LOADERS
         engine::models::micro_wake_word::make_micro_wake_word_loader
 )
+if(ENGINE_ENABLE_NEON)
+    target_sources(engine_model_micro_wake_word PRIVATE src/models/micro_wake_word/neon_network.cpp)
+endif()
 
 audiocpp_add_model(sherpa_kws
     SOURCES
@@ -1597,8 +1605,9 @@ audiocpp_add_model(plapre
         engine/models/plapre/session.h
     LOADERS
         engine::models::plapre::make_plapre_loader
+    OBJECT_LIBRARIES
+        utf8proc_vendor
 )
-target_link_libraries(engine_model_plapre PRIVATE utf8proc_vendor)
 
 audiocpp_add_model(fish_drama3
     SOURCES
@@ -1614,9 +1623,9 @@ audiocpp_add_model(fish_drama3
         engine/community_models/fish_drama3/loader.h
     LOADERS
         engine::models::fish_drama3::make_fish_drama3_loader
+    OBJECT_LIBRARIES
+        utf8proc_vendor
 )
-
-target_link_libraries(engine_model_fish_drama3 PRIVATE utf8proc_vendor)
 
 audiocpp_add_model(audio8_tts
     SOURCES
@@ -2814,12 +2823,15 @@ set(AUDIOCPP_RUNTIME_OBJECTS
 if (ENGINE_ENABLE_NEON)
     list(APPEND AUDIOCPP_RUNTIME_OBJECTS $<TARGET_OBJECTS:engine_neon>)
 endif()
+set(AUDIOCPP_MODEL_OBJECT_LIBRARIES "")
 foreach(model_name IN LISTS AUDIOCPP_LINKED_MODELS)
     list(APPEND AUDIOCPP_RUNTIME_OBJECTS $<TARGET_OBJECTS:engine_model_${model_name}>)
+    list(APPEND AUDIOCPP_MODEL_OBJECT_LIBRARIES ${AUDIOCPP_MODEL_${model_name}_OBJECT_LIBRARIES})
 endforeach()
-if("fish_drama3" IN_LIST AUDIOCPP_LINKED_MODELS OR "plapre" IN_LIST AUDIOCPP_LINKED_MODELS)
-    list(APPEND AUDIOCPP_RUNTIME_OBJECTS $<TARGET_OBJECTS:utf8proc_vendor>)
-endif()
+list(REMOVE_DUPLICATES AUDIOCPP_MODEL_OBJECT_LIBRARIES)
+foreach(object_library IN LISTS AUDIOCPP_MODEL_OBJECT_LIBRARIES)
+    list(APPEND AUDIOCPP_RUNTIME_OBJECTS $<TARGET_OBJECTS:${object_library}>)
+endforeach()
 
 message(STATUS "audio.cpp model composite: ${AUDIOCPP_MODEL_SET} selected [${AUDIOCPP_ENABLED_MODELS}] linked [${AUDIOCPP_LINKED_MODELS}]")
 add_library(engine_runtime STATIC
@@ -3725,6 +3737,9 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
             src/community_models/whistle_asr/graph.cpp
             src/community_models/whistle_asr/runtime.cpp)
         target_link_libraries(whistle_assets_test PRIVATE engine_runtime ggml)
+        if (ENGINE_ENABLE_OPENMP)
+            target_link_libraries(whistle_assets_test PRIVATE OpenMP::OpenMP_CXX)
+        endif()
         set(AUDIOCPP_WHISTLE_TEST_MODEL "" CACHE FILEPATH "Locally converted Whistle GGUF for integration tests")
         if (AUDIOCPP_WHISTLE_TEST_MODEL)
             add_test(NAME whistle_asr_integration COMMAND whistle_assets_test
@@ -3753,6 +3768,9 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
         target_include_directories(neon_library_test PRIVATE tests/unittests)
         target_link_libraries(neon_library_test PRIVATE engine_neon)
         add_test(NAME neon_library_test COMMAND neon_library_test)
+        add_executable(neon_tensor_ops_test tests/unittests/test_neon_tensor_ops.cpp)
+        target_link_libraries(neon_tensor_ops_test PRIVATE engine_neon)
+        add_test(NAME neon_tensor_ops_test COMMAND neon_tensor_ops_test)
     endif()
     if (sanotts IN_LIST AUDIOCPP_LINKED_MODELS)
         add_engine_unittest(sanotts_neon_decoder_test tests/unittests/test_sanotts_neon_decoder.cpp)
@@ -3805,6 +3823,14 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
     endif()
 
     if (ENGINE_ENABLE_CUDA)
+        add_engine_unittest(torch_random_cuda_multi_device_test
+            tests/unittests/test_torch_random_cuda_multi_device.cu)
+        target_include_directories(torch_random_cuda_multi_device_test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(torch_random_cuda_multi_device_test PRIVATE CUDA::cudart)
+        add_test(NAME torch_random_cuda_multi_device_test COMMAND torch_random_cuda_multi_device_test)
+        set_tests_properties(torch_random_cuda_multi_device_test PROPERTIES SKIP_RETURN_CODE 77)
+
         add_engine_unittest(cuda_bias_fusion_test tests/unittests/test_cuda_bias_fusion.cpp)
         add_test(NAME cuda_bias_fusion_test COMMAND cuda_bias_fusion_test)
         set_tests_properties(cuda_bias_fusion_test PROPERTIES SKIP_RETURN_CODE 77)

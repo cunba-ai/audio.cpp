@@ -865,6 +865,23 @@ audiocpp_add_model(pulsevad
         engine::models::pulsevad::make_pulsevad_loader
 )
 
+# Earshot VAD: plain C++ port with bundled weights (assets/framework/models/earshot_vad).
+audiocpp_add_model(earshot_vad
+    SOURCES
+        src/community_models/earshot_vad/runtime.cpp
+        src/community_models/earshot_vad/session.cpp
+    INCLUDES
+        engine/community_models/earshot_vad/session.h
+    LOADERS
+        engine::community_models::earshot_vad::make_earshot_vad_loader
+    ALIASES
+        earshot
+)
+if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    # Keep multiply-add rounding identical to the Rust reference.
+    set_source_files_properties(src/community_models/earshot_vad/runtime.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+endif()
+
 audiocpp_add_model(smart_turn
     SOURCES
         src/models/smart_turn/runtime.cpp
@@ -1890,6 +1907,7 @@ audiocpp_add_model(irodori_tts
         src/models/irodori_tts/codec.cpp
         src/models/irodori_tts/condition_encoder.cpp
         src/models/irodori_tts/duration.cpp
+        src/models/irodori_tts/mf_dit.cpp
         src/models/irodori_tts/rf_dit.cpp
         src/models/irodori_tts/session.cpp
         src/models/irodori_tts/tokenizer_text.cpp
@@ -3635,6 +3653,11 @@ if (ENGINE_ENABLE_OPENMP)
 endif()
 
 if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TESTS)
+    if (earshot_vad IN_LIST AUDIOCPP_LINKED_MODELS)
+        add_executable(earshot_vad_probe tests/earshot_vad/probe.cpp)
+        target_link_libraries(earshot_vad_probe PRIVATE engine_runtime ggml)
+    endif()
+
     if (firered_vad IN_LIST AUDIOCPP_LINKED_MODELS)
         add_executable(firered_vad_probe tests/firered_vad/probe.cpp)
         target_link_libraries(firered_vad_probe PRIVATE engine_runtime ggml)
@@ -3941,6 +3964,9 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
         add_engine_unittest(cuda_bias_fusion_test tests/unittests/test_cuda_bias_fusion.cpp)
         add_test(NAME cuda_bias_fusion_test COMMAND cuda_bias_fusion_test)
         set_tests_properties(cuda_bias_fusion_test PROPERTIES SKIP_RETURN_CODE 77)
+        add_engine_unittest(cuda_round_bf16_fusion_test tests/unittests/test_cuda_round_bf16_fusion.cpp)
+        add_test(NAME cuda_round_bf16_fusion_test COMMAND cuda_round_bf16_fusion_test)
+        set_tests_properties(cuda_round_bf16_fusion_test PROPERTIES SKIP_RETURN_CODE 77)
         add_engine_unittest(cuda_rope_rows_test tests/unittests/test_cuda_rope_rows.cpp)
         add_test(NAME cuda_rope_rows_test COMMAND cuda_rope_rows_test)
         set_tests_properties(cuda_rope_rows_test PROPERTIES SKIP_RETURN_CODE 77)
@@ -4218,6 +4244,10 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
         add_engine_unittest(safetensors_metadata_depth_test tests/unittests/test_safetensors_metadata_depth.cpp)
         add_test(NAME safetensors_metadata_depth_test COMMAND safetensors_metadata_depth_test)
 
+        add_engine_unittest(vad_loader_test tests/unittests/test_vad_loader.cpp)
+        target_compile_definitions(vad_loader_test PRIVATE ENGINE_REPO_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
+        add_test(NAME vad_loader_test COMMAND vad_loader_test)
+
         add_engine_unittest(torch_bin_storage_offset_test tests/unittests/test_torch_bin_storage_offset.cpp)
         add_test(NAME torch_bin_storage_offset_test COMMAND torch_bin_storage_offset_test)
 
@@ -4226,6 +4256,19 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
 
         add_engine_unittest(audio_chunking_test tests/unittests/test_audio_chunking.cpp)
         add_test(NAME audio_chunking_test COMMAND audio_chunking_test)
+
+        if (earshot_vad IN_LIST AUDIOCPP_LINKED_MODELS)
+            add_engine_unittest(earshot_vad_test tests/unittests/test_earshot_vad.cpp)
+            target_compile_definitions(earshot_vad_test PRIVATE
+                ENGINE_REPO_ROOT="${CMAKE_CURRENT_SOURCE_DIR}"
+                ENGINE_TEST_ASSET_ROOT="${ENGINE_UNITTEST_ASSET_ROOT}"
+            )
+            add_test(NAME earshot_vad_test COMMAND earshot_vad_test)
+            # Same checks with the SSE2 minGRU kernel instead of AVX2.
+            add_test(NAME earshot_vad_baseline_test COMMAND earshot_vad_test)
+            set_tests_properties(earshot_vad_baseline_test PROPERTIES ENVIRONMENT "AUDIOCPP_EARSHOT_BASELINE=1")
+        endif()
+
         add_engine_unittest(partial_text_test tests/unittests/test_partial_text.cpp)
         add_test(NAME partial_text_test COMMAND partial_text_test)
         add_engine_unittest(streaming_audio_test tests/unittests/test_streaming_audio.cpp)
@@ -5064,6 +5107,12 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
             target_link_libraries(moss_tts_nano_reference_cache_test PRIVATE OpenMP::OpenMP_CXX)
         endif()
         add_test(NAME moss_tts_nano_reference_cache_test COMMAND moss_tts_nano_reference_cache_test)
+        endif()
+
+        if (irodori_tts IN_LIST AUDIOCPP_LINKED_MODELS)
+        add_executable(irodori_schedule_test tests/irodori_tts/test_schedule.cpp)
+        target_link_libraries(irodori_schedule_test PRIVATE engine_runtime ggml)
+        add_test(NAME irodori_schedule_test COMMAND irodori_schedule_test --log)
         endif()
 
         add_executable(moss_tts_v15_prompt_parity

@@ -99,3 +99,25 @@ the same suite.
   into `<ModelsRoot>\model_specs\` — supertonic (HF directory layout) and the
   legacy-spec GGUFs (sortformer_diar, htdemucs) resolve their contracts from
   there.
+
+## Baseline verdict: pre-merge DLL vs post-PR#41 DLL (2026-10-28)
+
+Ran the same 23-scenario suite against the pre-merge fork build (791d3cd8)
+and the PR#41 build, plus targeted probes (progress callbacks, nemotron
+streaming, stale-GGUF loading):
+
+| check | pre-merge | PR#41 | verdict |
+|---|---|---|---|
+| full suite | 18/23 | 23/23 | PR#41 strict superset |
+| tts/asr progress callbacks | 1 / 2 calls | 1 / 2 calls | identical |
+| nemotron streaming decode | empty | empty | pre-existing upstream |
+| stale 1.7b base GGUF (load) | fails | fails (same error) | model file, not the DLL |
+| moss tts / tts-batch wall time | 53 s / 105 s | 1.5 s / 3.2 s | ~35x faster |
+
+The 5 pre-merge-only failures are all missing capabilities in the old
+engine, each unlocked by PR#41: pocket rejects CLON, no
+`qwen3_tts.attention` session option, base rejects the CLON task,
+voice-design rejects the TTS task, parakeet rejects `return_timestamps`.
+No scenario regressed pre-merge -> PR#41. Conclusion for sound-rs:
+upgrading to a PR#41-based audiocpp.dll is zero-regression, strictly
+additive.

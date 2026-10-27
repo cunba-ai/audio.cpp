@@ -75,11 +75,49 @@ Select the F32 VAE:
 
 The component paths are relative to `--model`; absolute paths are rejected.
 
+## Performance Controls
+
+Defaults preserve the existing generation path. To enable the performance preset:
+
+```bash
+--session-option yue2.perf_mode=cuda_perf
+```
+
+| Session option | Default (`off`) | `cuda_perf` |
+|---|---|---|
+| `yue2.packed_projections` | `false` | `true` |
+| `yue2.kv_cache_alignment` | `1` | `256` |
+| `yue2.mem_saver` | `true` | `false` |
+| `yue2.vae_weight_type` | Shared `weight_type`, otherwise `native` | Unchanged |
+| `yue2.vae_tile_frames` | Model configuration (normally `1024`) | Model configuration capped at `512` |
+| `yue2.attention` | `auto` | `auto` (unchanged) |
+
+Packing combines AR QKV and gate/up projections without changing their weight
+dtype. KV alignment pads AR cache capacity without changing the refill boundary.
+With `mem_saver=false`, AR/NAR runtimes and cached graphs remain session-owned
+between requests instead of being released after their stages. This can
+substantially increase peak VRAM. Packing, aligned attention and different VAE
+tile boundaries can change numerical results. The preset does not change weight dtype.
+
+Each control can be set independently of the preset. Explicit session options
+override preset values, including `false` and `1`. For example, retain the other
+preset settings but release stages between requests:
+
+```bash
+--session-option yue2.perf_mode=cuda_perf \
+--session-option yue2.mem_saver=true
+```
+
+`vae_tile_frames` is the latent core length; the model's halo is unchanged.
+`attention` controls NAR attention only; AR already uses flash attention.
+The `cuda_perf` preset is tuned for CUDA but is not backend-gated.
+
 ## AR and NAR LoRA
 
 Use `yue2.ar_lora` for score/semantic planning and `yue2.nar_lora` for acoustic
-rendering. Either adapter can be used alone or both together. Use unfused
-SafeTensors files, not the `_comfyui` layouts. Changing adapters requires a new
+rendering. Either adapter can be used alone or both together. Native A/B,
+PEFT A/B, and ComfyUI up/down SafeTensors layouts are supported, including
+the instrumental adapter's fused QKV and gate/up projections. Changing adapters requires a new
 session; merged weights are cached within that session, not merged per request.
 
 For example, add the acoustic adapter alongside the AR adapter:
@@ -95,7 +133,7 @@ deltas. Its scale applies only to deltas; replacements are loaded at full streng
 A scale of `0` disables the entire adapter, including replacements. No separate
 audio-tokenizer head is needed for text-to-music generation.
 
-Load an unfused YuE2 AR adapter with session options:
+Load a YuE2 AR adapter with session options:
 
 ```bash
 --session-option yue2.ar_lora=/path/to/ar_lora_inst_v3abc.safetensors \
@@ -105,18 +143,19 @@ Load an unfused YuE2 AR adapter with session options:
 
 Both FP32 and BF16 adapter files are supported. Use the standard A/B files from
 [the instrumental adapter repository](https://huggingface.co/Mothersuperior/YuE2-instrumental-cot-full-loras),
-not its ComfyUI fused file. NAR adapters are not supported by this option.
+including its ComfyUI fused file. Use `yue2.nar_lora` for NAR adapters.
 Relative adapter paths resolve under the model root. Reload the session after
 changing the adapter or scale; `0` disables it. With no adapter, weight loading
 and generation are unchanged.
 
 The adapter modifies AR attention and MLP projections at load time, using
-`BF16(W + BF16(scale * (B @ A)))`. There is no extra alpha/rank scaling or
-per-token adapter computation. NAR and VAE weights are unchanged.
+`BF16(W + BF16(scale * (B @ A)))`. Native YuE2 adapters retain their direct
+scale; other layouts apply their alpha/rank metadata when present. There is
+no per-token adapter computation. AR adapters leave NAR and VAE weights unchanged.
 Merged AR tensors are cached in CPU memory in their upload dtype for the session,
 so later requests skip merging. Only one dtype per adapted tensor is retained;
-unloading the session frees the cache. AR weights are still released from VRAM
-before VAE decoding.
+unloading the session frees the cache. By default (`mem_saver=true`), AR weights
+are still released from VRAM before VAE decoding.
 Use the BF16 main GGUF for the closest match to the original weights. Loading
 onto Q8/Q4 bases merges into dequantized weights and requantizes the result;
 it is not equivalent to merging into the original BF16 model first.
@@ -151,7 +190,7 @@ Inline ABC can be passed with `--request-option abc=<abc text>`.
 ## Generated ABC Export
 
 When the model generates its own plan (`cot=melody` or `cot=full` with no
-external `abc` / `abc_file`), the decoded ABC score is attached to the result
+external `abc` / `abc_file`), a nonempty decoded ABC score is attached to the result
 as a `score` artifact (`text/vnd.abc`). The WebUI shows a Save ABC download in
 the result panel, and the CLI writes `score.abc` when `--out-dir` is set:
 
@@ -215,13 +254,14 @@ python3 -c "import json, numpy; numpy.save('semantic.npy', numpy.array(json.load
 | Value | Runs | Produces |
 |---|---|---|
 | `abc` | ABC planner | `score` artifact |
-| `semantic` | ABC planner, semantic AR | `score` and `semantic` artifacts |
-| `audio` | everything | audio, plus `score`; `semantic` with `export_semantic=true` |
+| `semantic` | ABC planner, semantic AR | `semantic` artifact; `score` only for generated nonempty ABC |
+| `audio` | everything | audio; `score` only for generated nonempty ABC; `semantic` with `export_semantic=true` |
 
 `stop_after=abc` requires `cot=melody` or `cot=full` and no external
 `abc` / `abc_file`, because there would be nothing to generate.
 `stop_after=semantic` implies `export_semantic=true`, since the token stream is
-all that stage produces.
+all that stage produces. No `score` is emitted with `cot=off` or externally
+supplied `abc` / `abc_file`.
 
 A result from `abc` or `semantic` carries **no audio**. Use `--out-dir` on the
 CLI to collect the artifacts (`--out` writes nothing), and `/v1/tasks/run` on
@@ -307,7 +347,7 @@ script for it.
 
 | Option | Values | Default | Meaning |
 |---|---|---:|---|
-| `--lyrics` | text | required | Song lyrics. |
+| `--lyrics` | text | empty | Song lyrics; optional for instrumental generation. |
 | `--text` | text | empty | Fallback lyrics source when `--lyrics` is not supplied. |
 | `--seed` | integer in `[0, 2^63)` | `1234` | Generation seed. Must be nonnegative and less than 2^63. |
 
@@ -329,6 +369,9 @@ script for it.
 | `seed` | integer in `[0, 2^63)` | `1234` | Generation seed. Must be nonnegative and less than 2^63. |
 
 ## Sampling Options (use with `--request-option`)
+
+Defaults are checkpoint-configurable. The table shows fallback values when the
+checkpoint does not override them.
 
 | Option | Values | Default | Meaning |
 |---|---|---:|---|
@@ -353,9 +396,9 @@ script for it.
 |---|---|---:|---|
 | `yue2.model_gguf` | relative GGUF path | `yue2-3b-q8_0.gguf` | Main AR/NAR component. |
 | `yue2.vae_gguf` | relative GGUF path | `yue2-vae-f16.gguf` | VAE component. |
-| `yue2.ar_lora` | safetensors path | none | Unfused AR adapter; relative paths use the model root. |
+| `yue2.ar_lora` | safetensors path | none | AR adapter; native, PEFT, and ComfyUI layouts. Relative paths use the model root. |
 | `yue2.ar_lora_scale` | finite float | `1.0` | Adapter delta scale; `0` disables it. |
-| `yue2.nar_lora` | safetensors path | none | Unfused NAR adapter; relative paths use the model root. |
+| `yue2.nar_lora` | safetensors path | none | NAR adapter; relative paths use the model root. |
 | `yue2.nar_lora_scale` | finite float | `1.0` | NAR delta scale; replacements stay at full strength. `0` disables the entire adapter. |
 | `yue2.weight_type` | `native`, `f32`, `f16`, `bf16`, `q8_0`, `q4_0`, `q4_k` | `native` | Shared weight storage fallback for the main model and VAE. |
 | `yue2.model_weight_type` | `native`, `f32`, `f16`, `bf16`, `q8_0`, `q4_0`, `q4_k` | see description | YuE2 MoT weight storage type. Omitted inherits weight_type. |
@@ -367,7 +410,12 @@ script for it.
 | `yue2.nar_graph_arena_mb` | MiB integer >= 1 | `32` | NAR acoustic flow graph arena size. |
 | `yue2.vae_graph_arena_mb` | MiB integer >= 1 | `32` | VAE decode graph arena size. |
 | `yue2.attention` | `auto`, `flash`, `eager` | `auto` | NAR acoustic-flow attention kernel. `auto` uses flash, except on Volta/Turing CUDA GPUs (missing MMA kernels) and Intel Vulkan GPUs (eager measured 2.2x faster) where it uses eager; explicit `flash` / `eager` override the probe. The AR decode path always uses flash. |
-| `yue2.attention_tile_rows` | integer >= 0 | `0` | Query rows per tile in the eager NAR attention. The eager lowering holds the whole score matrix, which grows with the square of the song length; `0` splits the query rows into as few equal tiles as keep one tile's scores under 3 GiB, which is what long songs need on drivers that cap a single buffer at 4 GiB. A song whose scores already fit runs as one tile. Ignored by the flash kernel. |
+| `yue2.attention_tile_rows` | integer | `0` | Query rows per tile in eager NAR attention. Nonpositive values select automatic tiling to keep each tile's score matrix under 3 GiB. A song whose scores already fit runs as one tile. Positive values set the query-row budget per tile. Ignored by the flash kernel. |
+| `yue2.perf_mode` | `off`, `cuda_perf` | `off` | Performance preset; see Performance Controls. Explicit controls override preset values. |
+| `yue2.packed_projections` | boolean | `false`; `true` with `cuda_perf` | Pack AR QKV and gate/up projections without changing weight dtype. |
+| `yue2.kv_cache_alignment` | integer >= 1 | `1`; `256` with `cuda_perf` | Align AR KV capacity; values above 1 also use cached CUDA CFG attention windows of this size. May use more memory and change numerics. |
+| `yue2.mem_saver` | boolean | `true`; `false` with `cuda_perf` | Release AR/NAR runtimes and VAE graphs after generation. |
+| `yue2.vae_tile_frames` | integer >= 1 | Model configuration; capped at `512` with `cuda_perf` | VAE latent core frames per tile, with unchanged halo. Explicit values override the preset cap. |
 
 ## Parity Probes
 

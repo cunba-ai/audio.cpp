@@ -2,7 +2,7 @@
   "schema_version": 1,
   "family": "irodori_tts",
   "display_name": "Irodori-TTS",
-  "description": "Japanese TTS model based on RF-DiT continuous audio latents, supporting zero-shot voice cloning, automatic duration prediction, multimodal voice design, and emoji-style control.",
+  "description": "Japanese TTS with RF and MeanFlow checkpoints, supporting zero-shot voice cloning, automatic duration prediction, multimodal voice design, and emoji-style control.",
   "category": "tts",
   "status": "supported",
   "tasks": [
@@ -11,7 +11,8 @@
     "design"
   ],
   "modes": [
-    "offline"
+    "offline",
+    "streaming"
   ],
   "languages": [
     "ja"
@@ -26,6 +27,14 @@
   },
   "options": {
     "request": [
+      {
+        "name": "stream_frames_per_event",
+        "type": "int",
+        "description": "Codec latent frames per streaming audio event; default 12 (0.48 seconds at 25 Hz).",
+        "required": false,
+        "min": 1,
+        "default": 12
+      },
       {
         "name": "language",
         "type": "string",
@@ -60,12 +69,25 @@
         "min": 0.0
       },
       {
+        "name": "t_schedule_mode",
+        "type": "string",
+        "description": "RF Euler timestep schedule: linear or sway; default linear.",
+        "required": false,
+        "default": "linear"
+      },
+      {
+        "name": "sway_coeff",
+        "type": "float",
+        "description": "Sway Sampling coefficient; must be finite and produce strictly decreasing timesteps. Default -1.0.",
+        "required": false,
+        "default": -1.0
+      },
+      {
         "name": "num_inference_steps",
         "type": "int",
-        "description": "RF diffusion steps; default 40.",
+        "description": "Sampling steps; omitted uses 40 for RF checkpoints or 4 for MeanFlow checkpoints.",
         "required": false,
-        "min": 1,
-        "default": 40
+        "min": 1
       },
       {
         "name": "duration_sec",
@@ -97,7 +119,7 @@
       {
         "name": "text_chunk_size",
         "type": "int",
-        "description": "Maximum characters per text chunk; default uses the model text-token window.",
+        "description": "Maximum characters per text chunk; default 100, or the model text-token window if smaller.",
         "required": false,
         "min": 1
       },
@@ -173,9 +195,10 @@
       {
         "name": "seed",
         "type": "int",
-        "description": "Generation seed for reproducible output; omitted uses a random seed.",
+        "description": "Unsigned 32-bit generation seed in [0, 4294967295]; omitted uses a random seed.",
         "required": false,
-        "min": 0
+        "min": 0,
+        "max": 4294967295
       },
       {
         "name": "trim_tail",
@@ -405,6 +428,28 @@
         "Irodori-TTS-500M-v3-GGUF/irodori-tts-500m-v3-q8_0.gguf"
       ],
       "strip_prefix": "Irodori-TTS-500M-v3-GGUF"
+    },
+    {
+      "id": "irodori_tts_v4_1_small_mf_q8_0",
+      "display_name": "Irodori-TTS v4.1 Small MeanFlow Q8_0 GGUF",
+      "format": "gguf",
+      "precision": "q8_0",
+      "target_directory": "Irodori-TTS-v4-Small-GGUF",
+      "files": [
+        "Irodori-TTS-v4-Small-GGUF/irodori-tts-v4.1-small-mf-q8_0.gguf"
+      ],
+      "strip_prefix": "Irodori-TTS-v4-Small-GGUF"
+    },
+    {
+      "id": "irodori_tts_v4_1_small_mf_f16",
+      "display_name": "Irodori-TTS v4.1 Small MeanFlow F16 GGUF",
+      "format": "gguf",
+      "precision": "f16",
+      "target_directory": "Irodori-TTS-v4-Small-GGUF",
+      "files": [
+        "Irodori-TTS-v4-Small-GGUF/irodori-tts-v4.1-small-mf-f16.gguf"
+      ],
+      "strip_prefix": "Irodori-TTS-v4-Small-GGUF"
     },
     {
       "id": "irodori_tts_500m_v3_f16",

@@ -115,10 +115,9 @@
       {
         "name": "text_chunk_size",
         "type": "int",
-        "description": "Maximum Unicode codepoints per long-form text chunk; default 600.",
+        "description": "Maximum Unicode codepoints per long-form text chunk; default 80 when hanzi, kana and Hangul outnumber other letters and digits (except edits), otherwise 600.",
         "required": false,
-        "min": 1,
-        "default": 600
+        "min": 1
       },
       {
         "name": "text_chunk_mode",
@@ -160,9 +159,10 @@
       {
         "name": "seed",
         "type": "int",
-        "description": "uint32 sampling seed; defaults to 2 for voice design and 1234 otherwise.",
+        "description": "Unsigned 32-bit sampling seed in [0, 4294967295]; defaults to 2 for voice design and 1234 otherwise.",
         "required": false,
-        "min": 0
+        "min": 0,
+        "max": 4294967295
       }
     ],
     "session": [

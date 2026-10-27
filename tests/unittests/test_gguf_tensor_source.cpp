@@ -1,12 +1,17 @@
 #include "engine/framework/model_spec/package.h"
 #include "engine/framework/assets/tensor_source.h"
+#include "engine/framework/assets/weight_adapter.h"
 #include "engine/framework/assets/resource_bundle.h"
 #include "engine/framework/io/filesystem.h"
 #include "engine/framework/io/safetensors.h"
+#include "engine/framework/core/execution_context.h"
+#include "engine/framework/core/backend_weight_store.h"
+#include "engine/framework/modules/packed_linear_weights.h"
 #include "gguf.h"
 #include "test_assert.h"
 
 #include <cstring>
+#include <algorithm>
 #include <atomic>
 #include <filesystem>
 #include <fstream>
@@ -532,6 +537,203 @@ void test_malformed_embedded_sidecars_are_rejected_by_the_name_reader() {
     std::filesystem::remove_all(root);
 }
 
+void test_weight_adapter_conversion() {
+    using namespace engine;
+    const auto root = std::filesystem::temp_directory_path() / "audiocpp_gguf_adapter_test";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root);
+    const auto original = root / "original.safetensors";
+    io::write_safetensors_file(original, {
+        {"projection.weight", "F32", {2, 32}, bytes_for(std::vector<float>(64, 0.25F))},
+        {"untouched.weight", "F32", {2, 32}, bytes_for(std::vector<float>(64, 0.5F))},
+        {"step", "F32", {}, bytes_for(std::vector<float>{42.0F})},
+    });
+    const auto base_path = root / "base.gguf";
+    assets::convert_tensor_sources_to_gguf({{original, ""}}, base_path, assets::TensorStorageType::F16,
+        false, false);
+    const auto base = assets::open_tensor_source(base_path);
+    const auto original_bytes = base->require_tensor_data("projection.weight").bytes;
+    auto adapter = std::make_shared<assets::WeightAdapter>();
+    adapter->updates.emplace("projection.weight", assets::WeightUpdate{
+        assets::LowRankWeightUpdate{std::vector<float>(32, 0.5F), {1.0F, -1.0F}, 1, 32, 2},
+        0.5F, assets::WeightMergeMode::DeltaF32});
+    const auto overlay = assets::make_weight_adapter_source(base, *adapter);
+    int index = 0;
+    for (auto type : {assets::TensorStorageType::Native, assets::TensorStorageType::F16,
+                     assets::TensorStorageType::BF16, assets::TensorStorageType::Q8_0}) {
+        assets::GgufConversionOptions options;
+        options.weight_adapter = adapter;
+        const auto output = root / (std::to_string(index++) + ".gguf");
+        assets::convert_tensor_sources_to_gguf({{base_path, ""}}, output, type, false, false,
+            {}, {}, std::nullopt, options);
+        const auto actual = assets::open_tensor_source(output);
+        test::require(actual->require_tensor_data("step").bytes == base->require_tensor_data("step").bytes,
+            "Adapter conversion must preserve untouched scalar metadata");
+        for (const auto & name : {"projection.weight", "untouched.weight"}) {
+            const auto expected = overlay->require_tensor(name, type, {2, 32});
+            test::require(actual->require_tensor_data(name).bytes == expected.bytes,
+                "GGUF adapter must merge before dtype conversion, including orig");
+        }
+    }
+    test::require(base->require_tensor_data("projection.weight").bytes == original_bytes,
+        "GGUF adapter conversion changed base weights");
+    auto replacement = std::make_shared<assets::WeightAdapter>();
+    replacement->replacements.emplace("projection.weight",
+        assets::WeightReplacement{{2, 32}, std::vector<float>(64, 0.1001F)});
+    assets::GgufConversionOptions replacement_options;
+    replacement_options.weight_adapter = replacement;
+    replacement_options.weight_adapter_merge_mode = assets::WeightMergeMode::RoundedBF16Delta;
+    const auto replacement_path = root / "replacement.gguf";
+    assets::convert_tensor_sources_to_gguf({{base_path, ""}}, replacement_path,
+        assets::TensorStorageType::F32, false, false, {}, {}, std::nullopt, replacement_options);
+    const auto rounded = assets::open_tensor_source(replacement_path)->require_f32("projection.weight");
+    const float want = ggml_bf16_to_fp32(ggml_fp32_to_bf16(0.1001F));
+    test::require(std::all_of(rounded.begin(), rounded.end(), [want](float value) { return value == want; }),
+        "Replacement-only export must retain the selected BF16 merge policy");
+    std::filesystem::remove_all(root);
+}
+
+void test_deferred_packed_weights() {
+    using namespace engine;
+    const auto root = std::filesystem::temp_directory_path() / "audiocpp_deferred_packed_test";
+    std::filesystem::create_directories(root);
+    const auto path = root / "weights.safetensors";
+    std::vector<float> a(64), b(32);
+    for (size_t i = 0; i < a.size(); ++i) a[i] = (static_cast<float>(i) - 21) / 32;
+    for (size_t i = 0; i < b.size(); ++i) b[i] = (static_cast<float>(i) + 3) / 64;
+    io::write_safetensors_file(path, {
+        {"a.weight", "F32", {2, 32}, bytes_for(a)},
+        {"b.weight", "F32", {1, 32}, bytes_for(b)},
+        {"a.bias", "F32", {2}, bytes_for(std::vector<float>{1, -2})},
+        {"b.bias", "F32", {1}, bytes_for(std::vector<float>{3})},
+    });
+    const auto source = assets::open_tensor_source(path);
+    core::BackendConfig backend;
+    backend.type = core::BackendType::Cpu;
+    core::ExecutionContext execution(backend);
+    for (const auto type : {assets::TensorStorageType::Native, assets::TensorStorageType::F32, assets::TensorStorageType::F16,
+                            assets::TensorStorageType::BF16, assets::TensorStorageType::Q8_0}) {
+        core::BackendWeightStore eager(execution.backend(), backend.type, "test.eager", 1024 * 1024);
+        core::BackendWeightStore deferred(execution.backend(), backend.type, "test.deferred", 1024 * 1024);
+        modules::PackedLinearWeightsConfig config{32,
+            {{"a.weight", "a.bias", 2}, {"b.weight", "b.bias", 1}}, true};
+        const auto expected = modules::PackedLinearWeightsBuilder(config).build(eager, *source, type);
+        config.defer_upload = true;
+        const auto actual = modules::PackedLinearWeightsBuilder(config).build(deferred, *source, type);
+        eager.upload();
+        deferred.upload();
+        for (const auto & pair : {std::make_pair(expected.weight.tensor, actual.weight.tensor),
+                                 std::make_pair(expected.bias->tensor, actual.bias->tensor)}) {
+            const size_t bytes = ggml_nbytes(pair.first);
+            test::require(bytes == ggml_nbytes(pair.second), "deferred packed tensor size");
+            std::vector<std::byte> lhs(bytes), rhs(bytes);
+            ggml_backend_tensor_get(pair.first, lhs.data(), 0, bytes);
+            ggml_backend_tensor_get(pair.second, rhs.data(), 0, bytes);
+            test::require(lhs == rhs, "deferred packed weights must preserve exact bytes");
+        }
+    }
+    for (const auto & parts : std::vector<std::vector<core::BackendWeightStore::TensorPart>>{
+             {}, {{"a.weight", {3, 32}}},
+             {{"a.weight", {2, 32}}, {"b.weight", {1, 64}}}}) {
+        core::BackendWeightStore invalid(execution.backend(), backend.type, "test.invalid", 1024 * 1024);
+        bool rejected = false;
+        try {
+            invalid.load_tensor(*source, parts, assets::TensorStorageType::F32);
+        } catch (const std::runtime_error &) {
+            rejected = true;
+        }
+        test::require(rejected, "invalid packed tensor sources must be rejected before upload");
+    }
+    std::filesystem::remove_all(root);
+}
+
+class CountingTensorSource final : public engine::assets::TensorSource {
+public:
+    std::filesystem::path path{"counting://weight_norm"};
+    mutable int direct_uploads = 0;
+    const std::filesystem::path & source_path() const noexcept override { return path; }
+    bool has_tensor(std::string_view name) const noexcept override {
+        return name == "plain.weight" || name == "norm.weight_v" || name == "norm.weight_g";
+    }
+    engine::assets::TensorMetadata require_metadata(std::string_view name) const override {
+        if (name == "plain.weight") return {"plain.weight", "F32", {2}};
+        if (name == "norm.weight_v") return {"norm.weight_v", "F32", {2, 2}};
+        if (name == "norm.weight_g") return {"norm.weight_g", "F32", {2}};
+        throw std::runtime_error("missing tensor: " + std::string(name));
+    }
+    std::vector<engine::assets::TensorMetadata> tensors() const override {
+        return {require_metadata("plain.weight"), require_metadata("norm.weight_v"), require_metadata("norm.weight_g")};
+    }
+    engine::assets::RawTensorData require_tensor_data(std::string_view name) const override {
+        const auto values = require_f32(name, std::nullopt);
+        engine::assets::RawTensorData data;
+        data.metadata = require_metadata(name);
+        data.bytes.resize(values.size() * sizeof(float));
+        std::memcpy(data.bytes.data(), values.data(), data.bytes.size());
+        return data;
+    }
+    std::vector<float> require_f32(
+        std::string_view name,
+        const std::optional<std::vector<int64_t>> & expected_shape) const override {
+        const auto metadata = require_metadata(name);
+        if (expected_shape && *expected_shape != metadata.shape) throw std::runtime_error("shape mismatch");
+        if (name == "plain.weight") return {3.0F, 4.0F};
+        if (name == "norm.weight_v") return {3.0F, 4.0F, 0.0F, 2.0F};
+        if (name == "norm.weight_g") return {10.0F, 6.0F};
+        throw std::runtime_error("missing tensor: " + std::string(name));
+    }
+    std::optional<std::vector<float>> optional_f32(
+        std::string_view name,
+        const std::optional<std::vector<int64_t>> & expected_shape) const override {
+        if (!has_tensor(name)) return std::nullopt;
+        return require_f32(name, expected_shape);
+    }
+    int64_t require_i64_scalar(std::string_view) const override { throw std::runtime_error("no scalar"); }
+    void set_backend_tensor(
+        ggml_tensor * tensor,
+        std::string_view name,
+        engine::assets::TensorStorageType type,
+        const std::vector<int64_t> & shape) const override {
+        ++direct_uploads;
+        const auto metadata = require_metadata(name);
+        if (type != engine::assets::TensorStorageType::F32 || shape != metadata.shape)
+            throw std::runtime_error("unexpected direct upload type or shape");
+        const auto values = require_f32(name, shape);
+        ggml_backend_tensor_set(tensor, values.data(), 0, values.size() * sizeof(float));
+    }
+};
+
+void test_weight_norm_folded_source_uses_direct_backend_upload() {
+    using namespace engine;
+    using namespace engine::assets;
+    auto backing = std::make_shared<CountingTensorSource>();
+    const auto folded = make_weight_norm_folded_tensor_source(backing, {"norm.weight"});
+    core::BackendConfig config;
+    config.type = core::BackendType::Cpu;
+    config.threads = 2;
+    core::ExecutionContext execution(config);
+    core::BackendWeightStore store(execution.backend(), config.type, "test.weight_norm", 1024 * 1024);
+    auto plain = store.load_tensor(*folded, "plain.weight", TensorStorageType::F32, {2});
+    auto norm = store.load_tensor(*folded, "norm.weight", TensorStorageType::F32, {2, 2});
+    store.upload();
+    ggml_backend_synchronize(execution.backend());
+    test::require_eq(backing->direct_uploads, 1, "unfolded tensor must delegate its direct backend upload");
+    std::vector<float> plain_values(2), norm_values(4);
+    ggml_backend_tensor_get(plain.tensor, plain_values.data(), 0, plain_values.size() * sizeof(float));
+    ggml_backend_tensor_get(norm.tensor, norm_values.data(), 0, norm_values.size() * sizeof(float));
+    test::require(plain_values == std::vector<float>({3.0F, 4.0F}), "unfolded direct upload values");
+    const std::vector<float> expected{6.0F, 8.0F, 0.0F, 6.0F};
+    for (size_t i = 0; i < expected.size(); ++i)
+        test::require_close(norm_values[i], expected[i], 1e-6F, "folded backend upload value");
+    bool mismatch_rejected = false;
+    try {
+        (void)store.load_tensor(*folded, "norm.weight", TensorStorageType::F32, {4, 1});
+    } catch (const std::runtime_error &) {
+        mismatch_rejected = true;
+    }
+    test::require(mismatch_rejected, "folded backend upload must preserve shape validation");
+}
+
 }  // namespace
 
 int main() {
@@ -546,6 +748,9 @@ int main() {
         test_release_named_gguf_directory_selects_the_gguf_source();
         test_package_spec_errors_name_selected_spec();
         test_malformed_embedded_sidecars_are_rejected_by_the_name_reader();
+        test_weight_adapter_conversion();
+        test_deferred_packed_weights();
+        test_weight_norm_folded_source_uses_direct_backend_upload();
     } catch (const std::exception & error) {
         std::cerr << error.what() << '\n';
         return 1;

@@ -114,9 +114,8 @@
       {
         "name": "reference_language",
         "type": "string",
-        "description": "Language code used to align the reference transcript; default en.",
-        "required": false,
-        "default": "en"
+        "description": "Language code used to align the reference transcript; omitted inherits the request text language, then falls back to en.",
+        "required": false
       },
       {
         "name": "text_chunk_size",
@@ -136,6 +135,19 @@
       }
     ],
     "session": [
+      {
+        "name": "lora",
+        "type": "path",
+        "description": "PEFT LoRA adapter directory or checkpoint file for the same OuteTTS checkpoint; merged into the language model at session creation.",
+        "required": false
+      },
+      {
+        "name": "lora_scale",
+        "type": "float",
+        "description": "Multiplier for the adapter's alpha/r scaling; default 1.",
+        "required": false,
+        "default": 1.0
+      },
       {
         "name": "weight_type",
         "type": "enum",
@@ -309,7 +321,7 @@
       "GGUF"
     ],
     "docs": [
-      "docs/community_models/outetts.md",
+      "docs/models/outetts.md",
       "docs/reports/outetts_validation.md",
       "docs/gguf.md"
     ]

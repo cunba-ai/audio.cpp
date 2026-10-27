@@ -1,5 +1,8 @@
 #include "engine/community_models/voxcpm1/session.h"
 
+#include "engine/framework/assets/weight_adapter.h"
+#include "engine/framework/io/filesystem.h"
+#include "engine/framework/io/json.h"
 #include "engine/framework/debug/profiler.h"
 #include "engine/framework/model_spec/metadata.h"
 #include "engine/framework/model_spec/package.h"
@@ -13,6 +16,7 @@
 #include <initializer_list>
 #include <memory>
 #include <optional>
+#include <regex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -27,11 +31,72 @@ using Clock = std::chrono::steady_clock;
 constexpr int64_t kDefaultTextChunkSize = 2048;
 
 std::shared_ptr<const VoxCPM1Assets>
-require_assets(std::shared_ptr<const VoxCPM1Assets> assets) {
+require_assets(std::shared_ptr<const VoxCPM1Assets> assets,
+               const runtime::SessionOptions & options) {
   if (assets == nullptr) {
     throw std::runtime_error("VoxCPM1 session requires assets");
   }
-  return assets;
+  const auto path = runtime::find_option(options.options, {"voxcpm1.lora"});
+  if (!path || path->empty()) {
+    return assets;
+  }
+  const auto adapter_path = std::filesystem::u8path(*path);
+  auto file = adapter_path;
+  if (io::is_existing_directory(adapter_path)) {
+    const auto resolved = engine::assets::find_tensor_file(adapter_path, "lora_weights");
+    if (!resolved) throw std::runtime_error("VoxCPM1 lora_weights checkpoint is missing in " + adapter_path.string());
+    file = *resolved;
+  }
+  const auto config = io::json::parse_file(file.parent_path() / "lora_config.json");
+  const auto & lora = config.require("lora_config");
+  const auto rank = io::json::require_i64(lora, "r");
+  if (rank <= 0) {
+    throw std::runtime_error("VoxCPM1 LoRA rank must be positive");
+  }
+  engine::assets::WeightAdapterReadOptions read_options;
+  read_options.scale_override = io::json::require_f32(lora, "alpha") / static_cast<float>(rank);
+  read_options.strength = runtime::parse_finite_float_option(
+      options.options, {"voxcpm1.lora_scale"}).value_or(1.0F);
+  auto adapter = engine::assets::read_weight_adapter(file, read_options);
+  for (const auto & [name, update] : adapter.updates) {
+    const auto * factors = std::get_if<engine::assets::LowRankWeightUpdate>(&update.factors);
+    if (factors == nullptr || factors->r != rank) {
+      throw std::runtime_error("VoxCPM1 LoRA factors do not match lora_config.json: " + name);
+    }
+  }
+  engine::assets::WeightAdapterBindings bindings;
+  const std::regex layer_pattern(R"(((residual_lm|locenc|locdit)\.)?blk\.([0-9]+)\.(attn_q|attn_k|attn_v|attn_output|ffn_gate|ffn_up|ffn_down)\.weight)");
+  const std::unordered_map<std::string, std::string> prefixes{
+      {"", "base_lm"}, {"residual_lm", "residual_lm"},
+      {"locenc", "feat_encoder.encoder"}, {"locdit", "feat_decoder.estimator.decoder"}};
+  const std::unordered_map<std::string, std::string> projections{
+      {"attn_q", "self_attn.q_proj"}, {"attn_k", "self_attn.k_proj"},
+      {"attn_v", "self_attn.v_proj"}, {"attn_output", "self_attn.o_proj"},
+      {"ffn_gate", "mlp.gate_proj"}, {"ffn_up", "mlp.up_proj"}, {"ffn_down", "mlp.down_proj"}};
+  for (const auto & tensor : assets->model_weights->tensors()) {
+    bindings.add(tensor.name, tensor.name);
+    std::smatch match;
+    if (std::regex_match(tensor.name, match, layer_pattern)) {
+      bindings.add(prefixes.at(match[2].str()) + ".layers." + match[3].str() + "." +
+          projections.at(match[4].str()), tensor.name);
+    }
+  }
+  for (const auto & entry : std::initializer_list<std::pair<const char *, const char *>>{
+           {"enc_to_lm_proj", "proj.enc_to_lm.weight"},
+           {"lm_to_dit_proj", "proj.lm_to_dit.weight"},
+           {"res_to_dit_proj", "proj.res_to_dit.weight"},
+           {"feat_encoder.in_proj", "locenc.in_proj.weight"},
+           {"feat_decoder.estimator.in_proj", "locdit.in_proj.weight"},
+           {"feat_decoder.estimator.cond_proj", "locdit.cond_proj.weight"},
+           {"feat_decoder.estimator.out_proj", "locdit.out_proj.weight"}}) {
+    bindings.add(entry.first, entry.second);
+  }
+  auto plan = engine::assets::bind_weight_adapter(
+      *assets->model_weights, std::move(adapter), bindings, engine::assets::WeightMergeMode::DeltaF32);
+  auto adapted = std::make_shared<VoxCPM1Assets>(*assets);
+  adapted->model_weights = engine::assets::make_weight_adapter_source(
+      assets->model_weights, std::move(plan), "voxcpm1.lora");
+  return adapted;
 }
 
 void reject_enabled_denoise(
@@ -116,7 +181,8 @@ void validate_session_options(
     if (key.rfind("voxcpm1.", 0) != 0) {
       continue;
     }
-    if (key == "voxcpm1.weight_context_mb" ||
+    if (key == "voxcpm1.lora" || key == "voxcpm1.lora_scale" ||
+        key == "voxcpm1.weight_context_mb" ||
         key == "voxcpm1.text_embedding_graph_context_mb" ||
         key == "voxcpm1.text_embedding_graph_arena_mb" ||
         key == "voxcpm1.lm_step_graph_context_mb" ||
@@ -184,7 +250,7 @@ VoxCPM1SessionBase::VoxCPM1SessionBase(runtime::TaskSpec task,
                                        runtime::SessionOptions options,
                                        std::shared_ptr<const VoxCPM1Assets> assets)
     : RuntimeSessionBase(options), task_(task),
-      assets_(require_assets(std::move(assets))),
+      assets_(require_assets(std::move(assets), options)),
       encoded_prompt_cache_(prompt_cache_slots_from_options(options.options)) {
   if (task_.mode != runtime::RunMode::Offline &&
       task_.mode != runtime::RunMode::Streaming) {
@@ -192,10 +258,11 @@ VoxCPM1SessionBase::VoxCPM1SessionBase(runtime::TaskSpec task,
         std::string("VoxCPM1") +
         " only supports offline and streaming sessions");
   }
-  if (task_.task != runtime::VoiceTaskKind::Tts) {
+  if (task_.task != runtime::VoiceTaskKind::Tts &&
+      task_.task != runtime::VoiceTaskKind::VoiceCloning) {
     throw std::runtime_error(
         std::string("VoxCPM1") +
-        " only supports the Tts task");
+        " supports TTS and voice cloning");
   }
 
   options.options = normalize_v1_session_options(std::move(options.options));
@@ -851,6 +918,8 @@ runtime::CapabilitySet capabilities_v1(const VoxCPM1Assets &) {
   out.supported_tasks = {
       {runtime::VoiceTaskKind::Tts,
        {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
+      {runtime::VoiceTaskKind::VoiceCloning,
+       {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
   };
   out.languages = {"Auto"};
   out.supports_speaker_reference = true;
@@ -860,6 +929,7 @@ runtime::CapabilitySet capabilities_v1(const VoxCPM1Assets &) {
 runtime::ModelCliInterface cli_v1(const VoxCPM1Assets &) {
   runtime::ModelCliInterface out;
   out.request_options = {
+      {"language", "code", "Text language hint used for text normalization; also exposed as --language."},
       {"text_chunk_mode", "word_budget|tag_aware|japanese|endline", "Text chunking mode; default tag_aware.", false, "tag_aware"},
       {"seed", "int", "Random seed for MiniCPM and diffusion sampling.", false},
       {"max_tokens", "int", "Maximum MiniCPM output tokens; default 4096. Zero selects model max_length; negative counts are rejected.", false, "4096"},
@@ -874,6 +944,8 @@ runtime::ModelCliInterface cli_v1(const VoxCPM1Assets &) {
       {"text_chunk_size", "int", "Maximum characters per offline text chunk; must be positive. Does not control streaming chunk cadence. Default: 2048.", false, "2048", "1"},
   };
   out.session_options = {
+      {"voxcpm1.lora", "path", "Native LoRA directory or checkpoint file with adjacent lora_config.json; merged into generator weights at session creation.", false},
+      {"voxcpm1.lora_scale", "float", "Multiplier for the adapter's configured alpha/r scaling; default 1.", false, "1"},
       {"voxcpm1.mem_saver", "bool", "Use tighter graph workspaces and release request runtime graphs; default false.", false, "false"},
       {"voxcpm1.prompt_cache_slots", "int", "Prompt and prompt-audio embedding cache slots; default 1.", false, "1"},
       {"voxcpm1.weight_type", "native|f32|f16|bf16|q8_0", "Model weight storage type.", false, "native"},
@@ -889,10 +961,6 @@ runtime::ModelCliInterface cli_v1(const VoxCPM1Assets &) {
       {"voxcpm1.audiovae_encoder_graph_arena_mb", "int", "AudioVAE encoder host graph-metadata arena size in MiB, not device workspace.", false},
       {"voxcpm1.audiovae_latent_capacity", "int", "AudioVAE decoder latent frame capacity.", false},
       {"voxcpm1.audiovae_encoder_sample_capacity", "int", "AudioVAE encoder sample capacity.", false},
-  };
-  out.load_options = {
-      {"voxcpm1.weight_type", "native|f32|f16|bf16|q8_0", "Model weight storage type selected at load time.", false, "native"},
-      {"voxcpm1.audiovae_weight_type", "native|f32|f16|bf16|q8_0", "AudioVAE weight storage type selected at load time.", false, "native"},
   };
   return out;
 }
@@ -917,8 +985,9 @@ public:
   std::unique_ptr<runtime::IVoiceTaskSession> create_task_session(
       const runtime::TaskSpec &task,
       const runtime::SessionOptions &options) const override {
-    if (task.task != runtime::VoiceTaskKind::Tts) {
-      throw std::runtime_error("VoxCPM1 only supports the Tts task");
+    if (task.task != runtime::VoiceTaskKind::Tts &&
+        task.task != runtime::VoiceTaskKind::VoiceCloning) {
+      throw std::runtime_error("VoxCPM1 supports TTS and voice cloning");
     }
     if (task.mode != runtime::RunMode::Offline &&
         task.mode != runtime::RunMode::Streaming) {
@@ -946,6 +1015,8 @@ public:
     runtime::CapabilitySet out;
     out.supported_tasks = {
         {runtime::VoiceTaskKind::Tts,
+         {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
+        {runtime::VoiceTaskKind::VoiceCloning,
          {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
     };
     out.supports_speaker_reference = true;

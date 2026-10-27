@@ -89,7 +89,7 @@ void print_help() {
         << "audiocpp_server [--config <server.json>] [--ui] [--host <ip>] [--port <port>] [--backend <backend>]\n"
         << "                [--device <id>] [--list-devices] [--threads <n>] [--busy-timeout-ms <ms>]\n"
         << "                [--max-loaded-models <n>] [--idle-unload-ms <ms>] [--min-free-memory-mb <mb>]\n"
-        << "                [--model-spec-override <json-or-directory>] [--voice-dir <directory>]\n"
+        << "                [--model-spec-override <json-or-directory|embedded>] [--voice-dir <directory>]\n"
         << "                [--frontend-listener <name>] [--frontend-option key=value]\n"
         << "                [--log] [--log-file <path>] [--load-progress 0|1]\n"
         << "                [--cors-origins <origins>]\n"
@@ -127,6 +127,7 @@ void print_help() {
         << "  GET  /                           embedded WebUI (enabled by default with a config)\n"
         << "  GET  /health\n"
         << "  GET  /v1/models\n"
+        << "  GET  /v1/recipes\n"
         << "  POST /v1/models/load             available with --ui-management\n"
         << "  POST /v1/models/unload           available with --ui-management\n"
         << "  POST /v1/ui/upload               temporary browser upload for WebUI requests\n"
@@ -156,7 +157,9 @@ void print_help() {
         << "  POST /v1/tasks/run\n"
         << "  POST /v1/tasks/batch\n"
         << "  POST /v1/tasks/stream\n"
-        << "       events and result in one JSON body, or as SSE with stream_format=sse\n";
+        << "       events and result in one JSON body, or as SSE with stream_format=sse\n"
+        << "  POST /v1/recipes/run\n"
+        << "       run a built-in multi-model recipe; set stream=true for SSE\n";
 }
 
 }  // namespace
@@ -215,9 +218,11 @@ int main(int argc, char ** argv) {
         }
         if (ui_requested) {
             config.ui_enabled = true;
+            config.ui_requested = true;
         }
         if (has_arg(argc, argv, "--no-ui")) {
             config.ui_enabled = false;
+            config.ui_requested = false;
         }
         if (has_arg(argc, argv, "--ui-management")) {
             config.ui_management = true;

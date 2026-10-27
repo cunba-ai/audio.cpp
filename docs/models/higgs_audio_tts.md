@@ -2,7 +2,12 @@
 
 Higgs Audio v3 TTS is a voice-clone TTS model. The current integration uses
 the framework chunker for long text and keeps the reference prompt state in the
-model session.
+model session. Use `clon` for voice-cloning requests; the existing `tts` route
+remains an alias to the same model path for compatibility.
+
+For chunked generation without reference audio, the first generated chunk's
+audio codes and transcript condition the remaining chunks to preserve its voice.
+This reference is local to the request; supplied reference audio takes precedence.
 
 ## Install
 
@@ -15,7 +20,7 @@ python3 tools/model_manager_v2.py install --models-root models higgs_audio_tts_4
 ## Quick Start
 
 ```bash
-audiocpp_cli --task tts --family higgs_audio_tts --model models/Higgs-Audio-v3-TTS-4B-GGUF/higgs-audio-v3-tts-4b-q8_0.gguf --backend cuda --text "Hello from Higgs Audio." --voice-ref assets/resources/b.wav --reference-text "Some call me nature. Others call me Mother Nature. I've been here for over 4.5 billion years. 22,500 times longer than you." --out out.wav
+audiocpp_cli --task clon --family higgs_audio_tts --model models/Higgs-Audio-v3-TTS-4B-GGUF/higgs-audio-v3-tts-4b-q8_0.gguf --backend cuda --text "Hello from Higgs Audio." --voice-ref assets/resources/b.wav --reference-text "Some call me nature. Others call me Mother Nature. I've been here for over 4.5 billion years. 22,500 times longer than you." --out out.wav
 ```
 
 ## Model
@@ -24,7 +29,7 @@ audiocpp_cli --task tts --family higgs_audio_tts --model models/Higgs-Audio-v3-T
 |---|---|
 | Family | `higgs_audio_tts` |
 | Model path | `models/Higgs-Audio-v3-TTS-4B-GGUF/higgs-audio-v3-tts-4b-q8_0.gguf` when installed through the model manager |
-| Task | `tts` |
+| Tasks | `tts`, `clon` |
 | Modes | `offline`, `streaming` |
 | Languages | Model auto-handles supported languages |
 | Voice input | Reference WAV through `--voice-ref`; transcript through `--reference-text` when known |
@@ -48,9 +53,11 @@ audiocpp_cli --task tts --family higgs_audio_tts --model models/Higgs-Audio-v3-T
 | Option | Values | Default | Meaning |
 |---|---|---:|---|
 | `max_tokens` | integer >= 0 | `2048` | Maximum generated AR tokens; zero uses the default. Must not exceed the configured context length. |
+| `allow_incomplete_generation` | boolean | `false` | Return generated audio with a warning instead of failing when `max_tokens` is reached before EOC. Audio may be truncated or contain silence/noise. |
 | `temperature` | float | `0.8` | AR sampling temperature. Must be positive. |
 | `top_p` | float | `0.8` | AR nucleus sampling probability. Must be positive. |
 | `top_k` | integer | `30` | AR top-k sampling limit. |
+| `filter_nan_logits` | boolean | `false` | Filter NaN and infinity during greedy and stochastic top-k selection. All-invalid logits still fail. |
 | `repetition_penalty` | float | `1.1` | Accepted for Python API compatibility; audio sampling does not consume this value. Compatibility-only, but must be finite and positive. |
 | `seed` | integer >= 0 | random | Torch sampling seed; omitted chooses a random seed. |
 | `reference_text` | text | empty string | Transcript accompanying reference audio. |
@@ -58,6 +65,17 @@ audiocpp_cli --task tts --family higgs_audio_tts --model models/Higgs-Audio-v3-T
 | `text_chunk_mode` | `default`, `tag_aware`, `japanese`, `endline` | `default` | Framework text chunking mode. |
 | `stream_frames_per_event` | integer >= 1 | `32` | Streaming audio frame cap; each codec frame contains 40 ms of audio. |
 | `stream_chunk_policy` | `grow`, `fixed` | `grow` | Start with one frame and grow to the cap, or emit fixed-size chunks. Streaming only. |
+
+If mixed finite and non-finite logits disrupt greedy or stochastic top-k sampling, try
+`--request-option filter_nan_logits=true`, or `"filter_nan_logits": true` in the
+server request's `options`. Greedy sampling (`top_k=1`) then selects the highest
+finite logit. It does not repair invalid model output; all-invalid logits still fail.
+
+For best-effort output when the model does not finish within the token budget, use
+`--request-option allow_incomplete_generation=true`. On the server, set
+`"allow_incomplete_generation": true` in the request's `options` object.
+This applies to offline and streaming generation. Normal EOC stopping is unchanged;
+without the option, reaching the limit before EOC still fails.
 
 ## Streaming
 

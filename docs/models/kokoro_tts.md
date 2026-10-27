@@ -55,7 +55,7 @@ audiocpp_cli --task tts --family kokoro_tts \
 ## Streaming
 
 Use `--mode streaming` to emit each synthesized text chunk immediately. Text
-chunking uses the same `text_chunk_size` and `text_chunk_mode` controls as offline
+chunking uses the same `text_chunk_size` control as offline
 generation; it does not split an already generated waveform into fake streaming
 events. A short input that fits in one chunk produces one audio event. Longer
 inputs produce incremental, non-cumulative audio chunks and a final merged WAV.
@@ -90,6 +90,37 @@ selects the language family:
 The request language must match the selected voice. For example, use
 `--language zh` with `zf_*` or `zm_*` voices.
 
+### Voice Blending
+
+Use `af_heart+af_bella` for equal weights, or `af_heart(1)+jf_alpha(0.5)`
+for a weighted blend. Weights are finite, nonnegative, and normalized by their
+sum, which must be positive. Blending averages voice style embeddings, not WAVs.
+The first voice selects the phonemizer language, including cross-language blends;
+an explicit language must match that first voice.
+
+```bash
+audiocpp_cli --task tts --family kokoro_tts \
+  --model models/Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf --backend metal \
+  --voice-id 'af_heart(1)+jf_alpha(0.5)' \
+  --text "Hello, testing combined Kokoro voices." --out blended.wav
+```
+
+The same expression works through `--request-option voice_id=...` or the
+`voice` field of `/v1/audio/speech`, with existing GGUFs:
+
+```json
+{
+  "model": "kokoro-audiocpp",
+  "input": "Hello, testing combined Kokoro voices.",
+  "voice": "af_heart(1)+jf_alpha(0.5)",
+  "response_format": "wav",
+  "speed": 1
+}
+```
+
+MP3 output uses the existing optional `mp3_encode`
+[server frontend](../../app/server/api.md).
+
 ## Runtime Resources
 
 The release GGUF includes model weights, config, vocabulary, all voice packs,
@@ -112,20 +143,23 @@ package.
 
 | Option | Values | Default | Meaning |
 |---|---|---:|---|
-| `--language` | language code | voice prefix | Language must be supplied through structured transcript/style input (CLI --language); a language entry in the request option map is not consumed. |
-| `--voice-id` | voice ID listed above | `af_heart` | Built-in voice pack. |
-| `--seed` | integer | random | Decoder noise seed; omitted requests choose a random seed. Consumed during preparation, not subsequent run() calls on the prepared session. |
+| `--language` | language code | voice prefix | Language selection precedence: voice-style language, transcript language (CLI --language), request-option language, then voice prefix. Must match the selected voice. |
+| `--voice-id` | voice ID or blend expression | `af_heart` | Built-in voice pack or normalized blend. |
+| `--seed` | integer | random | Decoder noise seed for the current request; omitted requests choose a fresh random seed. |
 | `--speaking-rate` | positive float | `1.0` | Speech speed multiplier. |
-| `--text-chunk-size` | integer chars | `240` | Long-form chunk size. |
+| `--text-chunk-size` | integer chars | `240`; `100` for Chinese and Japanese | Long-form chunk size. Chinese and Japanese chunks phonemize to more symbols per character and must stay under the 510-symbol input limit. |
 
 ## Request Options (use with `--request-option`)
 
+`--voice-id` takes precedence over `--request-option voice_id=...`.
+
 | Option | Values | Default | Meaning |
 |---|---|---:|---|
-| `language` | language code | voice prefix | Language must be supplied through structured transcript/style input (CLI --language); a language entry in the request option map is not consumed. |
-| `seed` | integer | random | Decoder noise seed; omitted requests choose a random seed. Consumed during preparation, not subsequent run() calls on the prepared session. |
+| `voice_id` | packaged voice ID or blend expression | `af_heart` | Built-in voice pack or normalized blend, also selectable with `--voice-id`. |
+| `language` | language code | voice prefix | Language selection precedence: voice-style language, transcript language (CLI --language), request-option language, then voice prefix. Must match the selected voice. |
+| `seed` | integer | random | Decoder noise seed for the current request; omitted requests choose a fresh random seed. |
 | `speed` | positive float | `1.0` | Speech speed multiplier; default 1.0. Must be finite and positive. |
-| `text_chunk_size` | integer chars | `240` | Long-form chunk size. |
+| `text_chunk_size` | integer chars | `240`; `100` for Chinese and Japanese | Long-form chunk size. |
 
 ## Session Options (use with `--session-option`)
 
@@ -136,18 +170,51 @@ package.
 | `kokoro_tts.predictor_duration_graph_arena_mb` | positive integer MiB | `384` | Duration predictor host graph-metadata arena. |
 | `kokoro_tts.predictor_text_graph_arena_mb` | positive integer MiB | `256` | Text predictor host graph-metadata arena. |
 | `kokoro_tts.predictor_tail_graph_arena_mb` | positive integer MiB | `640` | Tail predictor host graph-metadata arena. |
+| `kokoro_tts.exec_plan` | JSON object of component plans, encoded as a string | `{}` | Select the CPU NEON generator with `{"generator":{"impl":"neon"}}` (`ENGINE_ENABLE_NEON=ON`, AArch64 CPU session). The complete generator uses a NEON execution plan; harmonic conditioning and iSTFT are unchanged. Select RKNN with `{"generator":{"impl":"rknn","artifacts":{"main":"/models/generator.rknn"},"params":{"overlap":0,"gain":false}}}` (`ENGINE_ENABLE_RKNN=ON`); see [component execution plans](../build/rockchip-npu.md#component-execution-plans). Default retains GGML. |
+
+The RKNN generator accepts these fields inside the plan's `generator.params` object, not as
+separate session options. GGML accepts no parameters.
+
+| Parameter | Values | Default | Meaning |
+|---|---|---:|---|
+| `overlap` | integer latent frames, `0` .. emitted-window-1 | `0` | Advance the window walk by `emitted - overlap` frames and blend the shared spectrogram columns with a raised-cosine ramp instead of hard-writing them. Measured on RK3588: 1.54x wall for no change in the per-window loudness spread (7.23 → 7.14 dB), so it is a seam-smoothing knob, not a loudness one. |
+| `gain` | boolean | `false` | Correct each NPU window's loudness toward a full-length CPU decode of the same latent (additive gain on the log-magnitude rows), and cap the top five log-magnitude rows at that reference's level at every column, which is what removes the near-Nyquist clicks (see below). Measured on RK3588: per-window loudness spread 7.23 → 3.27 dB and the worst of the top eight 9-12 kHz columns 14.7x → 2.8x the CPU render's energy there, for 1.9x wall and +601 MB RSS, because the ggml generator graph stays loaded and runs once per utterance. |
 
 The graph-arena controls do not size device workspace. Their former
 `predictor_duration_graph_mb`, `predictor_text_graph_mb`, and
 `predictor_tail_graph_mb` names remain accepted with the `kokoro_tts.` prefix,
 including with older embedded specs.
 
+On RK3588 the generator is 83% of the runtime, so the NPU path is worth the extra file: measured
+RTF 1.415 → 0.867 and peak RSS 2777 → 2334 MB on `kokoro-82m-q8_0` (185 Russian characters,
+`--threads 4`, clipped-sine engine; the range-reduced engine the producer now exports by default
+costs +21..36% generator time depending on the utterance, and buys 63 dB of sine accuracy, see the
+RKNN document). The engine is compiled for a 128-latent-frame window and the runtime walks it over
+the latent; see the RKNN document for the window limit and the per-window normalization caveat. The
+NPU render also carries a few content-locked near-Nyquist clicks per utterance (2 to 3 on a 26 s
+render): at the columns where the graph's activations peak, the top iSTFT bins run 10-24x the CPU
+render's 9-12 kHz energy there. They are fp16 rounding in the convolutional accumulation, not the
+sine approximation and not the window seams: the same columns at the same magnitude for the clip
+sine, the range-reduced sine, the exact `Sin` node, the unfolded Snake (`--no-snake-fold`, which
+bounds the convolution input) and the w128/w136 grids, and RKNN 2.3.2 has no per-layer dtype knob.
+`generator.params.gain=true` in the execution plan caps them (14.7x → 2.8x at the worst of the top eight columns,
+residual 1.4-2.8x is the iSTFT Hann-overlap smear into the bins the cap does not touch).
+
+A `--global-stats` variant of the engine — the per-channel AdaIN mean/variance of a full-length
+decode fed into the engine as graph I/O, so every window normalizes with the whole utterance's
+statistics — is not in the build. In fp32 it is exact (the stitched windowed decode moves from
+9.7 dB to 135.4 dB against the full-length decode), and that is exactly why it was dropped: on the
+RK3588 the fed statistics scale the window activations past the engine's fp16 range and the graph
+collapses — every window after the first renders as a constant-energy tone (rms flat at 51.5 dB,
+spectral flatness 1.7e-17, energy at DC, 4800 Hz and 9600 Hz), for 1.8x the wall time and +1.5 GB
+RSS. The producer, the runtime and the engine contract carry no code for it.
+
 ## Conversion
 
 Convert from the official `hexgrad/Kokoro-82M` source checkout:
 
 ```bash
-python tools/prepare_kokoro_gguf.py \
+python tools/models/prepare_kokoro_gguf.py \
   --source /path/to/Kokoro-82M \
   --output-dir /path/to/Kokoro-82M-GGUF \
   --type both \
@@ -157,7 +224,7 @@ python tools/prepare_kokoro_gguf.py \
 For a fully bundled local multilingual package with eSpeak data and UniDic:
 
 ```bash
-python tools/prepare_kokoro_gguf.py \
+python tools/models/prepare_kokoro_gguf.py \
   --source /path/to/Kokoro-82M \
   --output-dir /path/to/Kokoro-82M-GGUF \
   --type both \
@@ -211,9 +278,8 @@ the model's, and whose they are depends on which path produced them:
   differ only sometimes, and where they do every later word is off by one. A caller that needs a
   written-word timeline from the text path needs its own G2P and the supplied-phoneme path.
 
-What the groups always give, on both paths, is a correct division of the audio: the spans are
-contiguous in output order and cover the buffer, so following the speech is exact even when
-labelling it is not.
+The spans follow output order but need not be contiguous or cover the full buffer.
+Space tokens, standalone punctuation, and padding can leave gaps between or around groups.
 
 ### Details
 

@@ -1,6 +1,6 @@
 # ACE-Step
 
-ACE-Step is wired as `--family ace_step --task gen`. It generates and edits music from text, lyrics, and optional source audio. The route controls whether source audio is ignored, optional, or required.
+ACE-Step is wired as `--family ace_step --task gen`. It generates and edits music from text, lyrics, and optional source audio. The route controls whether source audio is ignored, optional, or required. Supplied `audio_codes` can also satisfy the source-input requirement for routes that require audio.
 
 Common CLI shape:
 
@@ -15,8 +15,8 @@ audiocpp_cli --task gen --family ace_step --model models/Ace-Step1.5 --backend c
 | Family | `ace_step` |
 | Model directory | `models/Ace-Step1.5` |
 | Task | `gen` |
-| Default DiT | `acestep-v15-turbo` |
-| Optional DiT | `acestep-v15-xl-turbo`, `acestep-v15-xl-sft` |
+| Default DiT | Inferred from model filename (`base`, `sft`, `turbo`, and `xl`); otherwise `acestep-v15-turbo` |
+| Optional DiT | `acestep-v15-base`, `acestep-v15-xl-turbo`, `acestep-v15-xl-sft` |
 | Default LM | `acestep-5Hz-lm-1.7B` |
 | Prompt input | `--text` |
 | Lyrics input | `--lyrics` |
@@ -152,21 +152,21 @@ audiocpp_cli --task gen --family ace_step --model models/Ace-Step1.5 --backend c
 | `--lyrics` | text | empty string | Vocal lyrics. |
 | `--audio` | WAV path | route-dependent | Source audio for complete/edit/extract/cover routes. |
 | `--duration-seconds` | float, `-1` for auto | `-1` | Target duration. Source-locked routes use source duration. |
-| `--language` | language code | `en` | Vocal language for lyrics. |
+| `--language` | language code | text input language, then `en` | Vocal language for lyrics; request-map `language` takes precedence. |
 | `--track-name` | text | empty string | Track name used by `lego` and `extract` instructions. |
 | `--repaint-start` | seconds | required for `repaint` | Start time for repaint. |
 | `--repaint-end` | seconds | required for `repaint` | End time for repaint. |
-| `--repaint-mode` | `balanced`, `conservative`, `aggressive` | `balanced` | Preset repaint blending policy. |
-| `--repaint-strength` | `0..1` | `0.5` | Repaint strength used by preset repaint mode. |
-| `--num-inference-steps` | integer | `8` | Diffusion denoising steps. |
-| `--guidance-scale` | float | `1.0`; `7.0` for `extract` unless overridden | Diffusion guidance scale. |
+| `--repaint-mode` | `balanced`, `conservative`, `aggressive` | unset | Preset repaint blending policy; supplying strength alone selects `balanced`. |
+| `--repaint-strength` | `0..1` | `0.5` when a preset is supplied | Strength for balanced mode; values are clamped to this range. |
+| `--num-inference-steps` | integer | `8` | Denoising steps; turbo checkpoints cap this at 8. |
+| `--guidance-scale` | float | `1.0`; `7.0` for `extract` unless overridden | Diffusion CFG; ignored by turbo checkpoints. |
 | `--seed` | integer | random if omitted | Generation seed. |
 
 ## Request Options (use with `--request-option`)
 
 | Option | Values | Default | Meaning |
 |---|---|---:|---|
-| `complete_track_classes` | comma-separated text | empty list | Track classes for `complete`. |
+| `complete_track_classes` | track class or JSON array | empty list | Track classes for `complete`, e.g. `'["vocals","guitar"]'`. A plain string is one class, not a comma-separated list. |
 | `bpm` | integer | not set | Force BPM metadata; otherwise the planner chooses it when used. |
 | `keyscale` | text | not set | Force key metadata; otherwise the planner chooses it when used. |
 | `timesignature` | text | not set | Force time signature metadata; otherwise the planner chooses it when used. |
@@ -182,6 +182,7 @@ audiocpp_cli --task gen --family ace_step --model models/Ace-Step1.5 --backend c
 | `lm_top_p` | float | `0.9` | Planner top-p. |
 | `lm_repetition_penalty` | float | `1.0` | Planner repetition penalty. |
 | `sampler_mode` | `euler`, `heun` | `euler` | Diffusion sampler mode. |
+| `shift` | float | `1.0`; `3.0` for `extract` unless overridden | Diffusion timestep schedule shift. |
 | `retake_seed` | integer, `-1` to clear | not set | Optional retake noise seed. |
 | `retake_variance` | float | `0.0` | Retake noise mixing strength. |
 | `flow_edit_morph` | bool | `false` | Status: parsed for text2music, but not usable because the flow-edit diffusion overlay is not implemented. |
@@ -191,20 +192,147 @@ audiocpp_cli --task gen --family ace_step --model models/Ace-Step1.5 --backend c
 
 | Option | Values | Default | Meaning |
 |---|---|---:|---|
-| `ace_step.dit_weight_type` | `native`, `f32`, `f16`, `bf16`, `q8_0` | `native` | DiT weight type. |
-| `ace_step.planner_weight_type` | `native`, `f32`, `f16`, `bf16`, `q8_0` | `native` | Planner LM weight type. |
+| `ace_step.lora` | adapter path | none | DiT decoder adapter file or PEFT directory; merged during weight loading. |
+| `ace_step.lora_scale` | finite float | `1.0` | Adapter strength multiplied by metadata scaling; zero disables it. |
+| `ace_step.weight_type` | `native`, `f32`, `f16`, `bf16`, `q8_0` | `native` | Shared weight storage type. |
+| `ace_step.dit_weight_type` | same as above | inherits `ace_step.weight_type` | DiT override; `f16` is promoted to `bf16`. |
+| `ace_step.dit_attention` | `auto`, `eager`, `flash` | `auto` | DiT attention implementation. Auto selects flash on supported GPUs and eager on CPU. |
+| `ace_step.planner_weight_type` | same as above | inherits `ace_step.weight_type` | Planner LM override. |
+| `ace_step.planner_prefix_bucketing` | bool | `true` | Bucket planner CFG attention to the valid prefix. Set `false` for full-capacity attention; other optimizations remain enabled. |
+| `ace_step.planner_fused_projections` | bool | `false`; `true` in `cuda_perf` | CUDA packed QKV and gate/up projections with fused SwiGLU. Can change generated codes. |
+| `ace_step.planner_f16_decode` | bool | `false`; `true` in `cuda_perf` | CUDA F16 KV and prefix-bucketed decoding for metadata and CFG-off codes. CFG-on code decoding already uses F16 KV. Can change generated codes. |
+| `ace_step.planner_independent_cfg_prefill` | bool | `false`; `true` in `cuda_perf` | Prefill CUDA CFG branches at their actual lengths instead of left-padding them to a shared length. Can change generated codes. |
+| `ace_step.text_encoder_weight_type` | same as above | inherits `ace_step.weight_type` | Text encoder override. |
+| `ace_step.vae_weight_type` | same as above | inherits `ace_step.weight_type` | VAE override. |
+| `ace_step.perf_mode` | `off`, `cuda_perf` | `off` | `cuda_perf` enables the three CUDA planner options above and selects VAE tiles of 1024 latent frames with 64-frame overlap per side. Explicit options override the preset. |
+| `ace_step.vae_tile_frames` | positive integer | backend policy | Maximum latent frames evaluated per VAE tile. `cuda_perf` sets 1024. |
+| `ace_step.vae_tile_overlap_frames` | non-negative integer | backend policy | Context per side, in latent frames; must be less than half the tile capacity. `cuda_perf` sets 64. |
 | `ace_step.mem_saver` | bool | `false` | Release staged graph/cache state after request phases to reduce resident VRAM. Later requests may rebuild released graphs. |
+
+## DiT Performance
+
+Static conditioning, attention masks and cross-attention K/V stay resident
+during a diffusion pass and refresh when conditioning changes. They are not
+rebuilt and uploaded at every solver step.
+
+`ace_step.dit_attention=auto` uses flash attention on supported GPUs and eager
+attention on CPU. Set it to `eager` to retain the previous attention lowering.
+Flash preserves the model's full/sliding masks and F32 accumulation, but can
+change floating-point results. This option does not convert model weights.
+
+## Planner Performance
+
+Planner decoding reads K/V cache views directly. CFG decoding stores K/V in
+F16 and reuses cached graphs sized to the valid prefix, rounded up to 256
+steps. The complete history remains visible; this is not sliding-window
+attention. Model weights are not converted by these optimizations. Different
+cache precision or attention shapes can change sampled output at a fixed seed.
+Disable prefix bucketing with
+`--session-option ace_step.planner_prefix_bucketing=false`.
+
+The default leaves projection packing, F16 metadata/CFG-off decoding and
+independent CFG prefill disabled. Enable them individually with the planner
+options above, or together with `ace_step.perf_mode=cuda_perf`. These change
+floating-point execution and can produce different generated codes and WAVs,
+even at the same seed. Explicit `false` values override the preset. The preset
+does not change planner weight precision; `ace_step.planner_weight_type`
+remains a separate explicit choice.
+
+Each planner control works independently; enabling one does not enable the
+others. Independent CFG prefill is ignored when planner CFG is off. Requests
+can switch CFG on/off within one session; their prefill precision and decode
+batch-size graphs are cached separately.
+
+Prefill/decode graphs are session-owned and reused when `mem_saver=false`.
+This avoids rebuilding them on later requests but retains their GPU memory.
+
+## VAE Performance
+
+The Snake activation uses a broadcast graph that allows existing CUDA fusion,
+without changing weight precision. This fix is independent of `perf_mode`.
+
+With `perf_mode=off` and no tile overrides, tiling is unchanged: long GPU
+requests use 128-frame tiles with 32-frame overlap per side (stride 64),
+and long CPU requests use 256/64. Requests up to 512 latent frames on GPU
+or 256 on CPU retain the existing single-graph decode path.
+
+For larger tiles, add:
+
+```bash
+--session-option ace_step.perf_mode=cuda_perf
+```
+
+This selects 1024/64 and enables the CUDA planner optimizations described
+above, without changing weight precision or DiT attention selection.
+Larger tiles reduce redundant overlap computation but
+use more peak VRAM and can change floating-point results. The preset does
+not select a backend; use `--backend` separately.
+
+Explicit values override the preset, for example to retain the smaller tiles:
+
+```bash
+--session-option ace_step.perf_mode=cuda_perf \
+--session-option ace_step.vae_tile_frames=128 \
+--session-option ace_step.vae_tile_overlap_frames=32
+```
+
+An explicit tile capacity also applies to short requests. If only the tile
+capacity is set in `off` mode, overlap is derived from the existing 64-frame
+policy, reduced to fit the tile. Explicit overlap is never silently reduced:
+`2 * overlap < tile_frames` must hold. When reducing the preset's tile size,
+override its overlap too if necessary.
+
+## Weight Adapters
+
+DiT LoRA/LoKr adapters can be selected with
+`--session-option ace_step.lora=/path/to/adapter`. PEFT directories use
+`adapter_model.safetensors` and `adapter_config.json`; SafeTensors files may use
+native A/B, ComfyUI up/down, or ordinary matrix LoKr factors. Only decoder
+targets are adapted; the planner, conditioning encoders, and VAE remain unchanged.
+Paths relative to the model root are accepted. Adapter changes require a new
+session. Merging a quantized base dequantizes and requantizes the adapted weights;
+it is not equivalent to adapting the original full-precision checkpoint first.
 
 ## Load Options (use with `--load-option`)
 
 | Option | Values | Default | Meaning |
 |---|---|---:|---|
-| `ace_step.dit_model_path` | `acestep-v15-turbo`, `acestep-v15-base`, `acestep-v15-xl-turbo`, `acestep-v15-xl-sft` | `acestep-v15-turbo` | Select DiT variant inside the model root. |
+| `ace_step.dit_model_path` | `acestep-v15-turbo`, `acestep-v15-base`, `acestep-v15-xl-turbo`, `acestep-v15-xl-sft` | filename-derived; otherwise `acestep-v15-turbo` | Override DiT variant selection inside the model root. |
 
-ACE-Step GGUF packages are variant-specific. Use the Turbo GGUF for the default
-`acestep-v15-turbo` path, and pass `--load-option ace_step.dit_model_path=acestep-v15-base`
-when loading a Base GGUF package, or
-`--load-option ace_step.dit_model_path=acestep-v15-xl-turbo` for the XL Turbo one.
+### Spec Scope And Compatibility
+
+The spec lists generation, musical metadata, planner, editing, retake, and
+semantic-code controls, plus weight storage, memory saving, and DiT selection.
+Request names are unprefixed; session and load names use `ace_step.` in CLI/server
+configuration. Prompt text and source audio remain structured inputs.
+
+The following legacy names remain accepted:
+
+| Scope | Canonical | Legacy |
+|---|---|---|
+| Request | `duration_sec` | `duration_seconds` |
+| Request | `lm_guidance_scale` | `lm_cfg_scale` |
+| Request | `enable_thinking` | `thinking` |
+| Request | `audio_codes` | `audio_code_string` |
+| Session | `ace_step.mem_saver` | `mem_saver` |
+
+The shared parser rejects conflicting values supplied under both spellings.
+`audio_codes` is the existing exception: it takes precedence over
+`audio_code_string`.
+
+Older standalone GGUFs do not need re-emission or a local spec override to use
+these controls: ACE-Step parses them directly, without an embedded-spec option
+whitelist. The spec expansion does not introduce stricter runtime validation.
+
+To keep the embedded spec compact, it omits debug noise inputs, graph arenas,
+individual planner CoT switches, low-level velocity/repaint tuning, experimental
+`dcw_*`, and the unimplemented `flow_edit_morph` path. Existing runtime support
+for omitted controls is unchanged. Repaint preset fields have no spec default
+because supplying a preset changes behavior compared with leaving both unset.
+
+ACE-Step GGUF packages are variant-specific. The model filename selects the DiT
+variant by default. Use `--load-option ace_step.dit_model_path=<variant>` when
+the filename does not identify the packaged variant.
 
 ### XL variants
 

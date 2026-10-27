@@ -7,6 +7,7 @@
 #include "engine/framework/runtime/options.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <stdexcept>
@@ -23,6 +24,31 @@ using Clock = std::chrono::steady_clock;
 constexpr const char * kFamily = "minimax_music3";
 constexpr size_t kDefaultGraphArenaBytes = 32ull * 1024ull * 1024ull;
 constexpr size_t kDefaultWeightContextBytes = 32ull * 1024ull * 1024ull;
+
+struct PerfPreset {
+    std::string_view name;
+    MiniMaxMusic3PerfOptions settings;
+};
+
+constexpr std::array<PerfPreset, 2> kPerfPresets{{
+    {"off", {}},
+    {"cuda_perf", {256}},
+}};
+
+MiniMaxMusic3PerfOptions perf_options_from_session(const runtime::SessionOptions & options) {
+    const auto name = runtime::find_option(options.options, {"minimax_music3.perf_mode"}).value_or("off");
+    const auto preset = std::find_if(kPerfPresets.begin(), kPerfPresets.end(),
+        [&](const auto & entry) { return entry.name == name; });
+    if (preset == kPerfPresets.end()) {
+        throw std::runtime_error("Invalid minimax_music3.perf_mode: " + name);
+    }
+    auto settings = preset->settings;
+    settings.kv_cache_alignment = runtime::parse_positive_i64_option(
+        options.options, {"minimax_music3.kv_cache_alignment"}, settings.kv_cache_alignment);
+    debug::trace_log_scalar("minimax_music3.perf_mode", name);
+    debug::trace_log_scalar("minimax_music3.kv_cache_alignment", settings.kv_cache_alignment);
+    return settings;
+}
 
 std::shared_ptr<const MiniMaxMusic3Assets> require_assets(std::shared_ptr<const MiniMaxMusic3Assets> assets) {
     if (assets == nullptr) {
@@ -130,17 +156,17 @@ runtime::ModelCliInterface minimax_music3_cli_interface() {
     runtime::ModelCliInterface out;
     out.request_options = {
         {"lyrics", "string", "Lyrics to sing.", true},
-        {"duration_sec", "float", "Maximum generated audio duration in seconds.", false, "20.0", "0.1"},
+        {"duration_sec", "float", "Positive AR frame budget expressed in seconds; not a hard final waveform duration limit.", false, "20.0", std::nullopt},
         {"num_inference_steps", "int", "Flow matching Euler steps per chunk.", false, "30", "1"},
         {"guidance_scale", "float", "Flow transformer classifier-free guidance scale. Must be > 0.", false, "1.7", "0"},
         {"ar_guidance_scale", "float", "Autoregressive semantic and depth CFG scale. Must be > 0.", false, "1.5", "0"},
         {"top_k", "int", "Top-k sampling for semantic and residual code sampling.", false, "50", "1"},
         {"seed", "int", "Generation seed.", false, "0", "0"},
-        {"flow_uncond_interval", "int", "Evaluate the unconditional flow CFG branch every N-th step, reusing the guidance delta between evaluations. Default 1 evaluates both branches every step.", false, "1"},
-        {"flow_uncond_warmup", "int", "Number of initial flow steps that always evaluate both CFG branches when delta reuse is enabled; default 2.", false, "2"},
-        {"ensemble_takes", "int", "Decode 1-16 independent takes of the same prompt in one batched AR pass (seeds seed..seed+N-1); flow and vocoder run per take. Outputs are returned as named audio (take_01..take_NN) for --out-dir.", false, "1", "1", "16"},
+        {"flow_uncond_interval", "int", "Evaluate unconditional flow CFG every N-th step, reusing the guidance delta between evaluations. Values <= 1 disable reuse and evaluate both branches every step.", false, "1"},
+        {"flow_uncond_warmup", "int", "Initial flow steps that evaluate both CFG branches before guidance-delta reuse; nonpositive values add no warmup.", false, "2"},
+        {"ensemble_takes", "int", "Independent takes in a batched AR pass using consecutive seeds; flow/vocoder decode each take. Named outputs take_01 through take_NN are emitted only when ensemble_takes > 1; otherwise only primary audio is returned.", false, "1", "1", "16"},
         {"ensemble_prefix_frames", "int", "Intro-lock for ensembles: decode the first N frames once as a shared master trajectory (~25 frames per second), then fork the takes (take_01 continues the master exactly). 0 disables.", false, "0", "0"},
-        {"flow_chunk_hop_frames", "int", "Flow chunk hop in AR frames (~25/sec). Default 0 keeps the model config (100, 50% chunk overlap). 150 measures flow ~-35% with consistently rederived crops/carry.", false, "0", "0"},
+        {"flow_chunk_hop_frames", "int", "Flow chunk hop in AR frames, approximately 25 per second. Zero uses checkpoint configuration; positive values are capped at the configured chunk size.", false, "0", "0"},
     };
     out.session_options = {
         {"minimax_music3.weight_type", "native|bf16|f16|q8_0|q4_0|q4_k", "Shared weight storage type.", false, "native"},
@@ -151,6 +177,8 @@ runtime::ModelCliInterface minimax_music3_cli_interface() {
         {"minimax_music3.weight_context_mb", "int", "Weight context size in MiB.", false, "32", "1"},
         {"minimax_music3.mem_saver", "bool", "Load large generation stages only while they are needed to reduce peak VRAM.", false, "true"},
         {"minimax_music3.pipeline_overlap", "bool", "Overlap AR decoding with per-chunk condition/flow/vocoder work on a second backend stream. Requires mem_saver=false; combining with mem_saver=true is an error. Long requests and nondefault chunk hops use the sequential pipeline.", false, "false"},
+        {"minimax_music3.perf_mode", "off|cuda_perf", "Performance preset; cuda_perf selects attention-prefix buckets of 256 rows. Explicit controls override the preset.", false, "off"},
+        {"minimax_music3.kv_cache_alignment", "int", "Attention-prefix bucket size; 1 preserves full-capacity attention. All valid history is retained. Graph shapes may change sampled output. Explicit values override the preset.", false, std::nullopt, "1"},
     };
     return out;
 }
@@ -213,7 +241,8 @@ MiniMaxMusic3Session::MiniMaxMusic3Session(
         weight_context_bytes,
         weight_type,
         memory_saver,
-        pipeline_overlap);
+        pipeline_overlap,
+        perf_options_from_session(this->options()));
 }
 
 MiniMaxMusic3Session::~MiniMaxMusic3Session() = default;

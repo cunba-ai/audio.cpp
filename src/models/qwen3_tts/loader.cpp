@@ -1,9 +1,12 @@
 #include "engine/models/qwen3_tts/loader.h"
 
 #include "engine/framework/model_spec/package.h"
+#include "engine/framework/io/json.h"
+#include "engine/framework/rknn/engine_resources.h"
 #include "engine/models/qwen3_tts/session.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <stdexcept>
 #include <utility>
 
@@ -35,10 +38,12 @@ runtime::CapabilitySet capabilities(const Qwen3TTSAssets & assets) {
     if (assets.config.variant == Qwen3TTSVariant::Base) {
         out.supported_tasks = {
             {runtime::VoiceTaskKind::Tts, {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
+            {runtime::VoiceTaskKind::VoiceCloning, {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
         };
         out.supports_speaker_reference = true;
     } else if (assets.config.variant == Qwen3TTSVariant::VoiceDesign) {
         out.supported_tasks = {
+            {runtime::VoiceTaskKind::Tts, {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
             {runtime::VoiceTaskKind::VoiceDesign, {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
         };
         out.supports_style_condition = true;
@@ -69,15 +74,24 @@ runtime::ModelCliInterface cli(const Qwen3TTSAssets &) {
         {"subtalker_top_k", "int", "Subtalker top-k sampling limit; default 50, 0 disables top-k filtering.", false, "50", "0"},
         {"subtalker_top_p", "float", "Subtalker nucleus sampling limit; default 1.0.", false, "1", "0", "1"},
         {"seed", "int", "Codec sampling seed; omitted requests choose a random seed.", false, std::nullopt, "0", "4294967295"},
-        {"reference_text", "string", "Transcript matching the reference audio for Base voice cloning.", false},
+        {"reference_text", "string", "Transcript matching the reference audio for Base voice cloning; required unless x_vector_only_mode=true.", false},
         {"x_vector_only_mode", "bool", "Use only the speaker embedding for Base voice cloning instead of ICL reference codec prompting; default false.", false, "false"},
-        {"instruct", "string", "Natural-language voice or style instruction for VoiceDesign and CustomVoice variants.", false},
+        {"instruct", "string", "Optional natural-language voice or style instruction for VoiceDesign and CustomVoice variants; empty instructions are accepted.", false},
         {"voice_id", "aiden|dylan|eric|ono_anna|ryan|serena|sohee|uncle_fu|vivian", "Named preset speaker from the CustomVoice checkpoint. These are the official checkpoint's presets; available names are determined by the loaded checkpoint. Legacy speaker remains accepted.", false},
         {"text_chunk_size", "int", "Maximum UTF-8 codepoints per long-form text chunk; default 8192.", false, "8192", "1"},
     };
     out.session_options = {
+        {"qwen3_tts.lora", "path", "PEFT LoRA adapter directory or checkpoint file; optional speaker_embedding and tts_config.json sidecars provide a trained custom voice.", false},
+        {"qwen3_tts.lora_scale", "float", "Multiplier for the adapter's alpha/r scaling; default 1.", false, "1"},
         {"qwen3_tts.mem_saver", "bool", "Release the talker cached-step graph after each request; default false.", false, "false"},
-        {"qwen3_tts.perf_mode", "off|flash_attention", "Q8_0-only attention performance mode; default off keeps the exact-safe path.", false, "off"},
+        {"qwen3_tts.stitch_decode", "bool", "Voice the concatenated speech codes of all text chunks in one decoder pass instead of voicing each chunk separately; default false. Per-chunk voicing re-voices the voice-clone reference once per chunk and restarts the stateful vocoder cache at every chunk boundary; the stitched pass costs device memory proportional to the utterance.", false, "false"},
+        {"qwen3_tts.perf_mode", "off|flash_attention|cuda_perf", "Performance preset; default off. flash_attention selects flash attention. cuda_perf also selects packed projections, optimized cache writes, f16 KV and convolution weights, stateful streaming decoding, and KV alignment 256. Explicit session options override the preset. May change audio and memory use.", false, "off"},
+        {"qwen3_tts.attention", "mixed|auto|eager|flash", "Attention preference; default mixed uses manual prefill and contiguous-K/V flash cached decoding in the talker and code predictor, with eager speech tokenization. auto uses the shared backend policy; eager disables flash; flash uses flash with K/V views. Explicit values override perf_mode.", false, "mixed"},
+        {"qwen3_tts.packed_projections", "bool", "Pack QKV and gate/up projections in the talker and code predictor without changing weight dtype; default false, true with cuda_perf. Explicit values override the preset.", false},
+        {"qwen3_tts.kv_cache_write", "standard|optimized", "Talker and code-predictor cache writes: standard by default, optimized with cuda_perf. Optimized uses backend-friendly views and I64 indices to allow fusion where supported. Explicit values override the preset.", false},
+        {"qwen3_tts.kv_cache_type", "f32|f16", "Talker and code-predictor KV storage: f32 by default, f16 with cuda_perf. Explicit values override the preset. F16 reduces cache memory and may change numerical results.", false},
+        {"qwen3_tts.talker_kv_cache_alignment", "int", "Round talker KV capacity to this many rows. Defaults to 1 (no padding), or 256 with perf_mode=cuda_perf. Explicit values override the preset. Larger alignments may use more memory and change numerical results.", false, "1", "1"},
+        {"qwen3_tts.stream_decoder", "windowed|stateful", "GGML streaming decoder; stateful carries convolution and attention history and caches graphs for exact chunk lengths. Uses more graph memory and can change audio; default windowed preserves existing behavior.", false, "windowed"},
         {"qwen3_tts.voice_prompt_cache_slots", "int", "Voice prompt cache slots; default 1.", false, "1", "0"},
         {"qwen3_tts.weight_type", "native|f32|f16|bf16|q8_0", "Shared talker matmul weight storage type; default native.", false, "native"},
         {"qwen3_tts.talker_weight_type", "native|f32|f16|bf16|q8_0", "Talker weight storage type; defaults to weight_type when set, otherwise native.", false},
@@ -105,6 +119,7 @@ public:
         runtime::CapabilitySet out;
         out.supported_tasks = {
             {runtime::VoiceTaskKind::Tts, {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
+            {runtime::VoiceTaskKind::VoiceCloning, {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
             {runtime::VoiceTaskKind::VoiceDesign, {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
         };
         out.supports_speaker_reference = true;
@@ -144,6 +159,36 @@ public:
     std::unique_ptr<runtime::ILoadedVoiceModel> load(const runtime::ModelLoadRequest & request) const override {
         return load_qwen3_tts_model(request.model_path);
     }
+
+    runtime::ModelResourcePlan model_resources(
+        const std::filesystem::path & model_path,
+        const std::unordered_map<std::string, std::string> & session_options) const override {
+        runtime::ModelResourcePlan plan;
+        const auto option = session_options.find("qwen3_tts.exec_plan");
+        if (option == session_options.end()) {
+            return plan;
+        }
+        std::vector<std::string> paths;
+        try {
+            const auto value = io::json::parse(option->second);
+            const auto * decoder = value.find("speech_decoder");
+            const auto * impl = decoder ? decoder->find("impl") : nullptr;
+            if (!impl || impl->as_string() != "rknn") {
+                return plan;
+            }
+            const auto & artifacts = decoder->require("artifacts");
+            paths.push_back(io::json::require_string(artifacts, "main"));
+            for (const char * const role : {"first", "window"}) {
+                if (const auto * artifact = artifacts.find(role)) {
+                    paths.push_back(artifact->as_string());
+                }
+            }
+        } catch (const std::runtime_error &) {
+            // Session loading reports invalid execution plans.
+            return plan;
+        }
+        return rknn::engine_resources(paths, model_path);
+    }
 };
 
 }  // namespace
@@ -167,11 +212,15 @@ const runtime::CapabilitySet & Qwen3TTSLoadedModel::capabilities() const noexcep
 std::unique_ptr<runtime::IVoiceTaskSession> Qwen3TTSLoadedModel::create_task_session(
     const runtime::TaskSpec & task,
     const runtime::SessionOptions & options) const {
-    if (assets_->config.variant == Qwen3TTSVariant::Base && task.task != runtime::VoiceTaskKind::Tts) {
-        throw std::runtime_error("Qwen3 base TTS model only supports the Tts task");
+    if (assets_->config.variant == Qwen3TTSVariant::Base &&
+        task.task != runtime::VoiceTaskKind::Tts &&
+        task.task != runtime::VoiceTaskKind::VoiceCloning) {
+        throw std::runtime_error("Qwen3 base TTS model supports TTS and voice cloning");
     }
-    if (assets_->config.variant == Qwen3TTSVariant::VoiceDesign && task.task != runtime::VoiceTaskKind::VoiceDesign) {
-        throw std::runtime_error("Qwen3 voice design model only supports the VoiceDesign task");
+    if (assets_->config.variant == Qwen3TTSVariant::VoiceDesign &&
+        task.task != runtime::VoiceTaskKind::Tts &&
+        task.task != runtime::VoiceTaskKind::VoiceDesign) {
+        throw std::runtime_error("Qwen3 voice design model supports TTS and voice design");
     }
     if (assets_->config.variant == Qwen3TTSVariant::CustomVoice && task.task != runtime::VoiceTaskKind::Tts) {
         throw std::runtime_error("Qwen3 custom voice model only supports the Tts task");

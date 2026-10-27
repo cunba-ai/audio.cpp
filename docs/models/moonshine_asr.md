@@ -1,5 +1,12 @@
 # Moonshine Streaming ASR
 
+Build with `-DENGINE_ENABLE_NEON=ON` (default OFF) to enable the native path.
+On ARM CPU, `--session-option 'moonshine_asr.exec_plan={"decoder":{"impl":"neon"}}'` selects the complete
+NEON decoder, including embedding lookup, cross-KV preparation and cached
+autoregressive steps. The encoder and sampling policy stay unchanged. Omission,
+an empty plan, or `decoder.impl=default/ggml` preserves the graph path. Explicit
+NEON requires an AArch64 CPU session. No artifacts or params are accepted.
+
 [Moonshine](https://huggingface.co/moonshine-ai) is an English streaming ASR
 family. audio.cpp supports the upstream tiny, small, and medium streaming
 checkpoints through the `moonshine_asr` family.
@@ -71,9 +78,12 @@ audiocpp_cli --task asr --mode streaming \
 | Option | Values | Default | Meaning |
 |---|---|---:|---|
 | `moonshine_asr.weight_type` | `native`, `f32`, `f16` | backend/config dependent | Shared matmul storage override. When omitted, the CPU encoder with hidden size 620, 10 layers and decoder hidden size 512 uses f16; other encoders use native. |
+| `moonshine_asr.conv_weight_type` | `native`, `f32`, `f16` | `native` | Frontend convolution weight storage override. |
 | `moonshine_asr.decoder_weight_type` | `native`, `f32`, `f16` | explicit shared setting, otherwise `native` | Decoder matmul storage override. |
 | `moonshine_asr.encoder_gelu` | `erf`, `exact`, `tanh`, `quick` | `quick` | Encoder GELU lowering. |
 | `moonshine_asr.cpu_blas_scheduler` | bool | `true` | Use BLAS/Accelerate for supported CPU encoder matmuls. |
+| `moonshine_asr.weight_context_mb` | integer MiB >= 1 | `256` | Weight context arena size. |
+| `moonshine_asr.graph_arena_mb` | integer MiB >= 1 | `512` | Graph arena size. |
 | `moonshine_asr.vad_model_path` | path | `assets/framework/models/silero_vad` | Silero VAD model path used by `audio_chunk_mode=vad`. |
 
 ## Conversion

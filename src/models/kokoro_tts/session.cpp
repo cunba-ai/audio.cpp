@@ -1,6 +1,9 @@
 #include "engine/models/kokoro_tts/session.h"
 
 #include "engine/framework/debug/profiler.h"
+#include "engine/framework/io/json.h"
+#include "engine/framework/rknn/engine.h"
+#include "engine/framework/rknn/engine_resources.h"
 #include "engine/framework/text/chunking.h"
 #include "engine/framework/debug/trace.h"
 #include "engine/framework/runtime/options.h"
@@ -12,7 +15,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -28,6 +33,12 @@ using engine::debug::measure_ms;
 constexpr int64_t kDefaultTextChunkSize = 240;
 constexpr const char * kFamily = "kokoro_tts";
 constexpr const char * kModelName = "Kokoro TTS";
+
+// Chinese and Japanese phonemize to several symbols per character, so a 240-character chunk exceeds the 510-symbol
+// input limit (Chinese does from about 150 characters) and the request fails. 100 characters leave room for denser text.
+int64_t default_text_chunk_size(const KokoroFrontendSessionState & state) {
+    return state.language_code == "z" || state.language_code == "j" ? 100 : kDefaultTextChunkSize;
+}
 
 }  // namespace
 
@@ -56,7 +67,39 @@ KokoroTTSSession::KokoroTTSSession(
                             "kokoro_tts.predictor_tail_graph_mb"}) {
         validation_options.options.erase(key);
     }
+    // Older embedded contracts omit exec_plan; parse_exec_plan validates its value.
+    if (contract_->session_option_keys.find("kokoro_tts.exec_plan") == contract_->session_option_keys.end()) {
+        validation_options.options.erase("kokoro_tts.exec_plan");
+    }
     runtime::validate_spec_backed_session_options(validation_options, *contract_, kFamily, kModelName);
+    const auto exec_plan = runtime::parse_exec_plan(
+        options.options,
+        "kokoro_tts.exec_plan",
+        {{"generator", "ggml",
+          {{"ggml", {options.backend.type}, {}, {}},
+           {"rknn", {}, {"main"}, {}, {"overlap", "gain"}},
+           {"neon", {core::BackendType::Cpu}, {}, {}}}}});
+    const auto & generator_plan = exec_plan.at("generator");
+    neon_generator_ = generator_plan.impl == "neon";
+    if (generator_plan.impl == "rknn") {
+        rknn_generator_path_ = engine::rknn::resolve_engine_path(
+            generator_plan.artifacts.at("main"), assets_->resources.model_directory());
+    }
+    if (const auto overlap = generator_plan.params.find("overlap"); overlap != generator_plan.params.end()) {
+        const auto & value = overlap->second;
+        if (!value.is_number() || !std::isfinite(value.as_number()) || value.as_number() < 0 ||
+            value.as_number() >= static_cast<double>(std::numeric_limits<int64_t>::max()) ||
+            std::floor(value.as_number()) != value.as_number()) {
+            throw std::runtime_error("kokoro_tts.exec_plan.generator.params.overlap must be a nonnegative integer");
+        }
+        rknn_generator_overlap_ = value.as_i64();
+    }
+    if (const auto gain = generator_plan.params.find("gain"); gain != generator_plan.params.end()) {
+        if (!gain->second.is_bool()) {
+            throw std::runtime_error("kokoro_tts.exec_plan.generator.params.gain must be a boolean");
+        }
+        rknn_generator_gain_ = gain->second.as_bool();
+    }
     if (task_.task != runtime::VoiceTaskKind::Tts) {
         throw std::runtime_error("Kokoro TTS only supports tts tasks");
     }
@@ -244,7 +287,10 @@ void KokoroTTSSession::prepare_decoder_graph_capacity(int64_t capacity) {
                 threads,
                 use_device_backend,
                 rng_seed_,
-                decoder_contract);
+                decoder_contract,
+                rknn_generator_path_,
+                rknn_generator_overlap_,
+                rknn_generator_gain_, neon_generator_);
         });
     }
     prepared_decoder_capacity_ = capacity;
@@ -348,13 +394,15 @@ void validate_request_options(
     const bool old_speed = contract.request_option_keys.find("speed") == contract.request_option_keys.end();
     const bool old_speaking_rate = contract.request_option_keys.find("speaking_rate") == contract.request_option_keys.end();
     const bool old_timestamps = contract.request_option_keys.find(kTimestampsOption) == contract.request_option_keys.end();
-    if (!old_phonemes && !old_speed && !old_speaking_rate && !old_timestamps) {
+    const bool old_voice_id = contract.request_option_keys.find("voice_id") == contract.request_option_keys.end();
+    if (!old_phonemes && !old_speed && !old_speaking_rate && !old_timestamps && !old_voice_id) {
         runtime::validate_spec_backed_request_options(options, option_arrays, contract, kModelName);
         return;
     }
     std::unordered_map<std::string, std::string> validation_options;
     for (const auto & [key, _] : options) {
         if ((key == "speed" && old_speed) || (key == "speaking_rate" && old_speaking_rate) ||
+            (key == "voice_id" && old_voice_id) ||
             (key == kTimestampsOption && old_timestamps)) continue;
         validation_options.emplace(key, std::string{});
     }
@@ -380,17 +428,30 @@ bool request_return_timestamps(const std::unordered_map<std::string, std::string
     return value.has_value() && runtime::parse_bool_option(*value, kTimestampsOption);
 }
 
-std::optional<runtime::VoiceCondition> voice_with_request_rate(
+std::optional<runtime::VoiceCondition> voice_with_request_options(
     const std::optional<runtime::VoiceCondition> & voice,
+    const std::optional<runtime::Transcript> & text,
     const std::unordered_map<std::string, std::string> & options) {
     const auto rate = runtime::parse_positive_finite_float_option(options, {"speed", "speaking_rate"});
-    if (!rate.has_value() || (voice.has_value() && voice->style.has_value() &&
-                              voice->style->speaking_rate.has_value())) {
+    const auto voice_id = runtime::find_option(options, {"voice_id"});
+    const auto language = runtime::find_option(options, {"language"});
+    if (!rate.has_value() && !voice_id.has_value() && !language.has_value()) {
         return voice;
     }
     auto resolved = voice.value_or(runtime::VoiceCondition{});
-    if (!resolved.style.has_value()) resolved.style = runtime::StyleCondition{};
-    resolved.style->speaking_rate = *rate;
+    if (voice_id.has_value() && (!resolved.speaker.has_value() || !resolved.speaker->cached_voice_id.has_value())) {
+        if (!resolved.speaker.has_value()) resolved.speaker = runtime::VoiceReference{};
+        resolved.speaker->cached_voice_id = *voice_id;
+    }
+    if (rate.has_value() && (!resolved.style.has_value() || !resolved.style->speaking_rate.has_value())) {
+        if (!resolved.style.has_value()) resolved.style = runtime::StyleCondition{};
+        resolved.style->speaking_rate = *rate;
+    }
+    if (language.has_value() && (!text.has_value() || text->language.empty()) &&
+        (!resolved.style.has_value() || !resolved.style->language.has_value())) {
+        if (!resolved.style.has_value()) resolved.style = runtime::StyleCondition{};
+        resolved.style->language = *language;
+    }
     return resolved;
 }
 
@@ -524,21 +585,13 @@ void append_kokoro_word_timings(
 
 void KokoroTTSSession::prepare(const runtime::SessionPreparationRequest & request) {
     validate_request_options(request.options, request.option_arrays, *contract_);
-    const auto voice = voice_with_request_rate(request.voice, request.options);
-    if (const auto seed = runtime::parse_u64_option(request.options, {"seed"})) {
-        if (rng_seed_ != *seed) {
-            rng_seed_ = *seed;
-            prepared_decoder_.reset();
-            prepared_decoder_capacity_ = 0;
-            prepared_decoder_context_ = {};
-        }
-    }
+    const auto voice = voice_with_request_options(request.voice, request.text, request.options);
     auto adapter = make_graph_capacity_adapter();
     int64_t request_size = 0;
     const auto & prepare_phonemes = require_phoneme_chunks(request.option_arrays);
     if (request.text.has_value()) {
-        const int64_t text_chunk_size =
-            engine::text::parse_text_chunk_size_override(request.options).value_or(kDefaultTextChunkSize);
+        const int64_t text_chunk_size = engine::text::parse_text_chunk_size_override(request.options).value_or(
+            default_text_chunk_size(resolve_kokoro_frontend_session_state(request.text, voice, *assets_)));
         // The graph is sized for the LARGEST chunk either way. With supplied phonemes the
         // caller's own chunking decides that, so the text is not split -- splitting it would
         // size the graph against a boundary run() is never going to use.
@@ -592,10 +645,14 @@ runtime::TaskResult KokoroTTSSession::synthesize(const runtime::TaskRequest & re
         throw std::runtime_error("Kokoro TTS run requires text_input");
     }
     validate_request_options(request.options, request.option_arrays, *contract_);
-    const auto voice = voice_with_request_rate(request.voice, request.options);
+    const auto voice = voice_with_request_options(request.voice, request.text_input, request.options);
 
-    const int64_t text_chunk_size =
-        engine::text::parse_text_chunk_size_override(request.options).value_or(kDefaultTextChunkSize);
+    rng_seed_ = runtime::parse_u64_option(request.options, {"seed"}).value_or(runtime::random_u64_seed());
+    if (prepared_decoder_) prepared_decoder_->set_seed(rng_seed_);
+    engine::debug::trace_log_scalar("kokoro.generation.seed", rng_seed_);
+
+    const int64_t text_chunk_size = engine::text::parse_text_chunk_size_override(request.options).value_or(
+        default_text_chunk_size(resolve_kokoro_frontend_session_state(request.text_input, voice, *assets_)));
     // ⚠ WHEN PHONEMES ARE SUPPLIED THE CALLER OWNS THE CHUNKING. Chunking splits the TEXT, and
     // nothing here knows where the matching cut points in someone else's phoneme stream are --
     // only their G2P does. So the option is a LIST: one entry per chunk, rendered in order and
@@ -741,6 +798,27 @@ runtime::TaskResult KokoroTTSSession::synthesize(const runtime::TaskRequest & re
 std::shared_ptr<runtime::IVoiceModelLoader> make_kokoro_tts_loader() {
     runtime::SpecBackedVoiceModelConfig<KokoroAssets> config;
     config.family = kFamily;
+    config.model_resources = [](const std::filesystem::path & path,
+                                const std::unordered_map<std::string, std::string> & options) {
+        const auto option = options.find("kokoro_tts.exec_plan");
+        if (option == options.end()) {
+            return runtime::ModelResourcePlan{};
+        }
+        std::vector<std::string> artifacts;
+        try {
+            const auto plan = io::json::parse(option->second);
+            const auto * generator = plan.find("generator");
+            const auto * impl = generator ? generator->find("impl") : nullptr;
+            if (!impl || impl->as_string() != "rknn") {
+                return runtime::ModelResourcePlan{};
+            }
+            artifacts.push_back(io::json::require_string(generator->require("artifacts"), "main"));
+        } catch (const std::runtime_error &) {
+            // Session loading reports invalid execution plans.
+            return runtime::ModelResourcePlan{};
+        }
+        return rknn::engine_resources(artifacts, path);
+    };
     config.load_assets = [](const std::filesystem::path & model_path) {
         return load_kokoro_assets(model_path);
     };

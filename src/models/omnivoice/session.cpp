@@ -4,6 +4,7 @@
 #include "engine/framework/runtime/options.h"
 #include "engine/framework/runtime/spec_backed_model.h"
 #include "engine/framework/text/chunking.h"
+#include "engine/framework/text/utf8.h"
 
 #include <chrono>
 #include <cmath>
@@ -255,8 +256,10 @@ OmniVoiceSession::OmniVoiceSession(
           mem_saver_,
           generator_perf_mode_) {
     engine::debug::trace_log_scalar("omnivoice.perf_mode", perf_mode_name(generator_perf_mode_));
-    if (task_.task != runtime::VoiceTaskKind::Tts) {
-        throw std::runtime_error("OmniVoice only supports VoiceTaskKind::Tts");
+    if (task_.task != runtime::VoiceTaskKind::Tts &&
+        task_.task != runtime::VoiceTaskKind::VoiceCloning &&
+        task_.task != runtime::VoiceTaskKind::VoiceDesign) {
+        throw std::runtime_error("OmniVoice supports TTS, voice cloning, and voice design");
     }
     if (task_.mode != runtime::RunMode::Offline && task_.mode != runtime::RunMode::Streaming) {
         throw std::runtime_error("OmniVoice only supports offline and streaming sessions");
@@ -419,7 +422,7 @@ runtime::TaskResult OmniVoiceSession::run(const runtime::TaskRequest & request) 
         } else {
             const double avg_tokens_per_char =
                 static_cast<double>(prompt.target_audio_tokens) /
-                static_cast<double>(std::max<size_t>(1, prompt.text.size()));
+                static_cast<double>(std::max<size_t>(1, engine::text::utf8_codepoint_count(prompt.text, "OmniVoice text")));
             text_chunk_size = std::max<int64_t>(
                 1,
                 static_cast<int64_t>(omni_request.generation.audio_chunk_duration_seconds *
@@ -557,6 +560,7 @@ void OmniVoiceSession::start_stream(const runtime::TaskRequest & request) {
         throw std::runtime_error("OmniVoice start_stream requires a streaming session");
     }
     reset();
+    stream_wall_start_ = Clock::now();
     initialize_streaming_request(request);
     stream_started_ = true;
 }
@@ -578,6 +582,10 @@ std::optional<runtime::StreamEvent> OmniVoiceSession::next_stream_event() {
         std::move(chunk_audio),
         {},
     });
+    if (chunk_index == 0) {
+        engine::debug::timing_log_scalar(
+            "omnivoice.session.first_audio_ms", engine::debug::elapsed_ms(stream_wall_start_, Clock::now()));
+    }
     return event;
 }
 
@@ -594,6 +602,7 @@ runtime::TaskResult OmniVoiceSession::finish_stream() {
     runtime::TaskResult task_result;
     const auto result = postprocessor_.finalize(stream_merged_audio_, *stream_request_);
     task_result.audio_output = result.audio;
+    engine::debug::timing_log_scalar("session.wall_ms", engine::debug::elapsed_ms(stream_wall_start_, Clock::now()));
     reset();
     return task_result;
 }
@@ -741,7 +750,7 @@ std::vector<std::string> OmniVoiceSession::plan_text_chunks(
     } else {
         const double avg_tokens_per_char =
             static_cast<double>(prompt.target_audio_tokens) /
-            static_cast<double>(std::max<size_t>(1, prompt.text.size()));
+            static_cast<double>(std::max<size_t>(1, engine::text::utf8_codepoint_count(prompt.text, "OmniVoice text")));
         text_chunk_size = std::max<int64_t>(
             1,
             static_cast<int64_t>(request.generation.audio_chunk_duration_seconds *
@@ -826,7 +835,13 @@ runtime::AudioBuffer OmniVoiceSession::synthesize_stream_chunk(size_t chunk_inde
     }
 
     const auto chunk_prompt = prompt_builder_.build(chunk_request);
+    const auto generate_start = Clock::now();
     auto chunk_tokens = generator_.generate(chunk_prompt, chunk_request.generation);
+    engine::debug::timing_log_scalar("omnivoice.session.generate_ms", engine::debug::elapsed_ms(generate_start, Clock::now()));
+    engine::debug::timing_log_scalar("omnivoice.generator.compute_ms", chunk_tokens.compute_ms);
+    engine::debug::timing_log_scalar("omnivoice.generator.readback_ms", chunk_tokens.readback_ms);
+    engine::debug::timing_log_scalar("omnivoice.generator.scoring_ms", chunk_tokens.scoring_ms);
+    engine::debug::timing_log_scalar("omnivoice.generator.graph.rebuild_ms", generator_.last_stats().rebuild_ms);
     if (mem_saver_) {
         generator_.release_runtime_graphs();
     }
@@ -843,7 +858,9 @@ runtime::AudioBuffer OmniVoiceSession::synthesize_stream_chunk(size_t chunk_inde
         stream_first_chunk_reference_ = std::move(chunk_ref);
         stream_first_chunk_text_ = stream_text_chunks_.front();
     }
+    const auto decode_start = Clock::now();
     auto chunk_audio = audio_tokenizer_.decode_audio_tokens(chunk_tokens);
+    engine::debug::timing_log_scalar("omnivoice.session.decode_ms", engine::debug::elapsed_ms(decode_start, Clock::now()));
     if (mem_saver_) {
         audio_tokenizer_.release_runtime_graphs();
     }

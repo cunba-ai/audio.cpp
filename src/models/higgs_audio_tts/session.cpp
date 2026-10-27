@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -112,6 +113,9 @@ HiggsGenerationOptions generation_options_from_request(
             options.max_tokens = *value;
         }
     }
+    if (const auto value = runtime::find_option(request.options, {"allow_incomplete_generation"})) {
+        options.allow_incomplete_generation = runtime::parse_bool_option(*value, "allow_incomplete_generation");
+    }
     if (const auto value = runtime::parse_float_option(request.options, {"temperature"})) {
         options.temperature = *value;
     }
@@ -120,6 +124,9 @@ HiggsGenerationOptions generation_options_from_request(
     }
     if (const auto value = runtime::parse_int_option(request.options, {"top_k"})) {
         options.top_k = *value;
+    }
+    if (const auto value = runtime::find_option(request.options, {"filter_nan_logits"})) {
+        options.filter_nan_logits = runtime::parse_bool_option(*value, "filter_nan_logits");
     }
     if (const auto value = runtime::parse_finite_float_option(request.options, {"repetition_penalty"})) {
         options.repetition_penalty = *value;
@@ -152,8 +159,9 @@ HiggsTTSSession::HiggsTTSSession(
     if (task_.mode != runtime::RunMode::Offline && task_.mode != runtime::RunMode::Streaming) {
         throw std::runtime_error("Higgs TTS supports offline and streaming sessions");
     }
-    if (task_.task != runtime::VoiceTaskKind::Tts) {
-        throw std::runtime_error("Higgs TTS only supports the Tts task");
+    if (task_.task != runtime::VoiceTaskKind::Tts &&
+        task_.task != runtime::VoiceTaskKind::VoiceCloning) {
+        throw std::runtime_error("Higgs TTS supports Tts and VoiceCloning tasks");
     }
     ar_weight_context_bytes_ = runtime::parse_size_mb_option(
         options.options, {"higgs_audio_tts.ar_weight_context_mb"}, ar_weight_context_bytes_);
@@ -291,10 +299,16 @@ runtime::TaskResult HiggsTTSSession::synthesize(const runtime::TaskRequest & req
     debug::trace_log_scalar("higgs_audio_tts.text_chunk_count", static_cast<int64_t>(chunk_requests.size()));
 
     runtime::AudioBuffer merged_audio;
+    std::optional<HiggsCodecEncodeOutput> generated_reference;
     emit_progress("higgs_audio_tts", 0, static_cast<int64_t>(chunk_requests.size()));
     for (size_t i = 0; i < chunk_requests.size(); ++i) {
         const auto & chunk_request = chunk_requests[i];
-        const auto generation_request = make_generation_request(chunk_request, reference_codes);
+        auto generation_request = make_generation_request(chunk_request, reference_codes);
+        if (generated_reference.has_value()) {
+            generation_request.reference_text = chunk_requests.front().text_input->text;
+            generator_->prepare(generation_request);
+        }
+        HiggsGenerationResult result;
         if (streaming) {
             bool generation_complete = false;
             stream_audio_.begin(stream_config,
@@ -302,17 +316,23 @@ runtime::TaskResult HiggsTTSSession::synthesize(const runtime::TaskRequest & req
                     return codec_->decode_streaming_window(
                         window, stream_config.frames_per_chunk, generation_complete);
                 }, stream_event_sink());
-            generator_->generate(generation_request, &stream_audio_);
+            result = generator_->generate(generation_request, &stream_audio_);
             generation_complete = true;
             runtime::append_audio_buffer(merged_audio, stream_audio_.finish());
             debug::timing_log_scalar("higgs_audio_tts.generator.codec_decode_ms", stream_audio_.decode_ms());
         } else {
-            auto result = generator_->generate(generation_request);
+            result = generator_->generate(generation_request);
             runtime::append_audio_buffer(merged_audio, runtime::AudioBuffer{
                 result.audio.sample_rate,
                 result.audio.channels,
                 std::move(result.audio.values),
             });
+        }
+        // Anchor later unconditioned chunks to the first generated voice.
+        if (reference_codes == nullptr && chunk_requests.size() > 1) {
+            generated_reference = HiggsCodecEncodeOutput{
+                std::move(result.raw_codes), result.raw_frames, assets_->config.audio.num_codebooks};
+            reference_codes = &*generated_reference;
         }
         emit_progress("higgs_audio_tts", static_cast<int64_t>(i + 1), static_cast<int64_t>(chunk_requests.size()));
     }

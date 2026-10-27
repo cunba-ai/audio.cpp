@@ -130,9 +130,8 @@
       {
         "name": "text_chunk_size",
         "type": "int",
-        "description": "Framework long-form text chunk size.",
+        "description": "Framework long-form text chunk size; default 50 when hanzi, kana and Hangul outnumber other letters and digits, otherwise 256.",
         "required": false,
-        "default": 256,
         "min": 1
       },
       {
@@ -171,6 +170,17 @@
         "description": "Local frame decoder weight storage; inherits weight_type.",
         "required": false,
         "preset": "weight_type_full"
+      },
+      {
+        "name": "prefill_mode",
+        "type": "enum",
+        "description": "How prompt rows are forwarded: one batched graph (default, fast) or one row at a time through the decode graph. single_row keeps quantized runs on a single kernel family for numerical self-consistency at a one-time prefill latency cost; see the model docs' quantization notes.",
+        "required": false,
+        "values": [
+          "batched",
+          "single_row"
+        ],
+        "default": "batched"
       },
       {
         "name": "global_prefill_graph_arena_mb",
@@ -257,7 +267,7 @@
       "GGUF"
     ],
     "docs": [
-      "docs/models/moss_tts.md",
+      "docs/models/moss_tts_nano.md",
       "docs/tts.md",
       "docs/gguf.md"
     ]

@@ -15,8 +15,8 @@
   "zh"
  ],
  "capabilities": {
-  "vdes": [
-   "style_condition"
+  "design": [
+   "voice_design"
   ]
  },
  "options": {
@@ -135,7 +135,7 @@
    "GGUF"
   ],
   "docs": [
-   "docs/community_models/moss_voicegen.md",
+   "docs/models/moss_voicegen.md",
    "docs/tts.md",
    "docs/gguf.md"
   ]

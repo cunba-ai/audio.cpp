@@ -100,7 +100,7 @@ SortformerDiarSession::SortformerDiarSession(
       task_(std::move(task)),
       assets_(require_assets(std::move(assets))),
       contract_(require_contract(std::move(contract))),
-      default_postprocess_(parse_sortformer_postprocess_config(RuntimeSessionBase::options())),
+      default_postprocess_(parse_sortformer_postprocess_config(RuntimeSessionBase::options().options)),
       graph_arena_bytes_(
           runtime::parse_size_mb_option(RuntimeSessionBase::options().options, {"sortformer_diar.graph_arena_mb"}, kDefaultGraphArenaBytes)),
       weight_context_bytes_(
@@ -246,17 +246,7 @@ runtime::TaskResult SortformerDiarSession::run(const runtime::TaskRequest & requ
         throw std::runtime_error("Sortformer diar offline run requires audio_input");
     }
     emit_progress("sortformer_diar", 0, 1);
-    auto config = default_postprocess_;
-    if (!request.options.empty()) {
-        runtime::SessionOptions merged = options();
-        for (const auto & [key, value] : request.options) {
-            merged.options[key] = value;
-        }
-        config = parse_sortformer_postprocess_config(merged);
-        auto result = run_offline_diarization(*request.audio_input, config);
-        emit_progress("sortformer_diar", 1, 1);
-        return result;
-    }
+    const auto config = parse_sortformer_postprocess_config(request.options, default_postprocess_);
     auto result = run_offline_diarization(*request.audio_input, config);
     emit_progress("sortformer_diar", 1, 1);
     return result;

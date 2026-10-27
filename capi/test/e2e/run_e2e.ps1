@@ -64,7 +64,7 @@ if ($needsBuild) {
 @echo off
 call "$vcvars" >nul
 cd /d "$ExeDir"
-cl /nologo /O2 /W3 /utf-8 /Fe:audiocpp_e2e.exe "$cliSrc" /I"$cliHdr"
+cl /nologo /O2 /W3 /utf-8 /Fe:audiocpp_e2e.exe "$cliSrc" /I"$($cliHdr | Split-Path -Parent)"
 exit /b %ERRORLEVEL%
 "@ | Set-Content -Path $tmpBat -Encoding ASCII
     & cmd /c $tmpBat

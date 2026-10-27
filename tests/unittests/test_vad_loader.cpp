@@ -112,11 +112,15 @@ void test_rejections() {
     require(!missing.empty(), "a missing path was accepted");
 
     // Weights of a VAD family this binary lacks: say so instead of a Silero tensor error.
+    // Fork note: the fork's silero file-path probe (silero_vad_loader_routing_test) rejects
+    // foreign checkpoints earlier with "not a Silero VAD checkpoint" instead of upstream's
+    // "no Silero VAD tensors"; both wordings surface through the same loader fallback.
     TempDir dir("audiocpp_vad_loader_foreign");
     write_tiny_safetensors(dir.path / "other_vad.safetensors");
     const auto foreign = error_of([&] { (void)family_of(dir.path / "other_vad.safetensors"); });
-    require(foreign.find("no Silero VAD tensors") != std::string::npos &&
-                foreign.find("built VAD families") != std::string::npos,
+    const bool named_rejection = foreign.find("no Silero VAD tensors") != std::string::npos ||
+        foreign.find("not a Silero VAD checkpoint") != std::string::npos;
+    require(named_rejection && foreign.find("built VAD families") != std::string::npos,
             "foreign weights error: " + foreign);
 
     const auto bad_hint = error_of([] { (void)family_of(kSilero, std::string("not_a_vad_family")); });

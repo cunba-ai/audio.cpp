@@ -15,6 +15,7 @@ For adapter loading and merged GGUF export, see the [LoRA guide](lora.md).
 | F5-TTS | `f5_tts` | `tts`, `clon` | [F5-TTS](models/f5_tts.md) |
 | FireRedAudio | `firered_audio` | `asr`, `tts`, `clon`, `vdes` | [FireRedAudio](models/firered_audio.md) |
 | FireRedTTS3 | `fireredtts3` | `tts`, `clon`, `vdes` | [FireRedTTS3](models/fireredtts3.md) |
+| Fish Audio Drama3 / Drama3-small | `fish_drama3` | `tts`, `clon` | [Drama3](models/fish_drama3.md) |
 | Fish Audio S2 Pro | `fish_audio` | `tts`, `clon` | [Fish Audio S2 Pro](#fish-audio-s2-pro) |
 | GLM-TTS | `glm_tts` | `tts`, `clon` | [GLM-TTS](#glm-tts) |
 | Gradium Phonon | `gradium_phonon` | `tts` | [Gradium Phonon](models/gradium_phonon.md) |
@@ -52,6 +53,7 @@ For adapter loading and merged GGUF export, see the [LoRA guide](lora.md).
 | VoxCPM1 | `voxcpm1` | `tts`, `clon` | [VoxCPM1](#voxcpm1) |
 | VoxCPM2 | `voxcpm2` | `tts`, `clon`, `vdes` | [VoxCPM2](#voxcpm2) |
 | Voxtral 4B TTS | `voxtral_tts` | `tts` | [Voxtral TTS](models/voxtral_tts.md) |
+| XTTS v2 | `xtts_v2` | `tts` | [XTTS v2](community_models/xtts_v2.md) |
 
 This page covers speech TTS-style families. MiniMax-H3 appears here for prompt-driven dialogue audio, but it uses the generation route (`--task gen`) rather than the normal speech route (`--task tts`). Detailed route manuals live under `docs/models/` or `docs/models/` when a model needs more space.
 
@@ -1057,9 +1059,18 @@ audiocpp_cli --task tts --family voxcpm2 --model models/VoxCPM2 --backend cuda -
 | `stream_chunk_policy` | `grow`, `fixed` | `grow` | Streaming only. Grow emits one patch first, then doubles toward `stream_frames_per_event`; fixed waits for the configured patch count. |
 | `stream_frames_per_event` | integer >= 1 | `4` | Maximum generated latent patches per streaming audio event. Set to `1` for the original one-patch cadence. Ignored offline. |
 | `prompt_text` | text | not set | Transcript for continuation prompt audio, distinct from the base voice reference. |
+| `ultimate_clone` | bool | `false` | Use the voice reference itself as the continuation prompt, with `reference_text` or `prompt_text` as its transcript. Requires both reference audio and its transcript; cannot be combined with explicit prompt audio. Omitted/false preserves existing prompt selection. |
 | `chunk_strategy` | `continuation`, `stateless` | `continuation` | Long-form continuation or independent generation per chunk. Offline only. |
 | `text_chunk_size` | integer | `2048` | Framework long-form text chunk size. Offline only. |
 | `text_chunk_mode` | `default`, `tag_aware`, `japanese`, `endline` | `tag_aware` | Framework text chunking mode. Offline only. |
+
+For ultimate cloning, add `--request-option ultimate_clone=true` to a voice-clone
+request with `--voice-ref` and `--reference-text`. This uses continuation
+conditioning rather than reference-only cloning, in both offline and streaming
+modes. Existing explicit prompt audio with `prompt_text` remains supported when
+`ultimate_clone` is omitted or false. Encoded prompts use the existing in-memory
+cache; increase `voxcpm2.prompt_cache_slots` to retain multiple reference/prompt
+combinations in a session.
 
 ### Session Options (use with `--session-option`)
 

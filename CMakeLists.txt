@@ -136,6 +136,7 @@ option(ENGINE_HIP_STRIX_HALO_OPTIMIZATIONS
 # librknnrt. The engine links the board runtime; the models themselves are
 # converted offline on x86 with rknn-toolkit2.
 option(ENGINE_ENABLE_RKNN "Build the Rockchip NPU (librknnrt) decoder path" OFF)
+option(ENGINE_ENABLE_NEON "Build opt-in NEON library and native model paths" OFF)
 set(ENGINE_RKNN_INCLUDE_DIR "" CACHE PATH "Directory containing rknn_api.h (empty = use the system include path)")
 set(ENGINE_RKNN_LIBRARY "rknnrt" CACHE STRING "librknnrt to link (path or library name)")
 option(ENGINE_ENABLE_NATIVE_CPU "Build ggml CPU kernels with native host ISA flags" ${ENGINE_DEFAULT_ENABLE_NATIVE_CPU})
@@ -512,6 +513,9 @@ function(audiocpp_add_model target_name)
     add_library(engine_model_${target_name} OBJECT ${ARG_SOURCES})
     set_target_properties(engine_model_${target_name} PROPERTIES EXCLUDE_FROM_ALL TRUE)
     audiocpp_configure_runtime_object(engine_model_${target_name})
+    if (ENGINE_ENABLE_NEON)
+        target_compile_definitions(engine_model_${target_name} PRIVATE ENGINE_HAVE_NEON=1)
+    endif()
     set(AUDIOCPP_MODEL_TARGETS ${AUDIOCPP_MODEL_TARGETS} ${target_name} PARENT_SCOPE)
     set(AUDIOCPP_MODEL_${target_name}_INCLUDES "${ARG_INCLUDES}" PARENT_SCOPE)
     set(AUDIOCPP_MODEL_${target_name}_LOADERS "${ARG_LOADERS}" PARENT_SCOPE)
@@ -521,6 +525,21 @@ function(audiocpp_add_model target_name)
         set(AUDIOCPP_MODEL_ALIAS_${alias} ${target_name} PARENT_SCOPE)
     endforeach()
 endfunction()
+
+if (ENGINE_ENABLE_NEON)
+    add_library(engine_neon OBJECT
+        src/framework/neon/tensor.cpp
+        src/framework/neon/operators.cpp
+        src/framework/neon/execution.cpp
+        src/framework/neon/worker_team.cpp
+        src/framework/neon/blocks.cpp
+        src/framework/neon/kernels.cpp
+    )
+    target_include_directories(engine_neon PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+    target_compile_features(engine_neon PUBLIC cxx_std_17)
+    target_link_libraries(engine_neon PUBLIC Threads::Threads)
+    target_compile_definitions(engine_neon PUBLIC ENGINE_HAVE_NEON=1)
+endif()
 
 add_library(engine_core OBJECT
     src/framework/assets/resource_bundle.cpp
@@ -979,6 +998,21 @@ audiocpp_add_model(kroko_asr
         engine::models::kroko_asr::make_kroko_asr_loader
 )
 
+audiocpp_add_model(open_wake_word
+    SOURCES
+        src/models/open_wake_word/frontend.cpp
+        src/models/open_wake_word/weights.cpp
+        src/models/open_wake_word/runtime.cpp
+        src/models/open_wake_word/session.cpp
+    INCLUDES
+        engine/models/open_wake_word/session.h
+    LOADERS
+        engine::models::open_wake_word::make_open_wake_word_loader
+)
+if (ENGINE_ENABLE_NEON)
+    target_sources(engine_model_open_wake_word PRIVATE src/models/open_wake_word/neon_embedding.cpp)
+endif()
+
 audiocpp_add_model(micro_wake_word
     SOURCES
         src/models/micro_wake_word/frontend.cpp
@@ -1090,11 +1124,17 @@ audiocpp_add_model(personaplex
         engine::models::personaplex::make_personaplex_loader
 )
 
+set(AUDIOCPP_SANOTTS_NEON_SOURCES src/community_models/sanotts/neon_decoder.cpp)
+if (ENGINE_ENABLE_NEON)
+    set(AUDIOCPP_SANOTTS_NEON_SOURCES
+        src/community_models/sanotts/neon_library_decoder.cpp
+        src/community_models/sanotts/neon_weights.cpp)
+endif()
 audiocpp_add_model(sanotts
     SOURCES
         src/community_models/sanotts/assets.cpp
         src/community_models/sanotts/frontend.cpp
-        src/community_models/sanotts/neon_decoder.cpp
+        ${AUDIOCPP_SANOTTS_NEON_SOURCES}
         src/community_models/sanotts/piper_runtime.cpp
         src/community_models/sanotts/runtime.cpp
         src/community_models/sanotts/session.cpp
@@ -1540,6 +1580,26 @@ audiocpp_add_model(fish_audio
         engine::models::fish_audio::make_fish_audio_loader
 )
 
+add_library(utf8proc_vendor OBJECT external/utf8proc/utf8proc.c)
+set_target_properties(utf8proc_vendor PROPERTIES EXCLUDE_FROM_ALL TRUE POSITION_INDEPENDENT_CODE ON)
+target_include_directories(utf8proc_vendor PUBLIC external/utf8proc)
+target_compile_definitions(utf8proc_vendor PUBLIC UTF8PROC_STATIC)
+
+audiocpp_add_model(plapre
+    SOURCES
+        src/models/plapre/assets.cpp
+        src/models/plapre/frontend.cpp
+        src/models/plapre/generator.cpp
+        src/models/plapre/kanade.cpp
+        src/models/plapre/prompt.cpp
+        src/models/plapre/session.cpp
+    INCLUDES
+        engine/models/plapre/session.h
+    LOADERS
+        engine::models::plapre::make_plapre_loader
+)
+target_link_libraries(engine_model_plapre PRIVATE utf8proc_vendor)
+
 audiocpp_add_model(fish_drama3
     SOURCES
         src/community_models/fish_drama3/assets.cpp
@@ -1550,15 +1610,13 @@ audiocpp_add_model(fish_drama3
         src/community_models/fish_drama3/session.cpp
         src/community_models/fish_drama3/tokenizer_text.cpp
         src/community_models/fish_drama3/tower.cpp
-        external/utf8proc/utf8proc.c
     INCLUDES
         engine/community_models/fish_drama3/loader.h
     LOADERS
         engine::models::fish_drama3::make_fish_drama3_loader
 )
 
-target_include_directories(engine_model_fish_drama3 PRIVATE external/utf8proc)
-target_compile_definitions(engine_model_fish_drama3 PRIVATE UTF8PROC_STATIC)
+target_link_libraries(engine_model_fish_drama3 PRIVATE utf8proc_vendor)
 
 audiocpp_add_model(audio8_tts
     SOURCES
@@ -1888,6 +1946,11 @@ audiocpp_add_model(moonshine_asr
     LOADERS
         engine::models::moonshine_asr::make_moonshine_asr_loader
 )
+if (ENGINE_ENABLE_NEON)
+    target_sources(engine_model_moonshine_asr PRIVATE
+        src/models/moonshine_asr/neon_decoder.cpp
+        src/models/moonshine_asr/neon_weights.cpp)
+endif()
 
 audiocpp_add_model(qwen3_tts
     SOURCES
@@ -2748,15 +2811,24 @@ set(AUDIOCPP_RUNTIME_OBJECTS
     $<TARGET_OBJECTS:engine_model_silero_vad>
     $<TARGET_OBJECTS:engine_model_marblenet_vad>
 )
+if (ENGINE_ENABLE_NEON)
+    list(APPEND AUDIOCPP_RUNTIME_OBJECTS $<TARGET_OBJECTS:engine_neon>)
+endif()
 foreach(model_name IN LISTS AUDIOCPP_LINKED_MODELS)
     list(APPEND AUDIOCPP_RUNTIME_OBJECTS $<TARGET_OBJECTS:engine_model_${model_name}>)
 endforeach()
+if("fish_drama3" IN_LIST AUDIOCPP_LINKED_MODELS OR "plapre" IN_LIST AUDIOCPP_LINKED_MODELS)
+    list(APPEND AUDIOCPP_RUNTIME_OBJECTS $<TARGET_OBJECTS:utf8proc_vendor>)
+endif()
 
 message(STATUS "audio.cpp model composite: ${AUDIOCPP_MODEL_SET} selected [${AUDIOCPP_ENABLED_MODELS}] linked [${AUDIOCPP_LINKED_MODELS}]")
 add_library(engine_runtime STATIC
     src/framework/runtime/registry.cpp
     ${AUDIOCPP_RUNTIME_OBJECTS}
 )
+if (ENGINE_ENABLE_NEON)
+    target_compile_definitions(engine_runtime PUBLIC ENGINE_HAVE_NEON=1)
+endif()
 
 add_library(cjson_vendor STATIC
     external/cJSON/cJSON.c
@@ -3673,6 +3745,38 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
     add_test(NAME cpu_extra_buffers_test COMMAND cpu_extra_buffers_test)
     add_engine_unittest(rknn_engine_test tests/unittests/test_rknn_engine.cpp)
     add_test(NAME rknn_engine_test COMMAND rknn_engine_test)
+    if (ENGINE_ENABLE_NEON)
+        add_engine_unittest(neon_blocks_test tests/unittests/test_neon_blocks.cpp)
+        target_include_directories(neon_blocks_test PRIVATE src/framework/neon)
+        add_test(NAME neon_blocks_test COMMAND neon_blocks_test)
+        add_executable(neon_library_test tests/unittests/test_neon_library.cpp)
+        target_include_directories(neon_library_test PRIVATE tests/unittests)
+        target_link_libraries(neon_library_test PRIVATE engine_neon)
+        add_test(NAME neon_library_test COMMAND neon_library_test)
+    endif()
+    if (sanotts IN_LIST AUDIOCPP_LINKED_MODELS)
+        add_engine_unittest(sanotts_neon_decoder_test tests/unittests/test_sanotts_neon_decoder.cpp)
+        target_include_directories(sanotts_neon_decoder_test PRIVATE tests/unittests src/community_models/sanotts)
+        add_test(NAME sanotts_neon_decoder_test COMMAND sanotts_neon_decoder_test)
+    endif()
+    if (open_wake_word IN_LIST AUDIOCPP_LINKED_MODELS)
+        add_engine_unittest(open_wake_word_runtime_test tests/open_wake_word/test_runtime_parity.cpp)
+        add_engine_unittest(open_wake_word_frontend_test tests/open_wake_word/test_frontend.cpp)
+        set(AUDIOCPP_OPEN_WAKE_WORD_TRACE "" CACHE FILEPATH "Official OpenWakeWord parity trace GGUF")
+        if (AUDIOCPP_OPEN_WAKE_WORD_TRACE)
+            add_test(NAME open_wake_word_runtime_parity COMMAND open_wake_word_runtime_test
+                "${AUDIOCPP_OPEN_WAKE_WORD_TRACE}" 4)
+            add_test(NAME open_wake_word_frontend_parity COMMAND open_wake_word_frontend_test
+                "${AUDIOCPP_OPEN_WAKE_WORD_TRACE}")
+        endif()
+    endif()
+    if (ENGINE_ENABLE_NEON AND moonshine_asr IN_LIST AUDIOCPP_LINKED_MODELS)
+        add_executable(moonshine_neon_decoder_test tests/unittests/test_moonshine_neon_decoder.cpp
+            src/models/moonshine_asr/neon_decoder.cpp)
+        target_include_directories(moonshine_neon_decoder_test PRIVATE include tests/unittests)
+        target_link_libraries(moonshine_neon_decoder_test PRIVATE engine_neon)
+        add_test(NAME moonshine_neon_decoder_test COMMAND moonshine_neon_decoder_test)
+    endif()
     if (ENGINE_ENABLE_VULKAN)
         add_engine_unittest(vulkan_shared_weight_cache_test tests/unittests/test_vulkan_shared_weight_cache.cpp)
         add_test(NAME vulkan_shared_weight_cache_test COMMAND vulkan_shared_weight_cache_test)
@@ -4432,6 +4536,11 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
     endif()
 
     if (ENGINE_BUILD_MODEL_TESTS)
+        if("plapre" IN_LIST AUDIOCPP_LINKED_MODELS)
+            add_executable(plapre_codec_parity EXCLUDE_FROM_ALL tests/plapre/codec_parity.cpp)
+            target_link_libraries(plapre_codec_parity PRIVATE engine_runtime ggml)
+        endif()
+
         if (sanotts IN_LIST AUDIOCPP_LINKED_MODELS AND inflect_v2 IN_LIST AUDIOCPP_LINKED_MODELS)
             add_engine_unittest(espeak_frontend_probe tests/unittests/espeak_frontend_probe.cpp)
             if(AUDIOCPP_STATIC_ESPEAK)
@@ -4834,25 +4943,12 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
         add_engine_unittest(sanotts_frontend_test tests/unittests/test_sanotts_frontend.cpp)
         target_sources(sanotts_frontend_test PRIVATE
             src/community_models/sanotts/frontend.cpp
-            src/community_models/sanotts/neon_decoder.cpp
+            ${AUDIOCPP_SANOTTS_NEON_SOURCES}
             src/community_models/sanotts/runtime.cpp)
         target_include_directories(sanotts_frontend_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
         add_test(
             NAME sanotts_frontend_test
             COMMAND sanotts_frontend_test
-        )
-        endif()
-
-        # cpu_decoder=neon against a double-precision reference on random weights (no model files)
-        if (sanotts IN_LIST AUDIOCPP_LINKED_MODELS)
-        add_engine_unittest(sanotts_neon_decoder_test tests/unittests/test_sanotts_neon_decoder.cpp)
-        target_sources(sanotts_neon_decoder_test PRIVATE src/community_models/sanotts/neon_decoder.cpp)
-        target_include_directories(sanotts_neon_decoder_test PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/community_models/sanotts)
-        add_test(
-            NAME sanotts_neon_decoder_test
-            COMMAND sanotts_neon_decoder_test
         )
         endif()
 

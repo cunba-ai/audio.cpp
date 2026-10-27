@@ -243,6 +243,11 @@ field, repeated ~800k times. `tools/rknn/rknn_build_log.py` is the gate that sep
 it captures fds 1/2 around `rknn.build`, because those lines come from the C++ compiler and not from
 Python logging, and aborts past 100 000 lines.
 
+The call sequence that gate has to wrap — `config`, `load_onnx`, `build`, `export_rknn`, `release` —
+is the same in all five converters and lives in `tools/rknn/rknn_build.py` (`build_engine`). What
+stays per converter is the ONNX surgery, the input names and shapes it declares, and the
+simulator-side verification.
+
 The field is per axis and per op, and the ceiling is escapable: slicing the fine-rate axis inside
 the graph takes W=256 from 403 587 REGTASK lines to 0, and the re-traced module keeps every gate —
 60.5 dB against the runtime's generator, 135.6 dB padded-window exactness, 124.4 dB export against
@@ -663,9 +668,14 @@ Three consequences for anyone extending this path:
   at 20-260 MB per engine and never approach the ceiling. A graph whose intermediates grow with the
   sequence length - attention at fixed `S`, so S^2 - reaches it in the low hundreds of frames, long
   before the weight set does.
-- A ladder of engines has to be lazy and single-resident. Four engines that each load on their own
-  fail at `rknn_init` when all four are resident at once, so the runtime keeps exactly one loaded
-  and swaps on demand.
+- A ladder of engines has to be lazy. Four engines that each load on their own fail at `rknn_init`
+  when all four are resident at once, so the ladder loads on demand and evicts. How many rungs share
+  the aperture is a measurement, not a rule: the cost of a context is its compiled length, not its
+  image size, and the rungs co-resident on this board are S=200 x3, 250+250+110 and 110 x4 (all at
+  <= 1.81 GiB) while S=400 coexists only with 110/200 and S=500 with nothing. The accounting for that
+  is shared (`rknn::ApertureBudget`, `include/engine/framework/rknn/engine.h`) and the numbers are
+  not: the per-unit cost and the budget are measurements of one engine on one board, and they live
+  with the sidecar that measured them.
 - The failure is at init, so it is cheap to detect and cannot corrupt output: `rknn_init` returns -4
   and dmesg names the byte count.
 

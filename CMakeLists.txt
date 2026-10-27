@@ -101,6 +101,13 @@ option(ENGINE_ENABLE_CUDA_GRAPHS "Enable ggml CUDA graphs support" ${ENGINE_DEFA
 option(ENGINE_HIP_STRIX_HALO_OPTIMIZATIONS
     "Enable opt-in HIP optimizations validated only for Strix Halo (gfx1151)"
     OFF)
+# Rockchip NPU (RK3588 & co): a model-local compute path, not a ggml backend —
+# the Qwen3 TTS speech decoder runs a pre-compiled .rknn step graph through
+# librknnrt. The engine links the board runtime; the models themselves are
+# converted offline on x86 with rknn-toolkit2.
+option(ENGINE_ENABLE_RKNN "Build the Rockchip NPU (librknnrt) decoder path" OFF)
+set(ENGINE_RKNN_INCLUDE_DIR "" CACHE PATH "Directory containing rknn_api.h (empty = use the system include path)")
+set(ENGINE_RKNN_LIBRARY "rknnrt" CACHE STRING "librknnrt to link (path or library name)")
 option(ENGINE_ENABLE_NATIVE_CPU "Build ggml CPU kernels with native host ISA flags" ${ENGINE_DEFAULT_ENABLE_NATIVE_CPU})
 option(ENGINE_ENABLE_OPENMP "Build host code with OpenMP support" ON)
 option(AUDIOCPP_STATIC_ESPEAK "Build and statically link GPL-3.0-or-later eSpeak-ng; keep data separate" OFF)
@@ -426,6 +433,12 @@ function(audiocpp_configure_runtime_object target_name)
     if (AUDIOCPP_HIP_STRIX_HALO_OPTIMIZATIONS_ACTIVE)
         target_compile_definitions(${target_name} PRIVATE ENGINE_HIP_STRIX_HALO_OPTIMIZATIONS=1)
     endif()
+    if (ENGINE_ENABLE_RKNN)
+        target_compile_definitions(${target_name} PRIVATE ENGINE_HAVE_RKNN=1)
+        if (ENGINE_RKNN_INCLUDE_DIR)
+            target_include_directories(${target_name} PRIVATE ${ENGINE_RKNN_INCLUDE_DIR})
+        endif()
+    endif()
     target_link_libraries(${target_name} PRIVATE ggml sentencepiece)
     if (MSVC)
         # Source files embed UTF-8 text (CJK normalization tables, comments);
@@ -531,6 +544,7 @@ add_library(engine_core OBJECT
     src/framework/io/safetensors.cpp
     src/framework/debug/trace.cpp
     src/framework/debug/profiler.cpp
+    src/framework/rknn/engine.cpp
     src/framework/decoders/moss_tts_delay/backbone.cpp
     src/framework/decoders/moss_tts_delay/config.cpp
     src/framework/decoders/moss_tts_delay/delay_decoder.cpp
@@ -861,6 +875,7 @@ audiocpp_add_model(kokoro_tts
         src/models/kokoro_tts/frontend.cpp
         src/models/kokoro_tts/predictor.cpp
         src/models/kokoro_tts/decoder.cpp
+        src/models/kokoro_tts/rknn_generator.cpp
         src/models/kokoro_tts/plbert.cpp
         src/models/kokoro_tts/session.cpp
     INCLUDES engine/models/kokoro_tts/session.h
@@ -1075,6 +1090,7 @@ audiocpp_add_model(piper_tts
         src/community_models/piper_tts/assets.cpp
         src/community_models/piper_tts/frontend.cpp
         src/community_models/piper_tts/vits_runtime.cpp
+        src/community_models/piper_tts/rknn_decoder.cpp
         src/community_models/piper_tts/session.cpp
     INCLUDES
         engine/community_models/piper_tts/session.h
@@ -1827,6 +1843,7 @@ audiocpp_add_model(qwen3_tts
         src/models/qwen3_tts/tokenizer_text.cpp
         src/models/qwen3_tts/tokenizer_speech_encoder.cpp
         src/models/qwen3_tts/tokenizer_speech_decoder.cpp
+        src/models/qwen3_tts/rknn_speech_decoder.cpp
         src/models/qwen3_tts/speaker_encoder.cpp
         src/models/qwen3_tts/talker.cpp
         src/models/qwen3_tts/prompt_tts_voice_clone.cpp
@@ -2854,6 +2871,13 @@ endif()
 if (AUDIOCPP_HIP_STRIX_HALO_OPTIMIZATIONS_ACTIVE)
     target_compile_definitions(engine_runtime PRIVATE ENGINE_HIP_STRIX_HALO_OPTIMIZATIONS=1)
 endif()
+if (ENGINE_ENABLE_RKNN)
+    target_compile_definitions(engine_runtime PRIVATE ENGINE_HAVE_RKNN=1)
+    if (ENGINE_RKNN_INCLUDE_DIR)
+        target_include_directories(engine_runtime PUBLIC ${ENGINE_RKNN_INCLUDE_DIR})
+    endif()
+    target_link_libraries(engine_runtime PUBLIC ${ENGINE_RKNN_LIBRARY})
+endif()
 if (ENGINE_ENABLE_HIP)
     # ggml-hip publicly defines GGML_USE_CUDA for consumers, so engine code
     # needs this marker to tell a real CUDA build apart from a HIP build.
@@ -3594,6 +3618,8 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
     add_test(NAME shared_weight_cache_test COMMAND shared_weight_cache_test)
     add_engine_unittest(cpu_extra_buffers_test tests/unittests/test_cpu_extra_buffers.cpp)
     add_test(NAME cpu_extra_buffers_test COMMAND cpu_extra_buffers_test)
+    add_engine_unittest(rknn_engine_test tests/unittests/test_rknn_engine.cpp)
+    add_test(NAME rknn_engine_test COMMAND rknn_engine_test)
     if (ENGINE_ENABLE_VULKAN)
         add_engine_unittest(vulkan_shared_weight_cache_test tests/unittests/test_vulkan_shared_weight_cache.cpp)
         add_test(NAME vulkan_shared_weight_cache_test COMMAND vulkan_shared_weight_cache_test)
@@ -3667,6 +3693,12 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
         target_compile_definitions(parakeet_variant_config_test PRIVATE ENGINE_REPO_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
         add_test(NAME parakeet_variant_config_test COMMAND parakeet_variant_config_test)
 
+    endif()
+
+    if (granite5asr IN_LIST AUDIOCPP_LINKED_MODELS)
+        add_engine_unittest(granite5asr_ctc_timestamps_test tests/granite5asr/test_ctc_timestamps.cpp)
+        target_include_directories(granite5asr_ctc_timestamps_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
+        add_test(NAME granite5asr_ctc_timestamps_test COMMAND granite5asr_ctc_timestamps_test)
     endif()
 
     if (ENGINE_BUILD_TESTS)

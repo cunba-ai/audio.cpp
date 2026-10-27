@@ -169,8 +169,7 @@ constant-context sizes are in MiB.
 | `qwen3_tts.talker_constant_context_mb` | positive integer | `4` | Talker constant tensor context. |
 | `qwen3_tts.code_predictor_constant_context_mb` | positive integer | `4` | Code predictor constant tensor context. |
 | `qwen3_tts.speech_decoder_constant_context_mb` | positive integer | `4` | Speech decoder constant tensor context. |
-| `qwen3_tts.rknn_decoder` | `.rknn` path | not set | Path to a pre-compiled stateful speech-tokenizer decoder `.rknn` (Rockchip NPU). When set, the decoder stage runs on the NPU and its ggml weights are not loaded. |
-| `qwen3_tts.rknn_decoder_first` | `.rknn` path | not set | Optional smaller-batch `.rknn` used for the first token group only, to cut time-to-first-audio in streaming. Requires `rknn_decoder`. |
+| `qwen3_tts.exec_plan` | JSON object of component plans, encoded as a string | `{}` | `{"speech_decoder":{"impl":"rknn","artifacts":{"main":"/models/decoder.rknn","first":"/models/decoder-first.rknn"}}}` selects the NPU decoder and skips GGML decoder weights. `main` is required; `first` optionally uses a smaller engine for the first streaming group. No decoder-specific params. See [component execution plans](../build/rockchip-npu.md#component-execution-plans). |
 
 ## Rockchip NPU decoder
 
@@ -191,7 +190,7 @@ optional first-group model runs the first token group at a smaller compiled
 batch; the cache layout is batch-independent, so its cache feeds the main
 model directly. A `.rknn` is compiled per SoC and is not portable between
 chips. Build the file with
-[`tools/prepare_qwen3_tts_rknn_vocoder.py`](../../tools/prepare_qwen3_tts_rknn_vocoder.py)
+[`tools/rknn/prepare_qwen3_tts_rknn_vocoder.py`](../../tools/rknn/prepare_qwen3_tts_rknn_vocoder.py)
 and see [the Rockchip NPU build guide](../build/rockchip-npu.md) for the toolkit
 venv, the measured numbers, and the limits of this path. This path is opt-in
 and validated only on RK3588.

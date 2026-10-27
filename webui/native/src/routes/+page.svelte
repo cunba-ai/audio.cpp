@@ -40,6 +40,7 @@
   import Arena from './Arena.svelte';
   import Configuration from './Configuration.svelte';
   import ModelLibrary from './ModelLibrary.svelte';
+  import VoiceLibrary from './VoiceLibrary.svelte';
   import { loadUiConfiguration, uiConfiguration, uiConfigurationError } from '$lib/configuration';
   import type {
     AudioOutput,
@@ -57,7 +58,8 @@
   } from '$lib/voices';
   import '../app.css';
 
-  let tab: 'studio' | 'arena' | 'models' | 'logs' | 'configuration' = 'studio';
+  let tab: 'studio' | 'arena' | 'models' | 'logs' | 'configuration' | 'voices' = 'studio';
+  let voiceLibrary: VoiceLibrary | null = null;
   let arenaComponent: { runArena: () => Promise<void> } | null = null;
   let selectedId = catalog[0]?.id || '';
   let selected: CatalogEntry = catalog[0];
@@ -904,6 +906,7 @@
   }
 
   function openModelsPage() {
+    if (tab === 'voices' && !voiceLibrary?.canClose()) return;
     if (!server?.ui_management) {
       tab = 'studio';
       status = 'Model management is disabled for this configured server.';
@@ -991,7 +994,9 @@
   }
 
   async function openStudioPage() {
+    if (tab === 'voices' && !voiceLibrary?.canClose()) return;
     tab = 'studio';
+    await refreshVoices();
     await refresh();
     if (server?.ui_management) {
       await refreshPackageSizes();
@@ -2269,6 +2274,7 @@
   }
 
   function handleShortcut(event: KeyboardEvent) {
+    if (tab === 'voices') return;
     if (event.key === 'Escape' && folderBrowserOpen) {
       folderBrowserOpen = false;
       return;
@@ -2278,6 +2284,12 @@
       if (tab === 'arena') arenaComponent?.runArena();
       else run();
     }
+  }
+
+  function openPage(next: typeof tab) {
+    if (next === tab) return;
+    if (tab === 'voices' && !voiceLibrary?.canClose()) return;
+    tab = next;
   }
 
   async function refreshInstallJobs() {
@@ -2598,13 +2610,15 @@
   </div>
   <nav aria-label={tr('nav.primary')}>
     <button class:active={tab === 'studio'} on:click={openStudioPage}>{tr('nav.studio')}</button>
-    <button class:active={tab === 'arena'} on:click={() => tab = 'arena'}>{tr('nav.arena')}</button>
+    <button class:active={tab === 'arena'} on:click={() => openPage('arena')}>{tr('nav.arena')}</button>
+    <button class:active={tab === 'voices'} disabled={running || restoringHistory || Boolean(recorder) || liveRecording}
+      on:click={() => openPage('voices')}>Voices</button>
     {#if server?.ui_management !== false}
       <button class:active={tab === 'models'} on:click={openModelsPage}>{tr('nav.models')}</button>
     {/if}
-    <button class:active={tab === 'logs'} on:click={() => tab = 'logs'}>{tr('nav.runtime')}</button>
+    <button class:active={tab === 'logs'} on:click={() => openPage('logs')}>{tr('nav.runtime')}</button>
     <button class:active={tab === 'configuration'} disabled={restoringHistory}
-      on:click={() => tab = 'configuration'}>Configuration</button>
+      on:click={() => openPage('configuration')}>Configuration</button>
   </nav>
   <label class="language-picker">
     <span>{tr('language.label')}</span>
@@ -2642,21 +2656,18 @@
       {/each}
     </nav>
 
-    <section class="hero">
+    <section class="hero studio-heading">
       <div>
         <p class="eyebrow">{tr('studio.eyebrow')}</p>
         <h1>{selectedId ? localizedTaskLabel(selected?.task, tr, selected) : tr('studio.title')}</h1>
         <p>{tr(`studio.subtitle.${activeWorkflow === 'conversion' ? 'vc' : activeWorkflow === 'separation' ? 'sep' : activeWorkflow}`)}</p>
       </div>
-      <div class="hero-stat">
-        <span>{tr('studio.model')}</span>
-        <strong>{selectedId ? selected.display_name : tr('studio.noModel')}</strong>
-        <small class:ready={isLoaded}>{selectedId ? (isLoaded ? tr('studio.resident') : installed === false ? tr('studio.notInstalled') : tr('studio.available')) : tr('studio.chooseInstalled')}</small>
-      </div>
+      <span class="studio-model-status" class:ready={isLoaded}>{selectedId ? (isLoaded ? tr('studio.resident') : installed === false ? tr('studio.notInstalled') : tr('studio.available')) : tr('studio.chooseInstalled')}</span>
     </section>
 
     <div class="studio-grid">
-      <aside class="panel model-rail">
+      <aside class="model-rail studio-model-toolbar" aria-label={tr('studio.model')}>
+        <div class="studio-model-picker">
         <label for="model">{tr('studio.model')}</label>
         <select id="model" bind:value={selectedId} disabled={modelInventoryLoading || restoringHistory}
           on:change={(event) => chooseModel(event.currentTarget.value)}>
@@ -2681,7 +2692,9 @@
           </span>
           <span>{selectedId ? tr('studio.estimatedVram', { value: selected?.min_vram_gb || '?' }) : tr('studio.vram')}</span>
         </div>
+        </div>
 
+        <div class="studio-model-packages">
         {#if selected.family === 'builtin_audio_utils' && server?.ui_management}
           <label for="utility-weights">Weights path on server</label>
           <input id="utility-weights" bind:value={modelPath} on:change={inspectPath} disabled={isLoaded || loadingModel || running} />
@@ -2714,21 +2727,25 @@
           </button>
         {/if}
 
+        </div>
+
         {#if selectedId && (selected?.input_hint_en || selected?.input_hint)}
           <div class="hint">{localizedModelHint(tr)}</div>
         {/if}
       </aside>
 
-      <section class="panel controls">
+      <section class="controls">
         {#if selectedId}
         <div class="section-title">
           <div><span>{tr('request.label')}</span><h2>{tr('request.title')}</h2></div>
-          <span class="task-chip">{selected?.task}</span>
+          <div class="studio-request-actions">
+            <span class="task-chip">{selected?.task}</span>
+            <button type="button" class="settings-import" disabled={running || loadingModel || restoringHistory}
+              on:click={() => settingsInput?.click()}>Load settings JSON</button>
+          </div>
         </div>
         <input type="file" accept=".json,application/json" bind:this={settingsInput} hidden
           on:change={(event) => loadSettingsFile(event.currentTarget.files?.[0] || null)} />
-        <button type="button" class="settings-import" disabled={running || loadingModel || restoringHistory}
-          on:click={() => settingsInput?.click()}>Load settings JSON</button>
 
         {#if showsText}
           <label for="text">{selected.task === 'gen' ? tr('request.prompt') : selected.task === 'align' ? tr('request.alignmentText') : tr('request.text')}</label>
@@ -3092,33 +3109,12 @@
         {/if}
       </section>
 
-      <section class="panel output">
+      <section class="output">
         <div class="section-title">
           <div><span>{tr('result.label')}</span><h2>{tr('result.title')}</h2></div>
           {#if outputSettings}<a class="settings-download" href={outputSettings.url} download={outputSettings.filename}>Save settings JSON</a>{/if}
           {#if outputAudio.length}<span class="task-chip">{outputAudio.length} {outputAudio.length === 1 ? tr('result.track') : tr('result.tracks')}</span>{/if}
         </div>
-        {#if generationHistory.length}
-          <details class="generation-history">
-            <summary>Run history (Experimental) <span>{generationHistory.length}/{$uiConfiguration.historyLimit}</span></summary>
-            {#if historyError}<div class="history-error" role="alert">{historyError}</div>{/if}
-            <div class="history-actions"><button type="button" disabled={restoringHistory} on:click={clearGenerationHistory}>Clear history</button></div>
-            <ul>
-              {#each generationHistory as entry (entry.id)}
-                <li class:active={selectedGenerationId === entry.id}>
-                  <button type="button" class="history-select" aria-pressed={selectedGenerationId === entry.id}
-                    disabled={restoringHistory} on:click={() => selectGeneration(entry, true)}>
-                    <strong>{entry.label}</strong>
-                    <small>{new Date(entry.createdAt).toLocaleTimeString()} · {localizedTaskLabel(entry.task)}{#if ['gen', 'tts', 'clon', 'vdes'].includes(entry.task)} · Seed {entry.seed}{/if}</small>
-                  </button>
-                  <button type="button" title={`Delete generation ${entry.id}`}
-                    disabled={restoringHistory}
-                    aria-label={`Delete generation ${entry.id}`} on:click={() => deleteGeneration(entry.id)}>Delete</button>
-                </li>
-              {/each}
-            </ul>
-          </details>
-        {/if}
         {#if outputAudio.length}
           <div class="audio-list">
             {#each outputAudio as output}
@@ -3146,7 +3142,28 @@
           <div class="empty-output"><div class="wave">∿</div><p>{tr('result.empty')}</p></div>
         {/if}
         {#if outputText}<textarea class="transcript" readonly rows="7" value={outputText}></textarea>{/if}
-        {#if outputJson}<pre>{outputJson}</pre>{/if}
+        {#if outputJson}<details class="studio-response-details"><summary>Response JSON</summary><pre>{outputJson}</pre></details>{/if}
+        {#if generationHistory.length}
+          <details class="generation-history">
+            <summary>Run history (Experimental) <span>{generationHistory.length}/{$uiConfiguration.historyLimit}</span></summary>
+            {#if historyError}<div class="history-error" role="alert">{historyError}</div>{/if}
+            <div class="history-actions"><button type="button" disabled={restoringHistory} on:click={clearGenerationHistory}>Clear history</button></div>
+            <ul>
+              {#each generationHistory as entry (entry.id)}
+                <li class:active={selectedGenerationId === entry.id}>
+                  <button type="button" class="history-select" aria-pressed={selectedGenerationId === entry.id}
+                    disabled={restoringHistory} on:click={() => selectGeneration(entry, true)}>
+                    <strong>{entry.label}</strong>
+                    <small>{new Date(entry.createdAt).toLocaleTimeString()} · {localizedTaskLabel(entry.task)}{#if ['gen', 'tts', 'clon', 'vdes'].includes(entry.task)} · Seed {entry.seed}{/if}</small>
+                  </button>
+                  <button type="button" title={`Delete generation ${entry.id}`}
+                    disabled={restoringHistory}
+                    aria-label={`Delete generation ${entry.id}`} on:click={() => deleteGeneration(entry.id)}>Delete</button>
+                </li>
+              {/each}
+            </ul>
+          </details>
+        {/if}
       </section>
     </div>
   {:else if tab === 'arena'}
@@ -3181,6 +3198,16 @@
         tab = 'studio';
       }}
     />
+  {:else if tab === 'voices'}
+    <VoiceLibrary bind:this={voiceLibrary} onchange={async () => {
+      await refreshVoices();
+      if (savedVoiceId && !savedVoices.some(voice => voice.id === savedVoiceId)) savedVoiceId = '';
+    }} ontext={async (voice) => {
+      await refreshVoices();
+      chooseWorkflow('tts');
+      chooseSavedVoice(voice.id);
+      tab = 'studio';
+    }}/>
   {:else if tab === 'configuration'}
     <Configuration />
   {:else}
@@ -3192,6 +3219,7 @@
         <div><span>{tr('runtime.registered')}</span><strong>{loadedModels.length}</strong></div>
         <div><span>{tr('runtime.resident')}</span><strong>{loadedModels.filter((model) => model.loaded).length}</strong></div>
       </div>
+      <p class="hint">{tr('runtime.serverLogNotice')}</p>
       <pre class="logs">{logs.length ? logs.join('\n') : tr('runtime.noEvents')}</pre>
     </section>
   {/if}

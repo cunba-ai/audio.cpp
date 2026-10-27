@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -292,10 +293,16 @@ runtime::TaskResult HiggsTTSSession::synthesize(const runtime::TaskRequest & req
     debug::trace_log_scalar("higgs_audio_tts.text_chunk_count", static_cast<int64_t>(chunk_requests.size()));
 
     runtime::AudioBuffer merged_audio;
+    std::optional<HiggsCodecEncodeOutput> generated_reference;
     emit_progress("higgs_audio_tts", 0, static_cast<int64_t>(chunk_requests.size()));
     for (size_t i = 0; i < chunk_requests.size(); ++i) {
         const auto & chunk_request = chunk_requests[i];
-        const auto generation_request = make_generation_request(chunk_request, reference_codes);
+        auto generation_request = make_generation_request(chunk_request, reference_codes);
+        if (generated_reference.has_value()) {
+            generation_request.reference_text = chunk_requests.front().text_input->text;
+            generator_->prepare(generation_request);
+        }
+        HiggsGenerationResult result;
         if (streaming) {
             bool generation_complete = false;
             stream_audio_.begin(stream_config,
@@ -303,17 +310,23 @@ runtime::TaskResult HiggsTTSSession::synthesize(const runtime::TaskRequest & req
                     return codec_->decode_streaming_window(
                         window, stream_config.frames_per_chunk, generation_complete);
                 }, stream_event_sink());
-            generator_->generate(generation_request, &stream_audio_);
+            result = generator_->generate(generation_request, &stream_audio_);
             generation_complete = true;
             runtime::append_audio_buffer(merged_audio, stream_audio_.finish());
             debug::timing_log_scalar("higgs_audio_tts.generator.codec_decode_ms", stream_audio_.decode_ms());
         } else {
-            auto result = generator_->generate(generation_request);
+            result = generator_->generate(generation_request);
             runtime::append_audio_buffer(merged_audio, runtime::AudioBuffer{
                 result.audio.sample_rate,
                 result.audio.channels,
                 std::move(result.audio.values),
             });
+        }
+        // Anchor later unconditioned chunks to the first generated voice.
+        if (reference_codes == nullptr && chunk_requests.size() > 1) {
+            generated_reference = HiggsCodecEncodeOutput{
+                std::move(result.raw_codes), result.raw_frames, assets_->config.audio.num_codebooks};
+            reference_codes = &*generated_reference;
         }
         emit_progress("higgs_audio_tts", static_cast<int64_t>(i + 1), static_cast<int64_t>(chunk_requests.size()));
     }

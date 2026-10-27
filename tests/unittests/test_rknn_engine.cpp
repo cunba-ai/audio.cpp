@@ -1,8 +1,9 @@
-// Shared RKNN plumbing (src/framework/rknn/engine.cpp): the part that is testable without
-// a board, i.e. the engine-image reader, the driver-status formatter, the aperture budget
-// arithmetic and the artifact-path resolver. The context calls need librknnrt and a
-// compiled engine, so they are exercised on the board, not here.
+// Shared RKNN plumbing (src/framework/rknn/): the part that is testable without a board, i.e.
+// the engine-image reader, the driver-status formatter, the aperture budget arithmetic, the
+// artifact-path resolver and selected-resource accounting. The context calls need
+// librknnrt and a compiled engine, so they are exercised on the board, not here.
 #include "engine/framework/rknn/engine.h"
+#include "engine/framework/rknn/engine_resources.h"
 
 #include "test_assert.h"
 
@@ -57,7 +58,14 @@ void test_read_engine_empty(const std::filesystem::path & dir) {
     }
 }
 
+// The format every sidecar reports a failure in, plus the rule that the driver's versions are
+// appended only when a driver answered: this case runs before any context is built, so
+// `driver_report()` is empty in every build -- a PC build by construction (there is no runtime to
+// ask), a board build by order -- and the message stays exactly the bare form it always produced.
 void test_status() {
+    require(
+        engine::rknn::driver_report().empty(),
+        "no driver has answered in this process yet");
     require_eq(
         engine::rknn::status("Piper TTS decoder RKNN", "rknn_run", -5),
         std::string("Piper TTS decoder RKNN: rknn_run failed with code -5"),
@@ -134,7 +142,48 @@ void test_resolve_engine_path(const std::filesystem::path & dir) {
                "an unset artifact stays unset");
 }
 
+void test_engine_resources(const std::filesystem::path & dir) {
+    write_file(dir / "flow_seq110.rknn", std::string("RKNN\x01\x00\x00\x00", 8));
+    const auto elsewhere = dir / "flow_seq200.rknn";
+    write_file(elsewhere, std::string("RKNN\x01\x00\x00\x00", 8));
+    const auto resources = engine::rknn::engine_resources(
+        {"flow_seq110.rknn," + elsewhere.string(), "flow_seq110.rknn", "missing.rknn"}, dir / "model.gguf");
+    require_eq(resources.engines.size(), size_t{2}, "selected files are deduplicated; missing files await load");
+    require_eq(resources.engines[0].path, std::filesystem::weakly_canonical(dir / "flow_seq110.rknn"),
+               "a bare name resolves under the model root");
+    require_eq(resources.engines[1].path, std::filesystem::weakly_canonical(elsewhere),
+               "an absolute path resolves to the same file");
+    require_eq(resources.resident_bytes, size_t{16}, "unpriced engines use their file sizes once");
+    require(engine::rknn::engine_resources({"", ",,"}, dir).engines.empty(), "empty lists add no engines");
+}
+
 }  // namespace
+
+#if defined(ENGINE_HAVE_RKNN)
+namespace {
+
+// A fixture built like a real engine -- the RKNN magic the parser checks first, then a body no
+// image parser can read. The point is the branch, not the refusal: `INVALID RKNN_MAGIC` and
+// `model is too small` are different driver verdicts, and every caller that prices residency
+// (a sidecar ladder, the plan reader) must treat both as the same "unknown" and keep its own
+// proxy. Only a runtime-enabled build asks the driver, so only one is registered in the other.
+void test_engine_memory_unknown(const std::filesystem::path & dir) {
+    const auto magic_path = dir / "magic.rknn";
+    write_file(magic_path, std::string("RKNN\x01\x00\x00\x00", 8));
+    require_eq(
+        engine::rknn::engine_memory_mib(magic_path.string(), "Test stage RKNN"),
+        int64_t{0},
+        "an image the driver parses the magic of and cannot load is priced as unknown");
+    const auto junk_path = dir / "junk.rknn";
+    write_file(junk_path, "not an rknn image at all");
+    require_eq(
+        engine::rknn::engine_memory_mib(junk_path.string(), "Test stage RKNN"),
+        int64_t{0},
+        "an image the driver refuses on the magic is priced the same");
+}
+
+}  // namespace
+#endif  // ENGINE_HAVE_RKNN
 
 int main() {
     const auto dir = std::filesystem::temp_directory_path() / "audio.cpp_rknn_engine_test";
@@ -145,6 +194,10 @@ int main() {
     test_status();
     test_aperture_budget_ladder();
     test_resolve_engine_path(dir);
+    test_engine_resources(dir);
+#if defined(ENGINE_HAVE_RKNN)
+    test_engine_memory_unknown(dir);
+#endif
     std::filesystem::remove_all(dir);
     return 0;
 }

@@ -24,8 +24,19 @@ namespace engine::rknn {
 // stage that failed ("Qwen3 speech decoder RKNN: ...").
 std::vector<char> read_engine(const std::string & path, const std::string & label);
 
-// Formats one `RKNN_*` return code the same way every sidecar does.
+// Formats one `RKNN_*` return code the same way every sidecar does. Where the driver has answered in
+// this process, the message names it (`... failed with code -6 (driver 0.9.8, api 2.3.2 ...)`),
+// because the code alone says what was refused and not who refused it: a `.rknn` is compiled per SoC
+// and per SDK generation, and the runtime library and the kernel driver are versioned apart (a
+// working RK3588 reports `api 2.3.2` beside `driver 0.9.8`), with the toolkit that built the image
+// as the third version an operator has to line up. See `driver_report()`.
 std::string status(const std::string & label, const char * what, int code);
+
+// What the driver said it is, as one phrase, once any context in this process has reported it;
+// empty where no driver can answer (a build without an RKNN runtime, an engine that never
+// initialized). Asked of the first context the driver builds -- `rknn_query(RKNN_QUERY_SDK_VERSION)`
+// is per-context -- and cached, so a later failure carries it at no round trip.
+std::string driver_report();
 
 // Aperture accounting for a sidecar that keeps more than one compiled engine resident: the resident
 // set is the sum of the residency each loaded engine reports, and a new engine is pinned only while
@@ -58,6 +69,16 @@ private:
 // returned unchanged, so a failed load quotes exactly what was asked for.
 std::string resolve_engine_path(const std::string & artifact, const std::filesystem::path & model_root);
 
+// What a compiled engine will occupy once it is resident, in MiB, read from the driver itself:
+// `rknn_init` with `RKNN_FLAG_COLLECT_MODEL_INFO_ONLY` parses the image without building the network
+// (~0.5 s per engine on RK3588, no NPU memory allocated) and `rknn_query(RKNN_QUERY_MEM_SIZE)` then
+// reports `total_weight_size + total_internal_size` -- the bytes the real init goes on to allocate,
+// less a per-context slack of 30-50 MiB. Returns 0 when the driver cannot say, so a caller can keep
+// a proxy for that case; a build without an RKNN runtime is that case for every engine, so the
+// declaration is not conditional and a consumer (a sidecar, or the server's load guard) needs no
+// preprocessor test of its own to ask.
+int64_t engine_memory_mib(const std::string & path, const std::string & label);
+
 #if defined(ENGINE_HAVE_RKNN)
 
 // One graph input for `Engine::run`. `size` is the size of the buffer in bytes: with
@@ -70,14 +91,6 @@ struct Input {
     rknn_tensor_type type = RKNN_TENSOR_FLOAT32;
     uint32_t pass_through = 0;
 };
-
-// What a compiled engine will occupy once it is resident, in MiB, read from the driver itself:
-// `rknn_init` with `RKNN_FLAG_COLLECT_MODEL_INFO_ONLY` parses the image without building the network
-// (~0.5 s per engine on RK3588, no NPU memory allocated) and `rknn_query(RKNN_QUERY_MEM_SIZE)` then
-// reports `total_weight_size + total_internal_size` -- the bytes the real init goes on to allocate,
-// less a per-context slack of 30-50 MiB. Returns 0 when the driver cannot say, so a sidecar can keep
-// a proxy for that case.
-int64_t engine_memory_mib(const std::string & path, const std::string & label);
 
 // One compiled engine: a `rknn_context` plus its input/output counts.
 class Engine {

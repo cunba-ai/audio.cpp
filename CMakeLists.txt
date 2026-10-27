@@ -190,6 +190,8 @@ if (AUDIOCPP_BUILD_C_API)
         "(include/audiocpp.h, src/capi/) was removed by fork policy. Use this "
         "fork's C ABI instead: -DAUDIOCPP_BUILD_CAPI=ON (capi/include/audiocpp.h).")
 endif()
+set(AUDIOCPP_RKNN_TEST_ENGINE "" CACHE PATH
+    "A .rknn engine compiled for the build host's SoC, for the RKNN sidecar test. Unset leaves the test registered but skipping.")
 set(AUDIOCPP_GGML_SOURCE_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/external/ggml"
     CACHE PATH "ggml source tree to build with AudioCPP")
@@ -554,7 +556,8 @@ add_library(engine_core OBJECT
     src/framework/model_spec/schema.cpp
     src/framework/assets/tensor_source.cpp
     src/framework/assets/weight_norm_folding.cpp
-    src/framework/assets/lora_tensor_source.cpp
+    src/framework/assets/weight_adapter.cpp
+    src/framework/assets/weight_adapter_source.cpp
     src/framework/assets/torch_bin.cpp
     src/framework/core/module.cpp
     src/framework/core/backend.cpp
@@ -600,6 +603,7 @@ add_library(engine_core OBJECT
     src/framework/debug/trace.cpp
     src/framework/debug/profiler.cpp
     src/framework/rknn/engine.cpp
+    src/framework/rknn/engine_resources.cpp
     src/framework/decoders/moss_tts_delay/backbone.cpp
     src/framework/decoders/moss_tts_delay/config.cpp
     src/framework/decoders/moss_tts_delay/delay_decoder.cpp
@@ -3760,6 +3764,14 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
     add_test(NAME cpu_extra_buffers_test COMMAND cpu_extra_buffers_test)
     add_engine_unittest(rknn_engine_test tests/unittests/test_rknn_engine.cpp)
     add_test(NAME rknn_engine_test COMMAND rknn_engine_test)
+    if (ENGINE_ENABLE_RKNN)
+        # The driver-priced cases in the file compile only where a runtime is linked; they ask
+        # the same header the engine itself compiles against.
+        target_compile_definitions(rknn_engine_test PRIVATE ENGINE_HAVE_RKNN=1)
+        if (ENGINE_RKNN_INCLUDE_DIR)
+            target_include_directories(rknn_engine_test PRIVATE ${ENGINE_RKNN_INCLUDE_DIR})
+        endif()
+    endif()
     if (ENGINE_ENABLE_NEON)
         add_engine_unittest(neon_blocks_test tests/unittests/test_neon_blocks.cpp)
         target_include_directories(neon_blocks_test PRIVATE src/framework/neon)
@@ -4199,8 +4211,10 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
         add_engine_unittest(gguf_tensor_source_test tests/unittests/test_gguf_tensor_source.cpp)
         target_include_directories(gguf_tensor_source_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
         add_test(NAME gguf_tensor_source_test COMMAND gguf_tensor_source_test)
-        add_engine_unittest(lora_tensor_source_test tests/unittests/test_lora_tensor_source.cpp)
-        add_test(NAME lora_tensor_source_test COMMAND lora_tensor_source_test --log)
+        add_engine_unittest(weight_adapter_source_test tests/unittests/test_weight_adapter_source.cpp)
+        add_test(NAME weight_adapter_source_test COMMAND weight_adapter_source_test --log)
+        add_engine_unittest(weight_adapter_test tests/unittests/test_weight_adapter.cpp)
+        add_test(NAME weight_adapter_test COMMAND weight_adapter_test --log)
 
         add_engine_unittest(transformer_kv_ring_test tests/unittests/test_transformer_kv_ring.cpp)
         add_test(NAME transformer_kv_ring_test COMMAND transformer_kv_ring_test)
@@ -4562,6 +4576,19 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
     endif()
 
     if (ENGINE_BUILD_MODEL_TESTS)
+        if (ENGINE_ENABLE_RKNN)
+            # The board-only half of the RKNN path: residency pricing, the driver's cached
+            # self-report and a real context build. The repo ships no compiled engines, so the
+            # engine travels as a configure-time path and the test self-skips without one.
+            add_executable(rknn_sidecar_test tests/unittests/test_rknn_sidecar.cpp)
+            target_compile_definitions(rknn_sidecar_test PRIVATE ENGINE_HAVE_RKNN=1)
+            if (ENGINE_RKNN_INCLUDE_DIR)
+                target_include_directories(rknn_sidecar_test PRIVATE ${ENGINE_RKNN_INCLUDE_DIR})
+            endif()
+            target_link_libraries(rknn_sidecar_test PRIVATE engine_runtime ggml)
+            add_test(NAME rknn_sidecar_test COMMAND rknn_sidecar_test "${AUDIOCPP_RKNN_TEST_ENGINE}")
+            set_tests_properties(rknn_sidecar_test PROPERTIES SKIP_RETURN_CODE 77)
+        endif()
         if("plapre" IN_LIST AUDIOCPP_LINKED_MODELS)
             add_executable(plapre_codec_parity EXCLUDE_FROM_ALL tests/plapre/codec_parity.cpp)
             target_link_libraries(plapre_codec_parity PRIVATE engine_runtime ggml)

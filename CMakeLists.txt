@@ -541,6 +541,7 @@ if (ENGINE_ENABLE_NEON)
         src/framework/neon/worker_team.cpp
         src/framework/neon/blocks.cpp
         src/framework/neon/hifigan.cpp
+        src/framework/neon/hift.cpp
         src/framework/neon/vocoder_operators.cpp
         src/framework/neon/kernels.cpp
     )
@@ -1198,6 +1199,10 @@ audiocpp_add_model(kitten_tts2
     INCLUDES engine/community_models/kitten_tts2/session.h
     LOADERS engine::community_models::kitten_tts2::make_kitten_tts2_loader
     DEPENDS chatterbox)
+
+if (ENGINE_ENABLE_NEON)
+    target_sources(engine_model_kitten_tts2 PRIVATE src/community_models/kitten_tts2/neon_vocoder.cpp)
+endif()
 
 audiocpp_add_model(kitten_tts
     SOURCES
@@ -4219,6 +4224,23 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
 
         add_engine_unittest(text_chunking_test tests/unittests/test_text_chunking.cpp)
         add_test(NAME text_chunking_test COMMAND text_chunking_test)
+        if (ming3_audio IN_LIST AUDIOCPP_LINKED_MODELS)
+            add_executable(ming3_audio_waveform_trim_test
+                tests/ming3_audio/test_ming3_audio_waveform_trim.cpp)
+            target_include_directories(ming3_audio_waveform_trim_test PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/models/ming3_audio)
+            target_link_libraries(ming3_audio_waveform_trim_test PRIVATE engine_runtime ggml)
+            add_test(NAME ming3_audio_waveform_trim_test COMMAND ming3_audio_waveform_trim_test)
+        endif()
+
+        if (moss IN_LIST AUDIOCPP_LINKED_MODELS)
+            add_executable(moss_tts_nano_text_chunking_test
+                tests/moss_tts_nano/test_moss_tts_nano_text_chunking.cpp)
+            target_include_directories(moss_tts_nano_text_chunking_test PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/models/moss/moss_tts_nano)
+            target_link_libraries(moss_tts_nano_text_chunking_test PRIVATE engine_runtime ggml)
+            add_test(NAME moss_tts_nano_text_chunking_test COMMAND moss_tts_nano_text_chunking_test)
+        endif()
 
         # Not a model test: it exercises the framework normalizer, but through the
         # supertonic tokenizer, so in a subset set it links a model symbol.
@@ -4317,6 +4339,10 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
 
         add_engine_unittest(quantize_chunking_test tests/unittests/test_quantize_chunking.cpp)
         add_test(NAME quantize_chunking_test COMMAND quantize_chunking_test)
+
+        add_engine_unittest(tq2_1_test tests/unittests/test_tq2_1.cpp)
+        target_include_directories(tq2_1_test PRIVATE external/ggml/src)
+        add_test(NAME tq2_1_test COMMAND tq2_1_test)
 
         add_engine_unittest(moss_ttsd_speakers_test tests/unittests/test_moss_ttsd_speakers.cpp)
         target_link_libraries(moss_ttsd_speakers_test PRIVATE engine_model_moss_ttsd)
@@ -4667,6 +4693,10 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
     endif()
 
     if (ENGINE_BUILD_MODEL_TESTS)
+        if (higgs_audio_tts IN_LIST AUDIOCPP_LINKED_MODELS)
+            add_engine_unittest(higgs_audio_tts_sampler_test tests/higgs_audio_tts/test_sampler.cpp)
+            add_test(NAME higgs_audio_tts_sampler_test COMMAND higgs_audio_tts_sampler_test --log)
+        endif()
         if("ming3_audio" IN_LIST AUDIOCPP_LINKED_MODELS)
             add_executable(ming3_audio_thinker_parity EXCLUDE_FROM_ALL tests/ming3_audio/thinker_parity.cpp)
             target_link_libraries(ming3_audio_thinker_parity PRIVATE engine_runtime ggml)

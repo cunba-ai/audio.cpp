@@ -88,7 +88,11 @@ int main() try {
                      "const int64_t ne0_pad   = GGML_PAD(ne0, WARP_SIZE);",
                      "dynamic block sizing");
 
-    // ---- 4. Vulkan dispatch clamping (dc6d1b59 fix #4).
+    // ---- 4. Vulkan dispatch clamping (dc6d1b59 fix #4; superseded mechanism
+    // updated for upstream #1120). The chunked helper is kept (call sites route
+    // through it and it degrades to a plain dispatch once upstream's selector
+    // sends over-limit row counts to the RMS_NORM_ROW_STRIDE grid-stride
+    // pipeline), but the shader no longer decodes the param2 row base.
     require_contains("external/ggml/src/ggml-vulkan/ggml-vulkan.cpp",
                      "ggml_vk_dispatch_rms_norm_row_chunked",
                      "chunked rms_norm dispatch helper");
@@ -99,9 +103,14 @@ int main() try {
         const size_t calls = content.find("ggml_vk_dispatch_rms_norm_row_chunked(ctx") != std::string::npos;
         engine::test::require(calls, "vulkan: rms_norm dispatch must call the chunked helper");
     }
+    // The over-limit row protection now lives in the row-stride shader variant
+    // (upstream #1120) plus the rows-pipeline selector; both must stay wired.
     require_contains("external/ggml/src/ggml-vulkan/vulkan-shaders/rms_norm.comp",
-                     "param2",
-                     "rms_norm.comp row-base parameter");
+                     "RMS_NORM_ROW_STRIDE",
+                     "row-stride shader variant guard");
+    require_contains("external/ggml/src/ggml-vulkan/ggml-vulkan.cpp",
+                     "pipeline_rms_norm_rows_f32",
+                     "rows pipeline selection for over-limit row counts");
 
     // ---- 5. GRU_SCAN registration chain (dc6d1b59 fix #5).
     require_contains("external/ggml/include/ggml.h",

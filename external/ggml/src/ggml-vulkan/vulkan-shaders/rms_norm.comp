@@ -40,14 +40,18 @@ shared FLOAT_TYPE sumsh[BLOCK_SIZE];
 
 void rms_norm(uint num_iters) {
     const uint ncols     = p.ne00;
-    // Total row count of dst (NOT gl_NumWorkGroups.x): the dispatch may be chunked
-    // along x to respect maxComputeWorkGroupCount on devices with low limits
-    // (e.g. Intel ICDs report 65536 per dimension while NVIDIA allows 2^31-1 on x).
+#if RMS_NORM_ROW_STRIDE
     const uint nrows     = p.ne01;
+#else
+    const uint nrows     = gl_NumWorkGroups.x;
+#endif
     const uint nchannels = gl_NumWorkGroups.y;
 
-    // Base row for chunked dispatch, passed via the unused param2 (bit-cast).
-    const uint row       = gl_WorkGroupID.x + floatBitsToUint(p.param2);
+#if RMS_NORM_ROW_STRIDE
+    for (uint row = gl_WorkGroupID.x; row < nrows; row += gl_NumWorkGroups.x) {
+#else
+    const uint row       = gl_WorkGroupID.x;
+#endif
     const uint channel   = gl_WorkGroupID.y;
     const uint samp      = gl_WorkGroupID.z;
     const uint tid       = gl_LocalInvocationID.x;
@@ -122,6 +126,11 @@ void rms_norm(uint num_iters) {
         } else if (rp.rope_mode == GGML_ROPE_TYPE_NORMAL) {
             rope_norm(t, row, channel, samp, rp);
         }
+    }
+#endif
+#if RMS_NORM_ROW_STRIDE
+    // Finish reading shared reduction storage before the next row overwrites it.
+    barrier();
     }
 #endif
 }
